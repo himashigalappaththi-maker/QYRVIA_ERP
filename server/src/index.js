@@ -183,6 +183,16 @@ try {
   buildRevenueSubscriber({ eventBus: eventBusRef, revenue });
 } catch (e) { logger.warn({ err: e }, '[boot] revenue init skipped'); }
 
+// Phase 18 - Enterprise Platform Layer (IAM, gateway, observability, integration,
+// enterprise control). Additive cross-cutting layer; consumes events read-only.
+const { buildPlatformLayer } = require('./platform/PlatformLayer');
+const { buildPlatformSubscriber } = require('./platform/services/platformSubscriber');
+let platform = null;
+try {
+  platform = buildPlatformLayer({});
+  buildPlatformSubscriber({ eventBus: eventBusRef, platform });
+} catch (e) { logger.warn({ err: e }, '[boot] platform init skipped'); }
+
 // Phase 7 / C7 - Allocation lifecycle (commands + subscribers + sweep job)
 const { buildAllocationService } = require('./services/pms/allocation');
 const { makeAllocationCommands } = require('./commands/pms/allocations');
@@ -307,6 +317,7 @@ const app = createApp({
   eventBus: require('./core/eventBus'),
   channelManager,
   revenue,
+  platform,
   makeAuthEvent
 });
 
