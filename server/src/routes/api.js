@@ -22,6 +22,7 @@ const jobsRouterMod          = require('./jobs');
 const notificationsRouterMod = require('./notifications');
 const pmsRouterMod           = require('./pms');
 const financeRouterMod       = require('./finance');
+const channelRouterMod       = require('../channel-manager/api/channel.routes');
 
 function build(deps = {}) {
   const router = express.Router();
@@ -55,6 +56,7 @@ function build(deps = {}) {
   router.use('/notifications', ...protectedChain, notificationsRouterMod.build(deps));
   router.use('/pms',           ...protectedChain, pmsRouterMod.build(deps));
   router.use('/finance',       ...protectedChain, financeRouterMod.build(deps));
+  router.use('/channel',       ...protectedChain, channelRouterMod.build(deps));
 
   return router;
 }

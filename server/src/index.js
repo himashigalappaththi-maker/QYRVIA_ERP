@@ -153,6 +153,25 @@ const { makeQueries: makeFinanceQueries } = require('./queries/finance');
 try { for (const q of makeFinanceQueries({ costCenterRepo, revenueMapRepo, ledgerRepo })) queryBus.register(q); }
 catch (e) { logger.warn({ err: e }, '[boot] finance query register skipped'); }
 
+// Phase 10.0 - Channel Manager foundation. Adapters registered in the registry;
+// events flow through the shared eventBus (ChannelEventBus default) into
+// audit_events + event_store.
+const { ChannelManagerCore } = require('./channel-manager/core/ChannelManagerCore');
+const { BookingComAdapter } = require('./channel-manager/adapters/bookingcom/BookingComAdapter');
+const { QTCNAdapter } = require('./channel-manager/adapters/qyrcn/QTCNAdapter');
+const { AgodaAdapter } = require('./channel-manager/adapters/agoda/AgodaAdapter');
+const { ExpediaAdapter } = require('./channel-manager/adapters/expedia/ExpediaAdapter');
+const { AirbnbAdapter } = require('./channel-manager/adapters/airbnb/AirbnbAdapter');
+let channelManager = null;
+try {
+  channelManager = new ChannelManagerCore();
+  channelManager.registerAdapter(new QTCNAdapter());        // internal, first-class
+  channelManager.registerAdapter(new BookingComAdapter());  // working mock
+  channelManager.registerAdapter(new AgodaAdapter());       // stubs (contract-complete)
+  channelManager.registerAdapter(new ExpediaAdapter());
+  channelManager.registerAdapter(new AirbnbAdapter());
+} catch (e) { logger.warn({ err: e }, '[boot] channel manager init skipped'); }
+
 // Phase 7 / C7 - Allocation lifecycle (commands + subscribers + sweep job)
 const { buildAllocationService } = require('./services/pms/allocation');
 const { makeAllocationCommands } = require('./commands/pms/allocations');
@@ -275,6 +294,7 @@ const app = createApp({
   notificationService, webhookService,
   commandBus, queryBus,
   eventBus: require('./core/eventBus'),
+  channelManager,
   makeAuthEvent
 });
 
