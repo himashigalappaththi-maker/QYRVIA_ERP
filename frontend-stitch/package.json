@@ -1,0 +1,11 @@
+{
+  "name": "qyrvia-frontend-stitch",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "QYRVIA Stitch UI - API-consumer frontend (Phase 19). Dumb visualization layer over the QYRVIA backend.",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\"",
+    "serve": "node ./scripts/serve.js"
+  }
+}

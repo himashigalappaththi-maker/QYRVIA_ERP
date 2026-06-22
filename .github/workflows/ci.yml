@@ -53,3 +53,18 @@ jobs:
         run: node src/db/migrate.js up
       - name: DB-backed integration tests (RLS, constraints, finance flows)
         run: npm run test:db
+
+  # Mode 3 (Phase 19, NEW): Stitch frontend logic tests (no DB, no build/deps).
+  frontend:
+    name: Frontend (Stitch UI)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend-stitch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Frontend unit tests (apiClient / session / rbac / router)
+        run: npm test
