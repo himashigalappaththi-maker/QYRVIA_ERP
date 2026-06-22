@@ -60,6 +60,18 @@ contract and degrade gracefully where a backend HTTP route isn't yet exposed
 
 All 15 pass. CI adds a third job (`frontend`) with no DB and no install.
 
+## Fidelity pass (aligned to the Stitch `code.html` mockup)
+
+- Brand assets copied into `frontend-stitch/assets/` (`qyrvia-logo.png`,
+  `ai-assistant.png`) and used in the sidebar + assistant launcher.
+- Shell aligned to the mockup: branded 280px charcoal sidebar with gold active
+  bar + filled active icon, top bar with notifications/help + profile, and a
+  responsive **mobile bottom nav** (desktop-first; sidebar `lg:` only).
+- **AI assistant launcher** uses the brand avatar but is honest — it states no
+  AI backend is wired in this build rather than faking responses (consistent
+  with the platform "no fake AI" rule); it becomes the assistant surface once an
+  endpoint exists.
+
 ## Migration strategy
 
 A (parallel run at `/stitch-ui`) → B (full API integration + flow validation) →
