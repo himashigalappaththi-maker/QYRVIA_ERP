@@ -172,6 +172,17 @@ try {
   channelManager.registerAdapter(new AirbnbAdapter());
 } catch (e) { logger.warn({ err: e }, '[boot] channel manager init skipped'); }
 
+// Phase 17 - Revenue Management (deterministic dynamic pricing + forecasting).
+// Read-only consumer of upstream events; no schema, no AI.
+const { buildMemoryRevenueRepo } = require('./revenue/repository/revenueRepo.memory');
+const { buildRevenueEngine } = require('./revenue/core/RevenueEngine');
+const { buildRevenueSubscriber } = require('./revenue/services/revenueSubscriber');
+let revenue = null;
+try {
+  revenue = buildRevenueEngine({ repo: buildMemoryRevenueRepo() });
+  buildRevenueSubscriber({ eventBus: eventBusRef, revenue });
+} catch (e) { logger.warn({ err: e }, '[boot] revenue init skipped'); }
+
 // Phase 7 / C7 - Allocation lifecycle (commands + subscribers + sweep job)
 const { buildAllocationService } = require('./services/pms/allocation');
 const { makeAllocationCommands } = require('./commands/pms/allocations');
@@ -295,6 +306,7 @@ const app = createApp({
   commandBus, queryBus,
   eventBus: require('./core/eventBus'),
   channelManager,
+  revenue,
   makeAuthEvent
 });
 
