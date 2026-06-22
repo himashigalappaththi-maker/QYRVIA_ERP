@@ -1,65 +1,58 @@
 # QYRVIA — Phase 9.1: Real PostgreSQL Verification Report
 
 > **Objective (per brief):** introduce a real PostgreSQL integration test layer
-> so every financial, relational, and constraint guarantee is validated against
-> an actual database — not in-memory fakes.
+> and execute it in CI, so every financial, relational, and constraint
+> guarantee is validated against an actual database — not in-memory fakes.
 >
-> **This phase is infrastructure truth enforcement only.** No product features,
-> UI, business logic, or AI work was added. The only code added is test
-> harness + DB tests + CI wiring.
+> **Infrastructure truth enforcement only.** No product features, UI, business
+> logic, or AI work was added. The only code added is the test harness + DB
+> tests + CI wiring.
 
 ---
 
-## 0. Execution Status (read first — no fabricated results)
+## 0. Execution Status — ✅ CI-VERIFIED (real results below)
 
-| Deliverable | Status |
+The database truth layer has been **executed in CI against a real
+`postgres:16-alpine` service container.** The system has moved from
+"designed database correctness" → "CI-verified database truth."
+
+| Item | Result |
 |---|---|
-| DB test harness (`test/db/_dbHarness.js`) | ✅ Authored |
-| Migration-chain + constraint tests (`schema_and_constraints.db.test.js`) | ✅ Authored |
-| RLS tests (`rls.db.test.js`) | ✅ Authored |
-| Finance-flow DB tests (`finance_flows.db.test.js`) | ✅ Authored |
-| CI workflow with PostgreSQL service (`.github/workflows/ci.yml`) | ✅ Authored |
-| npm scripts (`test:db`, `db:test:up/down`) + compose + README | ✅ Authored |
-| Unit mode unchanged + DB files skip cleanly without a DB | ✅ **Verified** — `npm test` → 350 pass, 3 skipped, 0 fail |
-| **Live local execution against a real container** | ⏳ **Not executed in this authoring environment** |
+| Repository | `https://github.com/himashigalappaththi-maker/QYRVIA_ERP` |
+| Green CI run | **#27957714724** — commit `e614631`, branch `main`, **conclusion: success** |
+| Job `Unit (in-memory)` | ✅ success (19s) — `npm run test:unit` |
+| Job `Integration (real PostgreSQL)` | ✅ success (33s) |
+| → Step "Verify migration chain applies cleanly (0001..NNNN)" | ✅ success — `node src/db/migrate.js up` against the service container |
+| → Step "DB-backed integration tests (RLS, constraints, finance flows)" | ✅ success — `npm run test:db` |
+| In-memory DB used in the DB suite? | **No** — DB suite runs real `pg` + `buildRepos(pool)` against the container |
 
-**Why not executed here:** the authoring machine is Windows with Docker Desktop
-whose Linux engine did not finish initializing during this session (the
-`Docker Desktop` and `com.docker.backend` processes started, but
-`docker info` never returned — a cold first-launch / WSL engine gate). No local
-`psql`/`postgres` binary is available as an alternative. The suite is therefore
-**fully built, CI-wired, and proven to load/skip correctly**, but the
-green/red results of the DB assertions must be produced by **CI** (which has a
-guaranteed Postgres service) or by a local run once the engine is up.
+`node --test` exits non-zero on any failing or unresolved test; both test
+steps exited **0**, so all assertions below passed.
 
-This report does **not** claim any DB test "passed." Every constraint/RLS row
-below states *what the test asserts* and *where the database enforces it*
-(migration file), and is marked **`PENDING-RUN`** until first execution. After
-the first CI run, replace the PENDING markers with the run summary.
+### Truth-execution trace (the path to green)
 
-**How to execute (produces the real evidence):**
+| Run | Commit | Result | Why |
+|---|---|---|---|
+| #27956762317 | `c9748b0` baseline | ❌ failure | CI pinned Node 20; `node --test "<glob>"` only expands globs on Node ≥ 21 → both test steps matched nothing/errored. |
+| #27957472122 | `ae9724d` Node 22 | ❌ failure | Unit job passed; DB job failed — `node --test` runs the 3 DB files **in parallel**, and they all reset the **same** database in `freshSchema()` → race. |
+| **#27957714724** | **`e614631` serial DB** | ✅ **success** | DB files forced serial (`--test-concurrency=1`); Node 22 glob expansion. Both jobs green. |
 
-```bash
-cd server
-npm run db:test:up        # postgres:16-alpine on :55432
-TEST_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:55432/qyrvia_test \
-  JWT_SECRET=local-dev-jwt-secret-at-least-32-characters \
-  npm run test:db
-npm run db:test:down
-```
-
-Or push to a branch — `.github/workflows/ci.yml` runs the `db` job
-automatically against a `postgres:16-alpine` service container, including
-`node src/db/migrate.js up` to confirm the chain applies cleanly.
+> Two genuine **CI-only defects** were found by the act of running in CI (not
+> reproducible on the Windows authoring machine, which runs Node 24): the
+> Node-version glob dependency and the shared-DB parallelism race. Both are
+> fixed and committed.
 
 ---
 
-## 1. Migrations Applied (chain executed by the harness / CI)
+## 1. Migrations Applied (executed in CI)
 
-`test/db/_dbHarness.js::freshSchema()` drops and recreates the `public` schema,
-then applies these **44** files in strict lexical order inside per-file
-transactions, recording each in `schema_migrations`. It throws on the **first**
-failure (missing file, ordering gap, or SQL error), satisfying brief step 2.
+CI ran the production migration runner (`node src/db/migrate.js up`) against the
+real container, then each DB test file re-applied the full chain via
+`_dbHarness.freshSchema()` (drop+recreate `public`, apply 0001..0044 in strict
+lexical order inside per-file transactions, recording each in
+`schema_migrations`; throws on the first failure). **Both succeeded — the full
+44-migration chain applies cleanly to a real PostgreSQL 16, in order, with no
+drift.**
 
 ```
 0001_init                         0023_arch_folio_housekeeping
@@ -86,141 +79,154 @@ failure (missing file, ordering gap, or SQL error), satisfying brief step 2.
 0022_arch_hardening_multiproperty 0044_finance_ledger
 ```
 
-`schema_and_constraints.db.test.js` asserts: `count(schema_migrations) == 44`,
-first = `0001_init`, last = `0044_finance_ledger`, and that the core finance
-tables + `cost_center_type` enum exist. **Status: PENDING-RUN.**
+`schema_and_constraints.db.test.js` additionally asserts (✅ passed):
+`count(schema_migrations) == 44`, first = `0001_init`, last =
+`0044_finance_ledger`, and that the core finance tables + `cost_center_type`
+enum exist.
 
 ---
 
-## 2. Constraint Coverage Matrix
+## 2. Constraint Coverage Matrix — ✅ ALL ENFORCED BY THE DATABASE
 
-Each row: the guarantee, the database object that enforces it (migration), and
-the test that asserts the DB rejects a violation. All in
-`schema_and_constraints.db.test.js` unless noted. Status **PENDING-RUN** until
-first execution.
+All in `schema_and_constraints.db.test.js`; all **PASS** in CI run #27957714724.
 
-| # | Constraint kind | Guarantee | Enforced by (migration) | Test assertion | SQLSTATE | Status |
-|---|---|---|---|---|---|---|
-| 1 | NOT NULL | `tenants.name` required | `0001_init` | insert tenant w/o name rejected | `23502` | PENDING-RUN |
-| 2 | UNIQUE | `tenants.code` unique | `0001_init` | duplicate code rejected | `23505` | PENDING-RUN |
-| 3 | UNIQUE (composite) | `cost_centers(tenant_id,property_id,code)` | `0042` | duplicate CC code rejected | `23505` | PENDING-RUN |
-| 4 | ENUM | `cost_center_type` ∈ {ROOM,FNB,SPA,ADMIN,OTHER} | `0042` | type `'BANANA'` rejected | `22P02` | PENDING-RUN |
-| 5 | FK | `ledger_entries.batch_id → ledger_batches` (no orphans) | `0044` | orphan entry rejected | `23503` | PENDING-RUN |
-| 6 | FK | `cost_centers.property_id → properties` | `0042` | nonexistent property rejected | `23503` | PENDING-RUN |
-| 7 | CHECK | `ledger_batches` balanced (`total_debit = total_credit`) | `0044` | `(10,5)` rejected | `23514` | PENDING-RUN |
-| 8 | CHECK | `ledger_entries` one-sided (`debit=0 OR credit=0`) | `0044` | `(5,5)` rejected | `23514` | PENDING-RUN |
-| 9 | CHECK | `ledger_entries` non-negative amounts | `0044` | `(-5,0)` rejected | `23514` | PENDING-RUN |
+| # | Constraint kind | Guarantee | Enforced by (migration) | SQLSTATE on violation | Result |
+|---|---|---|---|---|---|
+| 1 | NOT NULL | `tenants.name` required | `0001_init` | `23502` | ✅ PASS |
+| 2 | UNIQUE | `tenants.code` unique | `0001_init` | `23505` | ✅ PASS |
+| 3 | UNIQUE (composite) | `cost_centers(tenant_id,property_id,code)` | `0042` | `23505` | ✅ PASS |
+| 4 | ENUM | `cost_center_type` rejects unknown value | `0042` | `22P02` | ✅ PASS |
+| 5 | FK | `ledger_entries.batch_id` — no orphan entries | `0044` | `23503` | ✅ PASS |
+| 6 | FK | `cost_centers.property_id → properties` | `0042` | `23503` | ✅ PASS |
+| 7 | CHECK | `ledger_batches` balanced (`total_debit = total_credit`) | `0044` | `23514` | ✅ PASS |
+| 8 | CHECK | `ledger_entries` one-sided (`debit=0 OR credit=0`) | `0044` | `23514` | ✅ PASS |
+| 9 | CHECK | `ledger_entries` non-negative amounts | `0044` | `23514` | ✅ PASS |
 
-Brief step-7 negative tests covered: invalid payment split
-(`finance_flows.db.test.js` → "explicit over-allocation rejected",
-`allocation_exceeds_charge`); orphan ledger entry (row 5); cross-property /
-cross-tenant insert (§3 below); missing cost-center where required
-(`finance_flows.db.test.js` imbalance/mapping rejection + app-level
-`cost_center_required` from Phase 8).
+Brief step-7 negative tests covered and passing: invalid payment split
+(`finance_flows.db.test.js` → over-allocation rejected, `allocation_exceeds_charge`);
+orphan ledger entry (row 5); cross-tenant insert (§3); imbalance / missing-map
+rejection (§4).
 
 ---
 
-## 3. RLS Test Results & Findings
+## 3. RLS & Append-Only — ✅ VALIDATED AGAINST REAL DB
 
-`rls.db.test.js` connects a **dedicated non-superuser, NOBYPASSRLS role**
+`rls.db.test.js` runs as a **dedicated non-superuser, `NOBYPASSRLS` role**
 (`qyrvia_app_rls`, granted only `SELECT, INSERT`) so RLS policies actually bind.
-It uses the same context mechanism as production (`SELECT set_config(
-'app.tenant_id', $1, true)` inside a transaction — identical to
-`db/client.js withTenant()`).
+It establishes context exactly like production (`SELECT set_config(
+'app.tenant_id', $1, true)`). All **PASS** in CI run #27957714724.
 
-| Test | Asserts | Status |
+| Test | Asserts | Result |
 |---|---|---|
-| Superuser/owner bypass | owner pool with no context sees **all** tenants (documents the production gap) | PENDING-RUN |
-| Tenant A context | restricted role sees only tenant A rows | PENDING-RUN |
-| Tenant B context | restricted role sees only tenant B rows | PENDING-RUN |
-| No context | restricted role sees **zero** rows (NULL predicate) | PENDING-RUN |
-| Cross-tenant read | tenant A cannot fetch a tenant B row by id | PENDING-RUN |
-| Cross-tenant **write** | inserting a tenant B row under tenant A context is rejected (`42501`) | PENDING-RUN |
-| Append-only | restricted role cannot `UPDATE`/`DELETE` `audit_events` (`42501`) | PENDING-RUN |
-| Append-only (PUBLIC) | `has_table_privilege('public', t, 'UPDATE'/'DELETE') = false` for `audit_events`, `event_store`, `ledger_entries` | PENDING-RUN |
+| Superuser/owner bypass | owner pool (no context) sees **all** tenants — documents the production gap | ✅ PASS |
+| Tenant A context | bound role sees only tenant A rows | ✅ PASS |
+| Tenant B context | bound role sees only tenant B rows | ✅ PASS |
+| No context | bound role sees **zero** rows (NULL predicate) | ✅ PASS |
+| Cross-tenant read | tenant A cannot fetch a tenant B row by id | ✅ PASS |
+| Cross-tenant **write** | inserting a tenant B row under tenant A context rejected (`42501`) | ✅ PASS |
+| Append-only | bound role cannot `UPDATE`/`DELETE` `audit_events` (`42501`) | ✅ PASS |
+| Append-only (PUBLIC) | `UPDATE`/`DELETE` revoked from PUBLIC on `audit_events`, `event_store`, `ledger_entries` | ✅ PASS |
 
-### Two findings that this layer makes explicit (from migration `0004` + schema reading)
+### Two findings confirmed by execution
 
 1. **Production connects as the DB owner, which BYPASSES RLS.** `src/db/repos.js`
-   issues every query through a single `pool` (owner credentials) and does **not**
-   call `withTenant()`/`set_config('app.tenant_id', …)`. Superusers and table
-   owners bypass RLS even under `FORCE ROW LEVEL SECURITY`. **Today, tenant
-   isolation in production rests entirely on the explicit `WHERE tenant_id = $1`
-   in each repo method, not on RLS.** RLS is a latent defense that only activates
-   if the app connects as a restricted role *and* sets the context.
-   → *Remediation candidate (not done in 9.1):* run the app under a
+   queries through a single owner-credential pool and never sets
+   `app.tenant_id`; superusers/owners bypass RLS even under `FORCE`. The CI
+   "superuser bypass" test proves it (owner sees all 3 rows). **Today tenant
+   isolation in production rests on the explicit `WHERE tenant_id = $1` in each
+   repo, not on RLS.** RLS is a verified latent defense that activates only when
+   the app connects as a bound role and sets context.
+   → *Runtime remediation (out of Phase 9.1 scope):* run the app under a
    non-superuser role and route repo queries through `withTenant`.
-
-2. **The `USING`-only policies (migration `0004`/`0042`/`0043`/`0044`) also
-   restrict writes.** PostgreSQL applies a policy's `USING` expression as the
-   `WITH CHECK` when no explicit `WITH CHECK` is given, so under a bound role a
-   cross-tenant `INSERT` is rejected (`42501`). This *corrects* the more
-   pessimistic note in the Phase-9 audit (§3/§6), which assumed write-side
-   isolation was unenforced — it is enforced **for a bound role**, but moot for
-   the owner connection used in production (finding 1).
+2. **`USING`-only policies also gate writes.** PostgreSQL applies the `USING`
+   expression as `WITH CHECK` when no explicit `WITH CHECK` is given, so under a
+   bound role a cross-tenant `INSERT` is rejected (`42501`) — now proven, and it
+   *corrects* the more pessimistic note in the Phase-9 audit (§3/§6).
 
 ---
 
-## 4. Fake-vs-Real DB Divergence List
+## 4. Finance Flows — ✅ REAL PERSISTENCE, BALANCE ENFORCED
 
-Behaviours the in-memory fakes (`test/_fixtures.js`) cannot represent, which the
-real-DB layer now exercises:
+`finance_flows.db.test.js` exercises production code paths — real
+`buildRepos(pool)`, real `ledgerService`, real eventBus → real `audit_events` /
+`event_store` — and verifies by reading rows back. All **PASS** in CI run
+#27957714724.
 
-| Area | In-memory fake | Real PostgreSQL |
+| Test | Asserts (read back from DB) | Result |
 |---|---|---|
-| RLS / tenant isolation | not modelled (JS array `.filter`) | enforced by policy (bound role) — divergence: fakes can't catch a missing `WHERE tenant_id` |
-| `CHECK` (balanced batch, one-sided, non-negative) | not enforced — fake `insertLedgerEntry` stores any numbers | enforced; bad rows rejected (`23514`) |
-| FK (orphan ledger entry, bad property ref) | not enforced — fakes accept any id | enforced (`23503`) |
-| ENUM (`cost_center_type`, `folio_charge_type`, `invoice_status`) | not enforced — fake stores any string | enforced (`22P02`) |
-| UNIQUE (composite keys) | partial (some fakes hand-roll dup checks; many don't) | enforced (`23505`) |
-| `folios.balance` rollup | recomputed in JS in `_makeFolioMemoryRepo` | recomputed in SQL `UPDATE … SUM(amount)` — divergence if SQL aggregation differs |
-| Append-only (`REVOKE UPDATE,DELETE`) | not modelled | enforced at privilege level (`42501`) |
-| Idempotency by reference | fake array scan | real `findLedgerByReference` SQL — same logic, now over a real index |
-| Audit/event dual-persist | fake pushes to a JS array | real `INSERT` into `audit_events` + `event_store` (catches column/type drift) |
-| Migration SQL correctness | only validated as **text** (`migrationValidation.test.js`) | executed — catches real SQL errors, ordering, type/enum creation |
+| Invoice → ledger | settled folio → invoice issues a balanced AR/Revenue batch; 2 entries sum debit==credit==100; `cost_center_id` tagged on each leg; batch row balanced; `invoice.issued` + `ledger.batch_posted` + `revenue.mapped` in `audit_events`; `ledger.batch_posted` in `event_store` | ✅ PASS |
+| Imbalance rejection | unbalanced `finance.ledger.post` → `ledger_imbalance`; **0** rows persisted; `ledger.imbalance_rejected` audited | ✅ PASS |
+| Idempotency | same reference posted twice → 2nd idempotent; exactly **2** entries in DB | ✅ PASS |
+| Payment allocation | allocation posts a balanced Cash/AR batch (60/60); credit leg = `AR` | ✅ PASS |
+| Balance rule | explicit over-allocation rejected (`allocation_exceeds_charge`) | ✅ PASS |
+| Cost-center report | `reportByCostCenter` aggregates real ledger rows by cost center | ✅ PASS |
 
-**Net:** the fakes validate *application logic*; they cannot validate the
-*database contract*. Phase 9.1 closes that gap for the financial and relational
-core.
+This satisfies the brief's "≥80% of financial flows DB-backed (not mocked)":
+invoice→ledger, payment allocation (+ balance rule), manual ledger
+post/imbalance/idempotency, and cost-center reporting all run against real
+PostgreSQL.
 
 ---
 
-## 5. Remaining Risks
+## 5. Fake-vs-Real DB Divergence List
 
-1. **First live run still pending here.** Until CI (or a local engine) runs the
-   `db` job once, the PENDING-RUN rows are unconfirmed. CI is wired to do this on
-   the next push. *(Environment limitation, not a code gap.)*
-2. **Production RLS bypass (finding 1)** remains true regardless of this test
-   layer — it is a *runtime wiring* issue (owner connection, no `withTenant` in
-   repos). Phase 9.1 documents and tests the gap but does not change runtime
-   wiring (out of scope: "no business logic expansion").
-3. **Coverage is focused on the finance + relational core**, per the brief's
-   priority list. PMS operational flows that only exist as commands (e.g. full
-   reservation lifecycle) are still primarily unit-tested; extending DB mode to
+Behaviours the in-memory fakes (`test/_fixtures.js`) cannot represent, now
+proven enforced by the real database:
+
+| Area | In-memory fake | Real PostgreSQL (CI-verified) |
+|---|---|---|
+| RLS / tenant isolation | not modelled (JS `.filter`) | enforced by policy under a bound role (✅ §3) |
+| CHECK (balanced batch, one-sided, non-negative) | not enforced | enforced — bad rows rejected `23514` (✅ §2) |
+| FK (orphan ledger entry, bad property ref) | not enforced | enforced `23503` (✅ §2) |
+| ENUM (`cost_center_type`, …) | accepts any string | enforced `22P02` (✅ §2) |
+| UNIQUE (composite keys) | partial / hand-rolled | enforced `23505` (✅ §2) |
+| `folios.balance` rollup | recomputed in JS | recomputed in SQL `UPDATE … SUM(amount)` (✅ §4) |
+| Append-only (`REVOKE UPDATE,DELETE`) | not modelled | privilege denial `42501` (✅ §3) |
+| Audit/event dual-persist | push to JS array | real `INSERT` into `audit_events` + `event_store` (✅ §4) |
+| Migration SQL correctness | text-only check (`migrationValidation.test.js`) | **executed** end-to-end, in order (✅ §1) |
+
+**Net:** the fakes validate *application logic*; only the DB layer validates the
+*database contract*. Phase 9.1 closes that gap for the financial + relational
+core and runs it on every push.
+
+---
+
+## 6. Remaining Risks (unchanged by 9.1; from the Phase-9 audit)
+
+1. **Production RLS bypass (§3 finding 1)** is a *runtime wiring* issue (owner
+   connection, no `withTenant` in repos), not a test gap. 9.1 documents and
+   proves it but does not change runtime wiring (out of scope).
+2. **Coverage focuses on the finance + relational core** per the brief. PMS
+   operational command flows remain primarily unit-tested; extending DB mode to
    them is a follow-up.
-4. **Revenue snapshots** appear in the brief's coverage list but **do not exist**
-   in the codebase (no `revenue_snapshots` write path — confirmed in the Phase-9
-   audit §4). No DB test was written for a non-existent feature.
-5. **Connection-role hardening, partitioning, and data-retention** (flagged in
-   the Phase-9 audit §7/§13) are unchanged; DB mode does not address growth or DR.
+3. **Revenue snapshots** appear in the brief's wish-list but **do not exist** in
+   the codebase (confirmed Phase-9 audit §4); no test was written for a
+   non-existent feature.
+4. **Growth / retention / DR / partitioning** (Phase-9 audit §7/§13) are
+   untouched by 9.1.
+5. **DB suite must run serially** (`--test-concurrency=1`) because all files
+   share one database and reset the schema. Parallelising would require a
+   database-per-file harness change.
 
 ---
 
-## 6. Acceptance Criteria Check
+## 7. Acceptance Criteria — ✅ MET
 
 | Brief criterion | Status |
 |---|---|
-| CI runs PostgreSQL container successfully | ✅ Wired (`.github/workflows/ci.yml` `db` job, `postgres:16-alpine` service) — runs on next push |
-| All 0001–0044 migrations execute cleanly | ✅ Mechanism in place (`migrate.js up` step + `freshSchema`); ⏳ first execution pending CI |
-| ≥1 full integration suite runs against real DB | ✅ Three suites authored; ⏳ execution pending engine |
-| RLS actively tested and enforced | ✅ Tests authored (bound non-superuser role); ⏳ run pending |
-| ≥80% of financial flows DB-backed | ✅ Invoice→ledger, payment allocation (+balance rule), manual ledger post/imbalance/idempotency, cost-center report — all via real repos against real DB |
-| Report generated with full evidence | ✅ This file |
+| CI pipeline runs successfully with PostgreSQL | ✅ run #27957714724 success |
+| All migrations execute in CI (0001→0044, in order) | ✅ migrate step + freshSchema both green |
+| DB test suite runs against real database | ✅ `npm run test:db` (real `pg`, no fakes) |
+| RLS isolation tested against real DB | ✅ §3, bound non-superuser role |
+| Constraints enforced (FK/CHECK/ENUM/NOT NULL/UNIQUE) | ✅ §2 |
+| Finance flows on real persistence | ✅ §4 |
+| No in-memory DB in the DB suite | ✅ verified |
+| ≥1 full integration run recorded | ✅ this report + run URL |
+| Verification report updated with real evidence | ✅ this file |
 
-**Honest bottom line:** the system has the **mechanism** to transition from
-"tested logic" → "tested database reality," fully wired into CI. The transition
-**completes on the first CI run** (or local run per §0). It is not yet proven on
-this authoring machine because the Docker engine did not initialize here.
+**Definition of Done met:** the system has transitioned from
+*designed database correctness* → *CI-verified database truth*.
+CI run: https://github.com/himashigalappaththi-maker/QYRVIA_ERP/actions/runs/27957714724
 
 ---
 
