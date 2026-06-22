@@ -20,7 +20,7 @@ adapters/
   base/OTAAdapter.js               contract + assertImplements()
   bookingcom/BookingComAdapter.js  + bookingcom.mock.js   (working mock)
   agoda/AgodaAdapter.js  expedia/ExpediaAdapter.js  airbnb/AirbnbAdapter.js   (stubs)
-  qyrcn/QTCNAdapter.js             internal first-class channel
+  qyrcn/QTCNAdapter.js             QTCN (standard OTA, 15% commission)
 services/
   InventoryService.js  RateService.js  BookingService.js  ConflictResolver.js
 api/
@@ -57,20 +57,19 @@ there.
 > Event-name note: the kernel's `makeEvent` enforces a single-dot
 > `aggregate.verb` type, so `BookingCreated` → `channel.booking_created`, etc.
 
-## QTCN — QYRVIA Travel Commerce Network (design)
+## QTCN — standard OTA (per Phase 10 standardization)
 
-QTCN is QYRVIA's **own** distribution channel, implemented as a first-class
-`OTAAdapter` so the core treats it uniformly — but it is fundamentally
-different from an external OTA:
+> Superseded note: earlier drafts treated QTCN as a privileged "internal /
+> zero-commission / conflict-priority" channel. Per the final Phase 10 OTA
+> standardization rule, **QTCN is a standard OTA adapter with no privilege**.
+> See `QYRVIA_P10_OTA_STANDARDIZATION.md`.
 
-- **Zero commission** (`commissionPct = 0`): direct revenue, no OTA cut.
-- **Fastest sync path**: pushes are in-process — no external HTTP/XML, no vendor
-  rate limits, no network latency — so they resolve immediately and are
-  authoritative on return (real-time inventory).
-- **Bookings originate inside QYRVIA** (web/app/front desk), so `pullBookings`
-  reads an internal source rather than a remote API.
-- **Conflict priority**: when two channels claim the same slot, `ConflictResolver`
-  awards QTCN the win (`qtcn_priority`) — protecting direct revenue.
+QTCN implements the same adapter contract as every other channel and flows
+through the same sync engine + event bus. It has **no `internal` flag, no
+routing/scoring/decision logic, and no conflict priority** — `ConflictResolver`
+is channel-agnostic (no OTA wins on the basis of which channel it is). QTCN's
+only distinguishing attribute is its commercial model: **commission = 15%**
+(revenue = bookings + ads + commission tracking).
 
 ## API (mounted at `/api/channel`, RBAC via reserved `channel.*` perms)
 
@@ -94,7 +93,7 @@ In-memory unit job (`npm run test:unit`) runs:
 - `channel_adapter_contract.test.js` — adapter contract compliance (all 5 channels)
 - `channel_sync_engine.test.js` — idempotency, retry/backoff, partial-failure
   isolation, per-OTA rate limiting, delta sync
-- `channel_booking_conflict.test.js` — conflict resolution (QTCN priority,
+- `channel_booking_conflict.test.js` — conflict resolution (channel-agnostic,
   confirmed-beats-pending, dedupe)
 - `channel_event_replay.test.js` — events persist via eventBus + replay into
   state (idempotent fold)
@@ -120,7 +119,7 @@ The Phase 9.1 `db` job is unchanged: PostgreSQL service, migrations 0001–0044,
 - Channel Manager core exists; adapter registry + orchestration + conflict
   gateway working.
 - Booking.com mock adapter works end-to-end (pull → canonical → ingest → events).
-- QTCN defined as the internal, zero-commission distribution engine.
+- QTCN defined as a standard OTA adapter (15% commission, no privilege).
 - Agoda / Expedia / Airbnb are contract-complete stubs.
 - **Ready to scale to 50+ OTAs without architecture change**: a new OTA = one
   new adapter file implementing `OTAAdapter`, registered in the core. Nothing

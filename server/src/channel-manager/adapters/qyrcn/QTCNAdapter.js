@@ -1,58 +1,63 @@
 'use strict';
 
 /**
- * QTCNAdapter - QYRVIA Travel Commerce Network.
+ * QTCNAdapter (Channel Manager / Phase 10.0 contract).
  *
- * QTCN is QYRVIA's OWN distribution channel. It implements the same
- * OTAAdapter contract so the core treats it uniformly, but it is a
- * FIRST-CLASS INTERNAL channel, which means:
+ * QTCN is a STANDARD OTA adapter - it behaves exactly like BookingComAdapter
+ * and has NO privileged logic, NO `internal` flag, NO routing/scoring/decision
+ * making, and NO architectural priority. Its only distinguishing attribute is
+ * its commercial model: commission = 15%.
  *
- *   - Zero commission (commissionPct = 0) - direct revenue, no OTA cut.
- *   - Fastest sync path: pushes are in-process (no external HTTP/XML, no
- *     vendor rate limits, no network latency) so they resolve immediately.
- *   - Real-time inventory: because there is no remote system to reconcile,
- *     a push is authoritative the moment it returns.
- *
- * Bookings originate inside QYRVIA (direct web/app/front-desk), so
- * `pullBookings` reads an internal source rather than a remote API.
+ * It implements the same six-method Channel Manager adapter contract as every
+ * other adapter and flows through the same sync engine + event bus.
  */
 
 const { OTAAdapter } = require('../base/OTAAdapter');
 const { makeCanonicalBooking } = require('../../core/canonical/CanonicalBooking');
 const { CHANNELS, BOOKING_STATUS } = require('../../core/canonical/types');
+const logger = require('../../../config/logger');
+
+const QTCN_COMMISSION_PCT = 15;
 
 class QTCNAdapter extends OTAAdapter {
-  constructor({ internalSource = [] } = {}) {
+  constructor({ source = [] } = {}) {
     super(CHANNELS.QTCN);
-    this.internal = true;
-    this.commissionPct = 0;          // zero-commission by definition
-    this._internalSource = internalSource;
+    this.commissionPct = QTCN_COMMISSION_PCT;   // commercial model only; not a privilege
+    this._source = source;
   }
 
-  // In-process, authoritative, no network. Resolves immediately.
-  async pushRates(/* rate */) { /* applied in-process; nothing to call out to */ }
-  async pushInventory(/* inv */) { /* real-time, authoritative on return */ }
+  async pushRates(rate) {
+    logger.debug({ rate }, '[QTCN] pushRates');
+  }
+
+  async pushInventory(inv) {
+    logger.debug({ inv }, '[QTCN] pushInventory');
+  }
 
   async pullBookings() {
-    return this._internalSource.slice();
+    return this._source.slice();
   }
 
-  async confirmBooking(/* id */) { /* internal booking already authoritative */ }
-  async cancelBooking(/* id */) { /* internal cancel is immediate */ }
+  async confirmBooking(id) {
+    logger.debug({ id }, '[QTCN] confirmBooking');
+  }
+
+  async cancelBooking(id) {
+    logger.debug({ id }, '[QTCN] cancelBooking');
+  }
 
   mapToCanonical(raw) {
     return makeCanonicalBooking({
       bookingId: raw.id,
       channel: CHANNELS.QTCN,
-      status: raw.status && BOOKING_STATUS[raw.status] ? raw.status : BOOKING_STATUS.CONFIRMED,
+      status: raw.status && BOOKING_STATUS[raw.status] ? raw.status : BOOKING_STATUS.PENDING,
       guestName: raw.guestName,
-      propertyId: raw.propertyId || null,
-      roomTypeId: raw.roomTypeId || null,
-      arrival: raw.arrival || null,
-      departure: raw.departure || null,
+      arrival: raw.checkin || raw.arrival || null,
+      departure: raw.checkout || raw.departure || null,
       amount: raw.amount != null ? raw.amount : null,
       currency: raw.currency || null,
-      commissionPct: 0,
+      roomTypeId: raw.roomType || raw.roomTypeId || null,
+      commissionPct: QTCN_COMMISSION_PCT,
       externalRef: raw.id,
       raw
     });

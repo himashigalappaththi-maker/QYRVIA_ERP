@@ -56,9 +56,9 @@ test('mock booking flow is identical for Booking.com and QTCN (no privilege/bypa
   assert.equal(b2.bookingId, 'qytn:R1');
   // Identical behavior pattern: same result shape.
   assert.deepEqual(Object.keys(b1).sort(), Object.keys(b2).sort());
-  // Only difference is data (commission), not behavior.
+  // Identical behavior AND commission: QTCN is a standard OTA at 15%.
   assert.equal(b1.commissionPct, 15);
-  assert.equal(b2.commissionPct, 0);
+  assert.equal(b2.commissionPct, 15);
 
   const c1 = await bcom.cancelBooking('X9');
   const c2 = await qytn.cancelBooking('X9');

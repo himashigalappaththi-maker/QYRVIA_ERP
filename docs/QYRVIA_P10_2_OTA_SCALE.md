@@ -68,8 +68,9 @@ contract (presence + async-ness) and is enforced by the factory at load time.
 through the same registry/factory, and has **no privileged logic and no
 bypass**. The test `QTCN exposes exactly the same method surface as an external
 OTA` proves it adds no methods beyond the shared base; the booking-flow test
-proves Booking.com and QTCN return identical result shapes (the only difference
-is data: QTCN is zero-commission). QTCN is just another OTA in the registry.
+proves Booking.com and QTCN return identical result shapes. QTCN is just
+another OTA in the registry; its commission is 15% (commercial model only, not
+a privilege).
 
 ## Adding the 50th OTA (the whole point)
 

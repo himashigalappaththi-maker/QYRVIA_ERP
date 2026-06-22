@@ -12,13 +12,14 @@ const { CHANNELS } = require('../src/channel-manager/core/canonical/types');
 const slot = { propertyId: 'p1', roomTypeId: 'rt1', arrival: '2026-07-01', departure: '2026-07-03' };
 const mk = (id, channel, status) => makeCanonicalBooking(Object.assign({ bookingId: id, channel, status }, slot));
 
-test('QTCN wins a same-slot conflict against an OTA (protect direct revenue)', () => {
+test('no OTA has priority: QTCN does not win over an incumbent OTA on the same slot', () => {
   const svc = buildBookingService();
   svc.ingest(mk('BC-1', CHANNELS.BOOKING_COM, 'CONFIRMED'));
   const res = svc.ingest(mk('Q-1', CHANNELS.QTCN, 'CONFIRMED'));
   assert.ok(res.conflict, 'conflict detected');
-  assert.equal(res.conflict.winnerChannel, CHANNELS.QTCN);
-  assert.equal(res.conflict.reason, 'qtcn_priority');
+  // QTCN is just another OTA - the incumbent is retained, no channel favoritism.
+  assert.equal(res.conflict.winner, 'BC-1');
+  assert.equal(res.conflict.reason, 'incumbent_retained');
 });
 
 test('idempotent ingest: same booking + status is deduped', () => {

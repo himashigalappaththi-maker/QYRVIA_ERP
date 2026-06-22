@@ -38,13 +38,13 @@ test('Booking.com mock pulls + maps to canonical', async () => {
   assert.equal(canon.status, 'CONFIRMED');
 });
 
-test('QTCN is internal + zero-commission', () => {
+test('QTCN is a standard OTA (15% commission, no privilege)', () => {
   const q = new QTCNAdapter();
-  assert.equal(q.internal, true);
-  assert.equal(q.commissionPct, 0);
+  assert.ok(!q.internal, 'QTCN must have no privileged/internal flag');
+  assert.equal(q.commissionPct, 15);
   const c = q.mapToCanonical({ id: 'Q1', guestName: 'Direct', propertyId: 'p', roomTypeId: 'rt' });
   assert.equal(c.channel, CHANNELS.QTCN);
-  assert.equal(c.commissionPct, 0);
+  assert.equal(c.commissionPct, 15);
 });
 
 test('stub adapters expose the contract but throw on network ops', async () => {
