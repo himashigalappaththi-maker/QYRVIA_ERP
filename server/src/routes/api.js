@@ -1,0 +1,62 @@
+'use strict';
+
+const express = require('express');
+
+const requestContext = require('../middleware/requestContext');
+const tenantContext  = require('../middleware/tenantContext');
+const { authentication }     = require('../middleware/authentication');
+const { identityContext }    = require('../middleware/identityContext');
+const { businessDateMiddleware } = require('../middleware/businessDate');
+
+const healthRouter    = require('./health');
+const coreRouter      = require('./core');
+const connectorRouter = require('./connector');
+const authRouterMod   = require('./auth');
+
+// Phase 3 sub-routers
+const settingsRouterMod      = require('./settings');
+const filesRouterMod         = require('./files');
+const connectorsRouterMod    = require('./connectors');
+const webhooksRouterMod      = require('./webhooks');
+const jobsRouterMod          = require('./jobs');
+const notificationsRouterMod = require('./notifications');
+const pmsRouterMod           = require('./pms');
+const financeRouterMod       = require('./finance');
+
+function build(deps = {}) {
+  const router = express.Router();
+
+  // Public: health (no auth, no tenant)
+  router.use('/health',
+    (req, _res, next) => { req._skipTenant = true; next(); },
+    tenantContext,
+    requestContext,
+    healthRouter
+  );
+
+  // Public: auth
+  router.use('/auth', authRouterMod.build(deps));
+
+  // Protected: every /api/* below requires JWT + identityContext + businessDate
+  const protectedChain = [
+    authentication,
+    identityContext(deps.identityRepo || {}),
+    businessDateMiddleware(deps.identityRepo || {})
+  ];
+  router.use('/core',          ...protectedChain, coreRouter);
+  router.use('/connector',     ...protectedChain, connectorRouter);
+
+  // Phase 3 surfaces
+  router.use('/settings',      ...protectedChain, settingsRouterMod.build(deps));
+  router.use('/files',         ...protectedChain, filesRouterMod.build(deps));
+  router.use('/connectors',    ...protectedChain, connectorsRouterMod.build(deps));
+  router.use('/webhooks',      ...protectedChain, webhooksRouterMod.build(deps));
+  router.use('/jobs',          ...protectedChain, jobsRouterMod.build(deps));
+  router.use('/notifications', ...protectedChain, notificationsRouterMod.build(deps));
+  router.use('/pms',           ...protectedChain, pmsRouterMod.build(deps));
+  router.use('/finance',       ...protectedChain, financeRouterMod.build(deps));
+
+  return router;
+}
+
+module.exports = { build };
