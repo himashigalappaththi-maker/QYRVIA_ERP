@@ -21,6 +21,7 @@
 
 const fs   = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 let Pool;
 try { ({ Pool } = require('pg')); } catch (_) { Pool = null; }
@@ -96,7 +97,7 @@ async function freshSchema(pool) {
  * Deliberately granted only SELECT + INSERT so the append-only posture
  * (REVOKE UPDATE,DELETE) is observable as a privilege denial.
  */
-async function setupAppRole(pool, { role = 'qyrvia_app_rls', password = 'rls_test_pw' } = {}) {
+async function setupAppRole(pool, { role = 'qyrvia_test_role', password = 'rls_test_pw' } = {}) {
   await pool.query(`DO $$
     BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${role}') THEN
@@ -137,6 +138,22 @@ async function withTenant(pool, tenantId, fn) {
   }
 }
 
+/**
+ * A Pool whose every connection starts with `app.tenant_id` pinned to a tenant,
+ * via the libpq `options` startup parameter (`-c app.tenant_id=<uuid>`). This is
+ * how the production repos - which issue plain `pool.query(...)` and do NOT set
+ * the tenant context themselves - are run inside RLS scope in DB tests. The GUC
+ * is set at connection start, so it is guaranteed in place before any query (no
+ * race) and persists for the whole session. tenantId MUST be a UUID (it is
+ * interpolated into the startup string, so this guards against injection).
+ */
+function tenantBoundPool(connectionString, tenantId, overrides = {}) {
+  if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(String(tenantId))) {
+    throw new Error('tenantBoundPool: tenantId must be a UUID, got ' + JSON.stringify(tenantId));
+  }
+  return newPool(connectionString, { options: `-c app.tenant_id=${tenantId}`, ...overrides });
+}
+
 /** A db facade compatible with eventBus.init({ db }) that writes to real tables. */
 function realDbFacade(pool) {
   return {
@@ -160,15 +177,25 @@ function realDbFacade(pool) {
   };
 }
 
-/** Seed a tenant + property and return their ids (admin/superuser pool). */
+/**
+ * Seed a tenant + property and return their ids. Seeding runs INSIDE the
+ * tenant's own transaction context (set_config app.tenant_id), so it works
+ * under a NON-superuser role where FORCE ROW LEVEL SECURITY binds: every INSERT
+ * satisfies the policy WITH CHECK (tenant_id = app.tenant_id). Ids are
+ * client-generated so the context can be set before the rows exist.
+ */
 async function seedTenantProperty(pool, { code = 'T1', propCode = 'P1' } = {}) {
-  const t = await pool.query(
-    `INSERT INTO tenants (code, name) VALUES ($1,$2) RETURNING id`, [code, code + ' Co']);
-  const tenantId = t.rows[0].id;
-  const p = await pool.query(
-    `INSERT INTO properties (tenant_id, code, name, currency) VALUES ($1,$2,$3,'LKR') RETURNING id`,
-    [tenantId, propCode, propCode + ' Hotel']);
-  return { tenantId, propertyId: p.rows[0].id };
+  const tenantId = crypto.randomUUID();
+  const propertyId = crypto.randomUUID();
+  await withTenant(pool, tenantId, async (c) => {
+    await c.query(
+      `INSERT INTO tenants (id, code, name) VALUES ($1,$2,$3)`,
+      [tenantId, code, code + ' Co']);
+    await c.query(
+      `INSERT INTO properties (id, tenant_id, code, name, currency) VALUES ($1,$2,$3,$4,'LKR')`,
+      [propertyId, tenantId, propCode, propCode + ' Hotel']);
+  });
+  return { tenantId, propertyId };
 }
 
 /** True if the thrown pg error matches a SQLSTATE class we expect. */
@@ -178,5 +205,5 @@ function isPgError(err, codePrefix) {
 
 module.exports = {
   dbConfig, newPool, freshSchema, setupAppRole, roleUrl, withTenant,
-  realDbFacade, seedTenantProperty, listMigrationFiles, isPgError
+  tenantBoundPool, realDbFacade, seedTenantProperty, listMigrationFiles, isPgError
 };

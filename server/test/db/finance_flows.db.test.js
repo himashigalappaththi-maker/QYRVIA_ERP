@@ -9,8 +9,10 @@
  * audit logging, payment-allocation balance rule, imbalance rejection, and
  * idempotency — all verified by reading rows back out of the database.
  *
- * Runs as the DB owner (RLS bypassed), mirroring how the production app pool
- * connects today. RLS itself is proven separately in rls.db.test.js.
+ * Every tenant table carries FORCE ROW LEVEL SECURITY, so even the owning role
+ * is bound by RLS. Production repos expect the app to establish the tenant
+ * context; here a tenantBoundPool sets `app.tenant_id` on connect so the real
+ * code paths run inside tenant scope. RLS itself is proven in rls.db.test.js.
  */
 
 const { test, before, after } = require('node:test');
@@ -44,11 +46,18 @@ if (!URL) {
   }, o);
 
   before(async () => {
-    admin = H.newPool(URL);
-    await H.freshSchema(admin);
-    const seeded = await H.seedTenantProperty(admin, { code: 'FIN', propCode: 'FINP' });
-    ctx = seeded;
+    // Schema build + seeding happen on a throwaway pool; seedTenantProperty
+    // establishes its own per-insert RLS context.
+    const ddl = H.newPool(URL);
+    try {
+      await H.freshSchema(ddl);
+      ctx = await H.seedTenantProperty(ddl, { code: 'FIN', propCode: 'FINP' });
+    } finally {
+      await ddl.end();
+    }
 
+    // All app-level queries run as the seeded tenant under FORCE RLS.
+    admin = H.tenantBoundPool(URL, ctx.tenantId);
     repos = buildRepos(admin);
     eventBus.reset();
     eventBus.init({ db: H.realDbFacade(admin) });

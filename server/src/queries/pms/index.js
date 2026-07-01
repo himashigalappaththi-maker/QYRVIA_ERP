@@ -16,9 +16,10 @@ const availability = require('../../services/pms/availability');
 
 function _strReq(v, name) { if (!v || typeof v !== 'string') throw new Error(name + ' required'); return v.trim(); }
 
-function makeQueries({ pmsRepo, folioRepo }) {
+function makeQueries({ pmsRepo, folioRepo, housekeepingRepo, nightAuditRepo }) {
   if (!pmsRepo) throw new Error('makeQueries: pmsRepo required');
   const list = [];
+  const today = () => new Date().toISOString().slice(0, 10);
 
   list.push({
     name: 'pms.roomtype.list', resourceType: 'room_type', permission: 'pms.roomtype.read',
@@ -218,6 +219,100 @@ function makeQueries({ pmsRepo, folioRepo }) {
       return row ? { ok: true, data: row } : { ok: false, error: 'not_found' };
     }
   });
+
+  // ---- Front Desk lists (Phase 21: arrivals / departures / in-house) ----
+  list.push({
+    name: 'pms.frontdesk.arrivals', resourceType: 'reservation', permission: 'pms.reservation.read',
+    async handler(input, ctx) {
+      if (!ctx.propertyId) return { ok: false, error: 'property_required' };
+      const d = input.date || ctx.businessDate || today();
+      const rows = await pmsRepo.listReservations(ctx.tenantId, ctx.propertyId, { status: 'CONFIRMED' });
+      return { ok: true, data: rows.filter((r) => String(r.arrival_date).slice(0, 10) <= d) };
+    }
+  });
+  list.push({
+    name: 'pms.frontdesk.departures', resourceType: 'reservation', permission: 'pms.reservation.read',
+    async handler(input, ctx) {
+      if (!ctx.propertyId) return { ok: false, error: 'property_required' };
+      const d = input.date || ctx.businessDate || today();
+      const rows = await pmsRepo.listReservations(ctx.tenantId, ctx.propertyId, { status: 'CHECKED_IN' });
+      return { ok: true, data: rows.filter((r) => String(r.departure_date).slice(0, 10) <= d) };
+    }
+  });
+  list.push({
+    name: 'pms.frontdesk.inhouse', resourceType: 'reservation', permission: 'pms.reservation.read',
+    async handler(input, ctx) {
+      if (!ctx.propertyId) return { ok: false, error: 'property_required' };
+      const rows = await pmsRepo.listReservations(ctx.tenantId, ctx.propertyId, { status: 'CHECKED_IN' });
+      return { ok: true, data: rows };
+    }
+  });
+
+  // ---- Folio reads (Phase 21) ------------------------------------------
+  if (folioRepo) {
+    list.push({
+      name: 'pms.folio.list', resourceType: 'folio', permission: 'folio.read',
+      async handler(input, ctx) {
+        if (!ctx.propertyId) return { ok: false, error: 'property_required' };
+        return { ok: true, data: await folioRepo.listFolios(ctx.tenantId, ctx.propertyId,
+          { status: input.status, reservation_id: input.reservation_id }) };
+      }
+    });
+    list.push({
+      name: 'pms.folio.byId', resourceType: 'folio', permission: 'folio.read',
+      async handler(input, ctx) {
+        if (!input.id) return { ok: false, error: 'id_required' };
+        const folio = await folioRepo.findFolioById(ctx.tenantId, input.id);
+        if (!folio) return { ok: false, error: 'not_found' };
+        const lines = await folioRepo.listFolioLines(ctx.tenantId, folio.id);
+        return { ok: true, data: Object.assign({}, folio, { lines }) };
+      }
+    });
+  }
+
+  // ---- Housekeeping reads (Phase 21) -----------------------------------
+  if (housekeepingRepo) {
+    list.push({
+      name: 'pms.housekeeping.task.list', resourceType: 'housekeeping_task', permission: 'housekeeping.read',
+      async handler(input, ctx) {
+        if (!ctx.propertyId) return { ok: false, error: 'property_required' };
+        return { ok: true, data: await housekeepingRepo.listTasks(ctx.tenantId, ctx.propertyId,
+          { status: input.status, assigned_to: input.assigned_to }) };
+      }
+    });
+    list.push({
+      name: 'pms.housekeeping.room_status', resourceType: 'room', permission: 'housekeeping.read',
+      async handler(input, ctx) {
+        if (!ctx.propertyId) return { ok: false, error: 'property_required' };
+        return { ok: true, data: await pmsRepo.listRooms(ctx.tenantId, ctx.propertyId, { activeOnly: !!input.active_only }) };
+      }
+    });
+  }
+
+  // ---- Night Audit reads (Phase 21) ------------------------------------
+  if (nightAuditRepo) {
+    list.push({
+      name: 'pms.night_audit.status', resourceType: 'night_audit', permission: 'night_audit.read',
+      async handler(input, ctx) {
+        if (!ctx.propertyId) return { ok: false, error: 'property_required' };
+        const latest = await nightAuditRepo.findLatestRun(ctx.tenantId, ctx.propertyId);
+        const prop = await pmsRepo.findPropertyById(ctx.tenantId, ctx.propertyId);
+        return { ok: true, data: {
+          latest_run: latest || null,
+          state: (latest && latest.status) || 'NONE',
+          business_date: prop ? (prop.current_business_date || null) : null,
+          business_date_locked: prop ? !!prop.business_date_locked : false
+        } };
+      }
+    });
+    list.push({
+      name: 'pms.night_audit.history', resourceType: 'night_audit', permission: 'night_audit.read',
+      async handler(input, ctx) {
+        if (!ctx.propertyId) return { ok: false, error: 'property_required' };
+        return { ok: true, data: await nightAuditRepo.listRuns(ctx.tenantId, ctx.propertyId, input.limit) };
+      }
+    });
+  }
 
   // ---- meal plans (Phase 6 / C4) ---------------------------------------
   list.push({
