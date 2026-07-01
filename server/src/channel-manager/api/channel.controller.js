@@ -7,11 +7,13 @@
  * controller never publishes events directly.
  */
 
+const { errorField } = require('../../middleware/errorEnvelope');
+
 function buildController({ channelManager }) {
   function ctxOf(req) { return req.ctx || {}; }
 
   function fail(res, req, code, status = 400) {
-    return res.status(status).json({ ok: false, error: code, requestId: ctxOf(req).requestId });
+    return res.status(status).json({ ok: false, error: errorField(code), requestId: ctxOf(req).requestId });
   }
 
   return {
@@ -62,7 +64,8 @@ function buildController({ channelManager }) {
 
     async status(req, res, next) {
       try {
-        res.json({ ok: true, result: channelManager.status(), requestId: ctxOf(req).requestId });
+        // READ envelope (Phase 23 R1): the single GET emits { ok, data }; sync writes keep { ok, result }.
+        res.json({ ok: true, data: channelManager.status(), requestId: ctxOf(req).requestId });
       } catch (e) { next(e); }
     }
   };
