@@ -45,6 +45,8 @@ function build({ commandBus, queryBus }) {
   router.post( '/ledger/validate',      requirePermission('ledger.read'),   call('finance.ledger.validate'));
   router.post( '/ledger/revert',        requirePermission('ledger.revert'), call('finance.ledger.revert'));
   router.get(  '/ledger/by-reference',  requirePermission('ledger.read'),   query('finance.ledger.by_reference'));
+  // Phase 21: convenience alias -> GET /ledger?reference_type=&reference_id=
+  router.get(  '/ledger',               requirePermission('ledger.read'),   query('finance.ledger.by_reference'));
 
   // ---- Reports (Phase 8) -----------------------------------------------
   router.get(  '/reports/cost-center',  requirePermission('ledger.read'),   query('finance.cost_center.report'));

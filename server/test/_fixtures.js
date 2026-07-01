@@ -54,6 +54,19 @@ function _makeFakeReposCore(overrides = {}) {
       return null;
     },
     async findUserById(id) { return users.get(id) || null; },
+    // Phase 21 read-only IAM listings
+    async listUsers(tenantId) {
+      return Array.from(users.values())
+        .filter((u) => u.tenant_id === tenantId && !u.soft_deleted_at)
+        .map((u) => ({ id: u.id, tenant_id: u.tenant_id, username: u.username, email: u.email || null,
+                       full_name: u.full_name || null, primary_property_id: u.primary_property_id || null,
+                       status: u.status || 'ACTIVE', last_login_at: u.last_login_at || null }));
+    },
+    async listRoles() {
+      const seen = new Map();
+      for (const list of userRoles.values()) for (const r of list) if (!seen.has(r.code)) seen.set(r.code, { id: r.id, code: r.code, scope: r.scope || 'TENANT' });
+      return Array.from(seen.values()).sort((a, b) => a.code.localeCompare(b.code));
+    },
     async findRolesForUser(uid) { return userRoles.get(uid) || []; },
     async findPermissionsForUser(uid) { return userPerms.get(uid) || []; },
     async updateUserOnSuccessfulLogin() {},
@@ -669,6 +682,25 @@ function _makePmsMemoryRepo() {
         if (room) { room.status = 'VACANT_DIRTY'; room.updated_at = new Date().toISOString(); }
       }
       return r;
+    },
+
+    // Phase 21
+    async updateReservation(t, id, fields = {}) {
+      const r = reservations.find(x => x.tenant_id===t && x.id===id);
+      if (!r) return null;
+      const ALLOWED = ['reservation_type','arrival_date','departure_date','adults','children','room_type_id','rate_plan_id','rooms_count','notes'];
+      for (const k of ALLOWED) if (Object.prototype.hasOwnProperty.call(fields, k) && fields[k] !== undefined) r[k] = fields[k];
+      if (r.arrival_date && r.departure_date) r.nights = Math.round((Date.parse(r.departure_date) - Date.parse(r.arrival_date)) / 86400000);
+      r.updated_at = new Date().toISOString();
+      return r;
+    },
+    async reassignReservationRoom(t, id, newRoomId) {
+      const r = reservations.find(x => x.tenant_id===t && x.id===id);
+      if (!r) return null;
+      r.assigned_room_id = newRoomId; r.updated_at = new Date().toISOString();
+      const room = rooms.find(x => x.tenant_id===t && x.id===newRoomId);
+      if (room) { room.status = 'OCCUPIED'; room.updated_at = new Date().toISOString(); }
+      return r;
     }
   };
 }
@@ -695,6 +727,11 @@ function _makeFolioMemoryRepo() {
     },
     async findFolioById(t, id) { return folios.find(x => x.tenant_id===t && x.id===id) || null; },
     async listFoliosForReservation(t, resId) { return folios.filter(x => x.tenant_id===t && x.reservation_id===resId); },
+    async listFolios(t, p, opts = {}) {
+      return folios.filter(x => x.tenant_id===t && x.property_id===p
+        && (!opts.status || x.status === opts.status)
+        && (!opts.reservation_id || x.reservation_id === opts.reservation_id));
+    },
     async insertFolioLine(rec) {
       const r = Object.assign({ id: _id('fl'), posted_at: new Date().toISOString() }, rec);
       lines.push(r);
@@ -966,6 +1003,9 @@ function _makeNightAuditMemoryRepo(pmsRepoRef) {
     async findLatestRun(t, p) {
       const xs = runs.filter(x => x.tenant_id===t && x.property_id===p);
       return xs[xs.length - 1] || null;
+    },
+    async listRuns(t, p, limit = 50) {
+      return runs.filter(x => x.tenant_id===t && x.property_id===p).slice(-Math.min(Number(limit) || 50, 200)).reverse();
     },
     async setPropertyBusinessDateLocked(t, p, locked) { this._propertyLocks.set(p, !!locked); },
     async advancePropertyBusinessDate(t, p, newDate) {

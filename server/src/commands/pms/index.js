@@ -457,6 +457,81 @@ function makeCommands({ pmsRepo }) {
   list.push(transitionCmd('pms.reservation.cancel',  'reservation.cancelled', 'CANCELLED', { requireFrom: ['INQUIRY','OPTION','CONFIRMED'] }));
   list.push(transitionCmd('pms.reservation.noShow',  'reservation.no_show',   'NO_SHOW',   { requireFrom: ['CONFIRMED'] }));
 
+  // -- pms.reservation.update (Phase 21: edit a pre-stay booking) ----------
+  list.push({
+    name: 'pms.reservation.update',
+    aggregateType: 'reservation',
+    permission: 'pms.reservation.write',
+    async handler(input, ctx) {
+      _need('tenantId', ctx);
+      if (!input.reservation_id) return { ok: false, error: 'reservation_id_required' };
+      const before = await pmsRepo.findReservationById(ctx.tenantId, input.reservation_id);
+      if (!before) return { ok: false, error: 'reservation_not_found' };
+      // Only mutable before check-in; prevents editing an in-house/closed stay.
+      if (!['INQUIRY', 'OPTION', 'CONFIRMED'].includes(before.status)) {
+        return { ok: false, error: 'invalid_state', detail: 'cannot edit a ' + before.status + ' reservation' };
+      }
+      try {
+        const fields = {};
+        if (input.reservation_type !== undefined) fields.reservation_type = input.reservation_type;
+        if (input.notes !== undefined) fields.notes = input.notes;
+        if (input.adults !== undefined) fields.adults = _intMin(input.adults, 'adults', 1);
+        if (input.children !== undefined) fields.children = _intMin(input.children, 'children', 0);
+        if (input.rooms_count !== undefined) fields.rooms_count = _intMin(input.rooms_count, 'rooms_count', 1);
+        if (input.rate_plan_id !== undefined) fields.rate_plan_id = input.rate_plan_id || null;
+        if (input.arrival_date !== undefined) fields.arrival_date = _strReq(input.arrival_date, 'arrival_date', 10);
+        if (input.departure_date !== undefined) fields.departure_date = _strReq(input.departure_date, 'departure_date', 10);
+        const arrival = fields.arrival_date || before.arrival_date;
+        const departure = fields.departure_date || before.departure_date;
+        if (String(departure) <= String(arrival)) return { ok: false, error: 'invalid_date_range' };
+        if (input.room_type_id !== undefined && input.room_type_id) {
+          const rt = await pmsRepo.findRoomTypeById(ctx.tenantId, input.room_type_id);
+          if (!rt || rt.property_id !== before.property_id) return { ok: false, error: 'room_type_not_found' };
+          fields.room_type_id = input.room_type_id;
+        }
+        const updated = await pmsRepo.updateReservation(ctx.tenantId, input.reservation_id, fields);
+        return { ok: true, result: { id: updated.id, status: updated.status }, events: [
+          makeEvent({ type: 'reservation.updated', aggregateType: 'reservation', aggregateId: updated.id,
+            payload: { reservation_number: updated.reservation_number, changed: Object.keys(fields),
+                       arrival_date: updated.arrival_date, departure_date: updated.departure_date,
+                       property_id: before.property_id }, ctx })
+        ]};
+      } catch (e) { return { ok: false, error: 'validation_failed', detail: e.message }; }
+    }
+  });
+
+  // -- pms.reservation.room_move (Phase 21: move an in-house guest) --------
+  list.push({
+    name: 'pms.reservation.room_move',
+    aggregateType: 'reservation',
+    permission: 'pms.reservation.write',
+    async handler(input, ctx) {
+      _need('tenantId', ctx);
+      if (!input.reservation_id) return { ok: false, error: 'reservation_id_required' };
+      if (!input.new_room_id) return { ok: false, error: 'new_room_id_required' };
+      const before = await pmsRepo.findReservationById(ctx.tenantId, input.reservation_id);
+      if (!before) return { ok: false, error: 'reservation_not_found' };
+      if (before.status !== 'CHECKED_IN') return { ok: false, error: 'invalid_state', detail: 'room move requires CHECKED_IN' };
+      const fromRoomId = before.assigned_room_id || null;
+      if (input.new_room_id === fromRoomId) return { ok: false, error: 'same_room' };
+      const room = await pmsRepo.findRoomById(ctx.tenantId, input.new_room_id);
+      if (!room || room.property_id !== before.property_id) return { ok: false, error: 'room_not_found' };
+      if (String(room.status).toUpperCase() === 'OCCUPIED') return { ok: false, error: 'room_occupied' };
+
+      // Free the previous room for housekeeping, then occupy + reassign the new one.
+      if (fromRoomId) await pmsRepo.updateRoomStatus(ctx.tenantId, fromRoomId, 'VACANT_DIRTY');
+      const updated = await pmsRepo.reassignReservationRoom(ctx.tenantId, input.reservation_id, input.new_room_id);
+
+      return { ok: true, result: { id: updated.id, assigned_room_id: updated.assigned_room_id, from_room_id: fromRoomId }, events: [
+        makeEvent({ type: 'reservation.room_moved', aggregateType: 'reservation', aggregateId: updated.id,
+          payload: { reservation_number: updated.reservation_number, from_room_id: fromRoomId,
+                     to_room_id: input.new_room_id, property_id: before.property_id }, ctx }),
+        makeEvent({ type: 'room.status_changed', aggregateType: 'room', aggregateId: input.new_room_id,
+          payload: { to: 'OCCUPIED', reservation_id: updated.id, reason: 'room_move' }, ctx })
+      ]};
+    }
+  });
+
   return list;
 }
 

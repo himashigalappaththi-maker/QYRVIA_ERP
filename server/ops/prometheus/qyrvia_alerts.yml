@@ -1,0 +1,89 @@
+# QYRVIA ERP - Prometheus alerting rules (Phase 34).
+#
+# Scrape target: GET /api/platform/metrics (text/plain; version=0.0.4),
+# guarded by the `bi.dashboard.read` permission. All series are low-cardinality
+# and id-free (see src/observability/labelGuard.js). Counters are cumulative, so
+# rate()/increase() apply; gauges (qyrvia_http_active_requests, qyrvia_db_pool_*,
+# qyrvia_job_queue_depth) are point-in-time.
+#
+# Thresholds are conservative starting points - tune per environment.
+groups:
+  - name: qyrvia-observability
+    rules:
+      # ---- Slow queries -------------------------------------------------
+      - alert: QyrviaSlowQueryRateHigh
+        expr: sum(rate(qyrvia_db_slow_queries_total[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+          service: qyrvia-server
+        annotations:
+          summary: "Elevated slow-query rate"
+          description: "DB slow queries (>100ms) exceeding 1/s over 5m for 10m. Inspect qyrvia_db_slow_queries_total by bucket."
+
+      - alert: QyrviaSlowQueryCriticalPresent
+        expr: sum(rate(qyrvia_db_slow_queries_total{bucket="critical_gt_1s"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: qyrvia-server
+        annotations:
+          summary: "Queries exceeding 1s detected"
+          description: "One or more queries are taking >1s (critical bucket) sustained over 5m."
+
+      # ---- RLS context integrity ---------------------------------------
+      - alert: QyrviaRlsMissingContextSpike
+        expr: sum(rate(qyrvia_rls_events_total{event="context_failure"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+          service: qyrvia-server
+        annotations:
+          summary: "RLS missing-context spike"
+          description: "Tenant/property-scoped operations are reaching the DB without context (fail-closed). Possible wiring regression or probing."
+
+      - alert: QyrviaRlsDeniedSpike
+        expr: sum(rate(qyrvia_rls_events_total{event="denied"}[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          service: qyrvia-server
+        annotations:
+          summary: "RLS denial spike"
+          description: "Property-access denials are elevated over 5m. Could indicate misconfiguration or an access-probing attempt."
+
+      # ---- HTTP error ratio --------------------------------------------
+      - alert: QyrviaHttp5xxRatioHigh
+        expr: |
+          sum(rate(qyrvia_http_requests_total{status=~"5.."}[5m]))
+            /
+          clamp_min(sum(rate(qyrvia_http_requests_total[5m])), 1)
+            > 0.05
+        for: 10m
+        labels:
+          severity: critical
+          service: qyrvia-server
+        annotations:
+          summary: "HTTP 5xx ratio above 5%"
+          description: "Server-error ratio has exceeded 5% of requests over 5m for 10m."
+
+      # ---- Saturation ---------------------------------------------------
+      - alert: QyrviaActiveRequestSaturation
+        expr: qyrvia_http_active_requests > 100
+        for: 5m
+        labels:
+          severity: warning
+          service: qyrvia-server
+        annotations:
+          summary: "In-flight HTTP requests saturated"
+          description: "qyrvia_http_active_requests has stayed above 100 for 5m - the server may be backing up."
+
+      - alert: QyrviaDbPoolExhaustion
+        expr: qyrvia_db_pool_waiting > 0 and qyrvia_db_pool_idle == 0
+        for: 5m
+        labels:
+          severity: warning
+          service: qyrvia-server
+        annotations:
+          summary: "DB connection pool exhausted"
+          description: "Clients are waiting for a DB connection with zero idle connections for 5m. Consider raising pool size or reducing query latency."

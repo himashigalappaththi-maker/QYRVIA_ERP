@@ -22,9 +22,22 @@ jobs:
       - name: Unit tests (in-memory fakes)
         run: npm run test:unit
 
-  # Mode 2 (Phase 9.1, NEW): real PostgreSQL integration tests.
+  # Mode 2 (real PostgreSQL): RLS-AWARE integration tests.
+  #
+  # Tenant isolation is a first-class, enforced constraint here:
+  #   - tests connect as a NON-superuser role (qyrvia_test); a superuser bypasses
+  #     RLS (FORCE included), so the suite NEVER runs as the postgres superuser;
+  #   - the postgres superuser is used ONCE, only to provision that restricted
+  #     role (scripts/ci-provision-db.js) - never to test RLS;
+  #   - an RLS preflight gate (scripts/rls-preflight.js) STOPS the job before the
+  #     suite if the connection is superuser/BYPASSRLS, FORCE RLS is missing,
+  #     PUBLIC leaks UPDATE/DELETE on append-only tables, or a cross-tenant leak
+  #     is observed;
+  #   - the in-suite guard (test/db/rls_guard.db.test.js) fails the suite on any
+  #     of the same regressions.
+  # No Docker fallback DB, no temporary cluster, no SET ROLE / superuser hacks.
   db:
-    name: Integration (real PostgreSQL)
+    name: Integration (real PostgreSQL, RLS-aware)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -40,8 +53,10 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     env:
-      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/qyrvia_test
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/qyrvia_test
+      # The suite connects ONLY as the non-superuser role. The superuser URL is
+      # scoped to the provisioning step alone (below).
+      TEST_DATABASE_URL: postgresql://qyrvia_test:qyrvia_test_ci_pw@localhost:5432/qyrvia_test
+      DATABASE_URL: postgresql://qyrvia_test:qyrvia_test_ci_pw@localhost:5432/qyrvia_test
       JWT_SECRET: ci-jwt-secret-at-least-32-characters-long-padding
     steps:
       - uses: actions/checkout@v4
@@ -49,9 +64,17 @@ jobs:
         with:
           node-version: '22'
       - run: npm ci
-      - name: Verify migration chain applies cleanly (0001..NNNN)
+      - name: Provision non-superuser RLS role (superuser used ONLY here)
+        run: npm run db:provision
+        env:
+          SUPERUSER_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/qyrvia_test
+          APP_ROLE: qyrvia_test
+          APP_ROLE_PASSWORD: qyrvia_test_ci_pw
+      - name: Verify migration chain applies cleanly (as qyrvia_test, on fresh schema)
         run: node src/db/migrate.js up
-      - name: DB-backed integration tests (RLS, constraints, finance flows)
+      - name: RLS preflight gate (STOP on superuser / FORCE-RLS / leak)
+        run: npm run db:preflight
+      - name: DB-backed integration tests (RLS guard, isolation, constraints, finance)
         run: npm run test:db
 
   # Mode 3 (Phase 19, NEW): Stitch frontend logic tests (no DB, no build/deps).

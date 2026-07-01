@@ -82,6 +82,12 @@ function build({ commandBus, queryBus }) {
   router.post(  '/reservations/:id/cancel',                     requirePermission('pms.reservation.write'), call('pms.reservation.cancel',  (req) => ({ reservation_id: req.params.id, reason: (req.body||{}).reason })));
   router.post(  '/reservations/:id/no-show',                    requirePermission('pms.reservation.write'), call('pms.reservation.noShow',  (req) => ({ reservation_id: req.params.id })));
 
+  // --- Reservation edit + room move (Phase 21) ----------------------------
+  router.put(   '/reservations/:id',                            requirePermission('pms.reservation.write'), call('pms.reservation.update',
+    (req) => Object.assign({ reservation_id: req.params.id }, req.body || {})));
+  router.post(  '/reservations/:id/room-move',                  requirePermission('pms.reservation.write'), call('pms.reservation.room_move',
+    (req) => ({ reservation_id: req.params.id, new_room_id: (req.body||{}).new_room_id })));
+
   // --- Rate Plans ----------------------------------------------------------
   router.get(   '/rate-plans',           requirePermission('pms.rateplan.read'),  query('pms.rateplan.list'));
   router.get(   '/rate-plans/:id',       requirePermission('pms.rateplan.read'),  query('pms.rateplan.byId', (req) => ({ id: req.params.id })));
@@ -97,9 +103,35 @@ function build({ commandBus, queryBus }) {
                                                   assigned_room_id: (req.body||{}).assigned_room_id })));
   router.post(  '/reservations/:id/checkout', requirePermission('pms.reservation.write'),
     call('pms.reservation.checkout', (req) => ({ reservation_id: req.params.id,
-                                                  force_close: !!(req.body||{}).force_close })));
+                                                  force_close: !!(req.body||{}).force_close,
+                                                  mode: (req.body||{}).mode })));
+
+  // Hyphenated aliases + checkout variants (Phase 21). All map onto the existing
+  // checkin/checkout commands; variants only tag the audit event `mode`.
+  router.post(  '/reservations/:id/check-in',  requirePermission('pms.reservation.write'),
+    call('pms.reservation.checkin',  (req) => ({ reservation_id: req.params.id,
+                                                  assigned_room_id: (req.body||{}).assigned_room_id })));
+  router.post(  '/reservations/:id/check-out', requirePermission('pms.reservation.write'),
+    call('pms.reservation.checkout', (req) => ({ reservation_id: req.params.id,
+                                                  force_close: !!(req.body||{}).force_close,
+                                                  mode: (req.body||{}).mode })));
+  router.post(  '/reservations/:id/force-checkout', requirePermission('pms.reservation.write'),
+    call('pms.reservation.checkout', (req) => ({ reservation_id: req.params.id, force_close: true, mode: 'FORCE' })));
+  router.post(  '/reservations/:id/early-checkout', requirePermission('pms.reservation.write'),
+    call('pms.reservation.checkout', (req) => ({ reservation_id: req.params.id, force_close: !!(req.body||{}).force_close, mode: 'EARLY' })));
+  router.post(  '/reservations/:id/late-checkout',  requirePermission('pms.reservation.write'),
+    call('pms.reservation.checkout', (req) => ({ reservation_id: req.params.id, force_close: !!(req.body||{}).force_close, mode: 'LATE' })));
+
+  // --- Front Desk lists (Phase 21) ----------------------------------------
+  router.get(   '/frontdesk/arrivals',   requirePermission('pms.reservation.read'), query('pms.frontdesk.arrivals'));
+  router.get(   '/frontdesk/departures', requirePermission('pms.reservation.read'), query('pms.frontdesk.departures'));
+  router.get(   '/frontdesk/inhouse',    requirePermission('pms.reservation.read'), query('pms.frontdesk.inhouse'));
 
   // --- Folio (Phase 5.5) --------------------------------------------------
+  router.get(   '/folios',                requirePermission('folio.read'),
+    query('pms.folio.list'));
+  router.get(   '/folios/:id',            requirePermission('folio.read'),
+    query('pms.folio.byId', (req) => ({ id: req.params.id })));
   router.post(  '/folios/:id/charges',    requirePermission('folio.post'),
     call('pms.folio.charge.post', (req) => Object.assign({ folio_id: req.params.id }, req.body || {})));
   router.post(  '/folios/:id/close',      requirePermission('folio.close'),
@@ -144,6 +176,10 @@ function build({ commandBus, queryBus }) {
       (req) => ({ folio_id: req.params.id, payment_line_id: req.query.payment_line_id })));
 
   // --- Housekeeping (Phase 5.5) -------------------------------------------
+  router.get(   '/housekeeping/tasks',                 requirePermission('housekeeping.read'),
+    query('pms.housekeeping.task.list'));
+  router.get(   '/housekeeping/room-status',           requirePermission('housekeeping.read'),
+    query('pms.housekeeping.room_status'));
   router.post(  '/housekeeping/tasks',                 requirePermission('housekeeping.assign'),
     call('pms.housekeeping.task.create'));
   router.post(  '/housekeeping/tasks/:id/assign',      requirePermission('housekeeping.assign'),
@@ -152,6 +188,10 @@ function build({ commandBus, queryBus }) {
     call('pms.housekeeping.task.complete', (req) => Object.assign({ task_id: req.params.id }, req.body || {})));
 
   // --- Night Audit (Phase 5.5) --------------------------------------------
+  router.get(   '/night-audit/status',   requirePermission('night_audit.read'),
+    query('pms.night_audit.status'));
+  router.get(   '/night-audit/history',  requirePermission('night_audit.read'),
+    query('pms.night_audit.history'));
   router.post(  '/night-audit/run',      requirePermission('night_audit.run'),
     call('pms.night_audit.run'));
 

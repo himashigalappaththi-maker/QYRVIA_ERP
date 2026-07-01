@@ -7,6 +7,7 @@ const requestId = require('./middleware/requestId');
 const apiBuild  = require('./routes/api');
 const { notFound, errorHandler } = require('./middleware/error');
 const { securityHeaders, sanitizeJsonBody } = require('./middleware/security');
+const { httpMetricsMiddleware } = require('./observability/httpMetrics');
 
 const eventBus = require('./core/eventBus');
 
@@ -49,6 +50,10 @@ function createApp(deps = {}) {
   // 1. security headers + requestId + request logger
   app.use(securityHeaders());
   app.use(requestId);
+  // Phase 33: HTTP request metrics (count + latency + in-flight gauge). Mounted
+  // before the logger so the active-request gauge spans the whole request. Route
+  // labels are normalised to be low-cardinality (no ids, no raw paths).
+  app.use(httpMetricsMiddleware());
   app.use(requestLogger);
 
   // 2. JSON body parser - 256 KB cap; followed by sanitiser pass.

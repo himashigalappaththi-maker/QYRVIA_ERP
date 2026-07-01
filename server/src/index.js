@@ -18,6 +18,19 @@ const { makeEvent } = require('./core/event');
 // crash.
 const eventBusRef = require('./core/eventBus');
 
+// Phase 32 - DB observability. Wrap the shared pool once so every query routed
+// through the repos and the audit/event-store writers emits low-cardinality
+// metrics + slow-query detection (SQL hash only, never SQL text/params). The
+// wrapper is a transparent drop-in; DB_OBSERVABILITY='false' bypasses it.
+const { getObservability } = require('./observability');
+const { instrumentPool } = require('./observability/instrumentedPool');
+const observability = getObservability();
+const obsPool = env.DB_OBSERVABILITY === 'false'
+  ? db.pool
+  : instrumentPool(db.pool, observability);
+// Phase 34: expose live DB pool gauges (total/idle/waiting) via the registry.
+try { observability.metrics.bindPool(db.pool); } catch (_) { /* telemetry only */ }
+
 /**
  * DB facade for the app. Exposes only what the kernel needs:
  *   - ping()                       : used by /api/health/ready
@@ -26,7 +39,7 @@ const eventBusRef = require('./core/eventBus');
 const dbFacade = {
   ping: db.ping,
   async insertAuditEvent(ev) {
-    await db.pool.query(
+    await obsPool.query(
       `INSERT INTO audit_events
          (event_id, event_type, aggregate_type, aggregate_id,
           tenant_id, property_id, actor_id, request_id, payload, occurred_at)
@@ -41,7 +54,7 @@ const dbFacade = {
   async insertDomainEvent(ev) {
     // Phase 3 - canonical event store for domain events. version=1 always
     // (per-aggregate versioning lands when PMS phases introduce aggregates).
-    await db.pool.query(
+    await obsPool.query(
       `INSERT INTO event_store
          (id, tenant_id, property_id, aggregate_type, aggregate_id,
           event_type, event_version, payload_json, actor_id, request_id, occurred_at)
@@ -60,7 +73,7 @@ const {
   aggregateRepo, pmsRepo,
   folioRepo, housekeepingRepo, nightAuditRepo,
   costCenterRepo, revenueMapRepo, ledgerRepo
-} = buildRepos(db.pool);
+} = buildRepos(obsPool);
 
 // Phase 8 - Ledger service. The single authority for balanced ledger
 // postings; injected into every revenue-bearing command below.
@@ -97,8 +110,13 @@ const { makeCommands: makePmsCommands } = require('./commands/pms');
 const { makeQueries:  makePmsQueries  } = require('./queries/pms');
 try {
   for (const c of makePmsCommands({ pmsRepo })) commandBus.register(c);
-  for (const q of makePmsQueries ({ pmsRepo, folioRepo })) queryBus.register(q);
+  for (const q of makePmsQueries ({ pmsRepo, folioRepo, housekeepingRepo, nightAuditRepo })) queryBus.register(q);
 } catch (e) { logger.warn({ err: e }, '[boot] PMS register skipped (already registered?)'); }
+
+// Phase 21 - IAM read-only queries (users / roles) for the admin UI.
+const { makeIamQueries } = require('./queries/iam');
+try { for (const q of makeIamQueries({ identityRepo })) queryBus.register(q); }
+catch (e) { logger.warn({ err: e }, '[boot] IAM query register skipped'); }
 
 // Phase 5.5 - Night Audit + Check-In/Folio/Housekeeping commands
 const { buildNightAuditService }      = require('./services/pms/nightAudit');
@@ -192,6 +210,149 @@ try {
   platform = buildPlatformLayer({});
   buildPlatformSubscriber({ eventBus: eventBusRef, platform });
 } catch (e) { logger.warn({ err: e }, '[boot] platform init skipped'); }
+
+// Phase 24 S4/B3 - Channel persistence foundation. Default CHANNEL_PERSISTENCE='memory',
+// so this is behavior-identical to before. 'dual' additionally mirrors queue writes to the
+// DB (memory authoritative); 'db' is reserved for the async worker stage (B6+).
+const { buildChannelPersistence } = require('./channel-manager/persistence');
+let channelPersistence = null;
+try {
+  channelPersistence = buildChannelPersistence({ db: db.pool });
+  logger.info({ mode: channelPersistence.mode }, '[boot] channel persistence');
+} catch (e) { logger.warn({ err: e }, '[boot] channel persistence init skipped'); }
+
+// Phase 34: queue-depth gauge from the existing channel sync queue (memory mode
+// exposes a synchronous size()). Read live at snapshot time; never throws.
+try {
+  observability.metrics.bindQueueDepthProvider(() => {
+    const out = {};
+    const q = channelPersistence && channelPersistence.queue;
+    if (q && typeof q.size === 'function') {
+      try { out.channel_sync = q.size(); } catch (_) { /* ignore */ }
+    }
+    return out;
+  });
+} catch (_) { /* telemetry only */ }
+
+// Phase 24 B8-B1 - secure OTA credential foundation (DI only). The SecretProvider
+// exists only when CHANNEL_CREDENTIAL_KEY is set; default boot => dormant, no provider.
+const { buildChannelCredentials } = require('./channel-manager/credentials');
+let channelCredentials = null;
+try {
+  channelCredentials = buildChannelCredentials({ db: db.pool });
+  logger.info({ mode: channelCredentials.mode, hasProvider: channelCredentials.hasProvider }, '[boot] channel credentials');
+} catch (e) { logger.warn({ err: e }, '[boot] channel credentials init skipped'); }
+
+// Phase 24 B8-B2 - channel mapping management (versioning + history + audit). DI only;
+// reuses the persistence mapping store. Internal data; no OTA calls. Dormant until used.
+const { buildChannelMappingManagement } = require('./channel-manager/mapping');
+let channelMapping = null;
+try {
+  channelMapping = buildChannelMappingManagement({ db: db.pool, mappingStore: channelPersistence && channelPersistence.mapping });
+  logger.info({ mode: channelMapping.mode }, '[boot] channel mapping management');
+} catch (e) { logger.warn({ err: e }, '[boot] channel mapping init skipped'); }
+
+// Phase 24 B8-B3 - outbound sync (real QTCN via in-process transport; third-party OTAs
+// mock + HTTP transport disabled). DI only; delta-aware. No external network, no webhooks.
+const { buildChannelOutboundSync } = require('./channel-manager/sync');
+let channelOutboundSync = null;
+try {
+  // B8-B5: third-party OTAs use real HttpTransport only when activated (CHANNEL_OTA_ACTIVATIONS)
+  // AND CHANNEL_HTTP_ENABLED=true; default off => no external network. Auth via SecretProvider.
+  channelOutboundSync = buildChannelOutboundSync({ db: db.pool, secretProvider: channelCredentials && channelCredentials.provider });
+  logger.info({ mode: channelOutboundSync.mode, realChannels: Array.from(channelOutboundSync.realChannels), http: channelOutboundSync.httpChannels }, '[boot] channel outbound sync');
+} catch (e) { logger.warn({ err: e }, '[boot] channel outbound sync init skipped'); }
+
+// Phase 24 B8-B4 - inbound webhook pipeline (idempotent booking_store -> PMS commandBus).
+// DI only; the route is mounted gated behind CHANNEL_WEBHOOK_ENABLED (default off).
+const { buildChannelInbound } = require('./channel-manager/inbound');
+let channelInbound = null;
+try {
+  channelInbound = buildChannelInbound({
+    registry:      channelOutboundSync && channelOutboundSync.registry,
+    bookingStore:  channelPersistence && channelPersistence.booking,
+    commandBus,
+    resolveSecret: channelOutboundSync && channelOutboundSync.resolveSecret, // B8-B5: per-channel signing secret
+    requireSignature: false
+  });
+  logger.info('[boot] channel inbound pipeline ready');
+} catch (e) { logger.warn({ err: e }, '[boot] channel inbound init skipped'); }
+
+// Phase 27.3 - AI Booking Confirmation. Default OFF. When enabled, builds the
+// confirmation service (deterministic templates, escalation decision tree, retry/DLQ
+// queue, MOCK transport - no external calls) and hands its onEvent hook to the
+// Booking Engine below. When disabled, onEvent stays undefined => zero overhead and
+// no behavior change. Rollback: AI_CONFIRMATION_ENABLED=false (no code removal).
+let aiConfirmation = null;
+if (require('./config/env').AI_CONFIRMATION_ENABLED === 'true') {
+  try {
+    const { buildAiConfirmation } = require('./ai-confirmation');
+    aiConfirmation = buildAiConfirmation({});
+    logger.info('[boot] AI booking confirmation ready');
+  } catch (e) { logger.warn({ err: e }, '[boot] ai confirmation init skipped'); }
+} else {
+  logger.info('[boot] AI booking confirmation disabled (AI_CONFIRMATION_ENABLED=false)');
+}
+
+// Booking Engine v1 - unified orchestration gate for ALL reservation creation
+// (Direct / OTA / AI / Front Desk). Pure orchestration via commandBus; reuses
+// booking_store idempotency. DI only; no PMS/OTA/worker/queue/webhook/UI changes.
+const { buildBookingEngine } = require('./booking-engine');
+let bookingEngine = null;
+try {
+  bookingEngine = buildBookingEngine({
+    commandBus,
+    bookingStore: channelPersistence && channelPersistence.booking,
+    onEvent: aiConfirmation && aiConfirmation.onEvent // Phase 27.3: undefined when confirmation is OFF
+  });
+  logger.info('[boot] booking engine ready');
+} catch (e) { logger.warn({ err: e }, '[boot] booking engine init skipped'); }
+
+// Phase 27 - AI WhatsApp Booking Agent (foundation, MOCK provider). Consumes the
+// Booking Engine only; no direct PMS/OTA writes, no real AI/WhatsApp. Default OFF.
+if (require('./config/env').AI_AGENT_ENABLED === 'true' && bookingEngine && bookingEngine.service) {
+  try {
+    const aiEnv = require('./config/env');
+    const { buildAiAgent } = require('./ai-agent');
+    // Phase 27.1A: multi-provider chain (anthropic -> openai -> gemini -> mock). Vendor HTTP
+    // is default-disabled (AI_LLM_ENABLED); keys resolve via the SecretProvider at execution.
+    const providerOpts = {
+      secretProvider: channelCredentials && channelCredentials.provider,
+      credentialsRef: aiEnv.AI_LLM_CREDENTIALS_REF, endpoint: aiEnv.AI_LLM_ENDPOINT,
+      model: aiEnv.AI_LLM_MODEL, httpEnabled: aiEnv.AI_LLM_ENABLED === 'true'
+    };
+    buildAiAgent({ bookingService: bookingEngine.service, providerKind: aiEnv.AI_PROVIDER, providerOpts });
+    logger.info({ primary: aiEnv.AI_PROVIDER, fallback: aiEnv.AI_FALLBACK_PROVIDER, tertiary: aiEnv.AI_TERTIARY_PROVIDER, llmEnabled: aiEnv.AI_LLM_ENABLED === 'true' }, '[boot] AI WhatsApp agent ready');
+  } catch (e) { logger.warn({ err: e }, '[boot] ai agent init skipped'); }
+} else {
+  logger.info('[boot] AI WhatsApp agent disabled (AI_AGENT_ENABLED=false)');
+}
+
+// Phase 24 S1/B5 - Channel Manager event spine (PMS -> CM). LISTEN + ROUTE + LOG, and
+// enqueue onto the mode-selected sync queue. memory/dual return synchronously (behavior
+// preserved); idempotent registration (no dup listeners).
+const { buildChannelSubscriber } = require('./channel-manager/services/channelSubscriber');
+try { buildChannelSubscriber({ eventBus: eventBusRef, queue: channelPersistence && channelPersistence.queue }); }
+catch (e) { logger.warn({ err: e }, '[boot] channel spine init skipped'); }
+
+// Phase 24 B6 - durable queue worker (MOCK processor, NO OTA). Default OFF: starts only
+// when CHANNEL_WORKER_ENABLED=true. Infrastructure only; not wired to real processing.
+if (require('./config/env').CHANNEL_WORKER_ENABLED === 'true') {
+  try {
+    const { buildLeaseQueue } = require('./channel-manager/worker/leaseQueue');
+    const { buildMockProcessor } = require('./channel-manager/worker/mockProcessor');
+    const { buildChannelQueueWorker } = require('./channel-manager/worker/channelQueueWorker');
+    const channelWorker = buildChannelQueueWorker({
+      queue: buildLeaseQueue(),
+      processor: buildMockProcessor(),
+      deadLetterStore: channelPersistence && channelPersistence.deadLetter,
+      enabled: true
+    });
+    channelWorker.start();
+  } catch (e) { logger.warn({ err: e }, '[boot] channel worker init skipped'); }
+} else {
+  logger.info('[boot] channel queue worker disabled (CHANNEL_WORKER_ENABLED=false)');
+}
 
 // Phase 7 / C7 - Allocation lifecycle (commands + subscribers + sweep job)
 const { buildAllocationService } = require('./services/pms/allocation');
@@ -316,6 +477,13 @@ const app = createApp({
   commandBus, queryBus,
   eventBus: require('./core/eventBus'),
   channelManager,
+  channelPersistence,
+  channelCredentials,
+  channelMapping,
+  channelOutboundSync,
+  channelInbound,
+  bookingEngine,
+  aiConfirmation, // Phase 27.3: null when AI_CONFIRMATION_ENABLED=false
   revenue,
   platform,
   makeAuthEvent
