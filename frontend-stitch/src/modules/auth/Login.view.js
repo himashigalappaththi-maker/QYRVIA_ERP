@@ -4,14 +4,21 @@ import { on, qs } from '../../utils/dom.js';
 import { toast } from '../../components/Toast.js';
 
 function normalizeSession(res) {
+  const expiresAt = res.expiresAt
+    || (res.access_expires_at ? Date.parse(res.access_expires_at) : null)
+    || (res.expires_in ? Date.now() + Number(res.expires_in) * 1000 : null);
+  const roles = (res.roles || (res.user && res.user.roles) || []).map((r) => (typeof r === 'object' ? r.code : r));
   return {
     token: res.token || res.access_token || res.accessToken || null,
     refreshToken: res.refreshToken || res.refresh_token || null,
-    expiresAt: res.expiresAt || (res.expires_in ? Date.now() + Number(res.expires_in) * 1000 : null),
+    expiresAt: Number.isNaN(expiresAt) ? null : expiresAt,
     principal: res.principal || {
-      userId: res.user_id || res.username || (res.user && res.user.id) || 'user',
-      roles: res.roles || (res.user && res.user.roles) || [],
-      properties: res.properties || (res.user && res.user.properties) || []
+      userId: (res.user && (res.user.username || res.user.id)) || res.user_id || res.username || 'user',
+      roles,
+      // Real backend permission codes - authoritative for client RBAC (UX) hiding.
+      permissions: res.permissions || (res.user && res.user.permissions) || [],
+      propertyId: (res.user && res.user.primary_property_id) || res.property_id || null,
+      propertyCode: (res.user && res.user.primary_property_code) || res.property_code || null
     }
   };
 }

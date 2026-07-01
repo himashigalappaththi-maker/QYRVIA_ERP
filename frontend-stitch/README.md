@@ -22,16 +22,37 @@ unit-testable in Node.
 
 ```
 src/
-  app/        app bootstrap + router (pure decide() + DOM wiring) + routes
-  services/   apiClient (the only backend gateway) + per-domain services
-  store/      session (token + expiry)
-  utils/      rbac (UX hiding), dom, format
+  app/        app bootstrap + router (pure decide() + DOM wiring) + routes (sectioned nav)
+  services/   apiClient (the only backend gateway) + per-domain services (every path = a real backend route)
+  store/      session (token + expiry + property context)
+  utils/      rbac (real-permission UX hiding), normalize (data/result envelopes), dom, format
   hooks/      useApi (load/loading/error)
-  components/ Layout, Sidebar, Topbar, ui (cards/table/badges/buttons), Toast
-  modules/    auth, dashboard, frontdesk, billing, housekeeping, revenue,
-              nightaudit, platform-admin
+  components/ Layout, Sidebar, Topbar, PropertySwitcher, overlay (modal/drawer), ui, Toast
+  modules/    auth, dashboard, reservations, frontdesk (+logic/shared), guests, rooms,
+              availability, rateplans, revenue, billing, housekeeping, nightaudit,
+              channel, finance, platform-admin
   styles/     theme.css
 ```
+
+## Phase 20A — production migration (frontend-only)
+
+This UI now consumes the **real** backend surface (Phases 11–18) — no backend,
+schema, API or business-logic changes. Highlights:
+
+- **Live data everywhere.** All screens call existing `/api/*` routes; placeholder
+  and mock content is removed. Response envelopes are normalized (`/pms` & `/finance`
+  return `{data}`; `/revenue`, `/platform`, `/channel` return `{result}`).
+- **RBAC aligned to the backend.** The login `permissions[]` array is authoritative
+  for UX hiding; `super_admin`/`corporate_admin`/`property_admin` bypass mirrors the
+  server. Nav + route guards use real permission codes (e.g. `pms.reservation.read`,
+  `invoice.read`, `cost_center.read`). The backend still authorizes every call.
+- **Multi-property context** preserved via the topbar switcher
+  (`GET /auth/properties` + `POST /auth/switch-property`, re-scoped tokens).
+- **Honest degradation.** Where the backend exposes a write but no list read
+  (folios, housekeeping tasks, night-audit status), the screen states this and is
+  keyed by id / sourced from the audit stream — no fabricated data.
+
+See `docs/QYRVIA_P20A_FRONTEND_MIGRATION.md` for the per-module migration report.
 
 ## Run locally
 

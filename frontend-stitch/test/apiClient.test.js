@@ -37,9 +37,17 @@ test('403 calls onForbidden and throws ApiError(403)', async () => {
   assert.equal(forbidden, true);
 });
 
-test('non-2xx surfaces the backend error code', async () => {
+test('non-2xx surfaces the backend error code (legacy string shape)', async () => {
   const api = createApiClient({ fetchImpl: mockFetch([resp(400, { error: 'room_type_id_required' })]), session: sessionStub('t') });
-  await assert.rejects(() => api.post('/revenue/rate-plan', {}), (e) => e.status === 400 && e.code === 'room_type_id_required');
+  await assert.rejects(() => api.post('/revenue/rate-plan', {}), (e) => e.status === 400 && e.code === 'room_type_id_required' && e.message === 'room_type_id_required');
+});
+
+test('non-2xx surfaces nested error { code, message } (R2 dual shape)', async () => {
+  const api = createApiClient({ fetchImpl: mockFetch([resp(400, { ok: false, error: { code: 'room_type_id_required', message: 'room_type_id and date are required' } })]), session: sessionStub('t') });
+  await assert.rejects(
+    () => api.post('/revenue/rate-plan', {}),
+    (e) => e.status === 400 && e.code === 'room_type_id_required' && e.message === 'room_type_id and date are required'
+  );
 });
 
 test('no token => no Authorization header', async () => {
