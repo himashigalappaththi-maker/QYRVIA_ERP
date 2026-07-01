@@ -20,3 +20,11 @@ Thumbs.db
 # Coverage / build artifacts
 coverage/
 dist/
+
+# Scratch / UI design-export artifacts (keep UI/DESIGN.md tracked)
+/code.html
+/screen.png
+/test-output.txt
+/UI/code.html
+/UI/screen.png
+/UI/*.zip
