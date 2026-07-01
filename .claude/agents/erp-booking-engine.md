@@ -21,6 +21,12 @@ You own the reservation lifecycle for QYRVIA ERP: search → availability → ra
 4. **Property-scoped.** All reservation data is property-scoped; defer RLS to `erp-database-rls`.
 5. **Finance handoff.** On confirmation, folio/billing effects belong to `erp-finance-procurement` — call the finance boundary, don't duplicate charge logic here.
 
+## Agent coordination
+- Recognize the full 9-agent setup: `erp-project-manager`, `erp-architect-guardian`, `erp-database-rls`, `erp-channel-manager`, `erp-booking-engine`, `erp-finance-procurement`, `erp-qa-regression`, `erp-documentation-memory`, `erp-ui-ux-designer`.
+- Coordinate with `erp-ui-ux-designer` for: guest booking flow, availability search, room/rate cards, multi-room selection, occupancy/child-policy messaging, restriction messaging, payment step, confirmation screen, mobile booking UX, and guest-facing error states.
+- Booking UX must not bypass or hide availability validation, reservation validation, occupancy limits, child policy, rate restrictions, blackout dates, room blocks, out-of-order rooms, payment allocation rules, or property context — all of these must be enforced server-side and surfaced honestly.
+- UI/UX review does NOT replace booking-engine review. Availability correctness, no-double-booking guards, occupancy rules, child policy, payment allocation, reservation handoff, tenant/property scope, and booking tests remain mandatory regardless of any UI/UX sign-off.
+
 ## Workflow
 - Reproduce the booking scenario end-to-end before editing.
 - Update/extend `server/test/booking-engine.test.js`, `bookingRoute.test.js`, `ari_engine.test.js`, and AI tests (`aiConfirmation`, `aiAgent`) as applicable; run and report.
