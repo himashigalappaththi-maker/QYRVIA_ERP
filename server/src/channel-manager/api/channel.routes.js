@@ -17,7 +17,12 @@ const { buildControlSnapshot } = require('./controlSnapshot');
 function build(deps = {}) {
   const router = express.Router();
   if (!deps.channelManager) return router;   // graceful: no CM wired
-  const c = buildController({ channelManager: deps.channelManager, deadLetter: deps.channelPersistence && deps.channelPersistence.deadLetter });
+  const c = buildController({
+    channelManager: deps.channelManager,
+    deadLetter: deps.channelPersistence && deps.channelPersistence.deadLetter,
+    credentials: deps.channelCredentials,
+    mapping: deps.channelMapping
+  });
 
   router.post('/sync/rates',        requirePermission('channel.sync.run'),     c.syncRates);
   router.post('/sync/inventory',    requirePermission('channel.sync.run'),     c.syncInventory);
@@ -30,6 +35,13 @@ function build(deps = {}) {
   router.get( '/sync-health',       requirePermission('channel.sync.read'),    c.syncHealth);
   router.get( '/dlq',               requirePermission('channel.sync.read'),    c.dlqList);
   router.post('/dlq/reprocess',     requirePermission('channel.sync.run'),     c.dlqReprocess);
+
+  // Phase 40 - credential (write-only) + mapping management. Status/list are read
+  // (channel.sync.read); save/upsert are actions (channel.sync.run). No secrets returned.
+  router.get( '/credentials/status', requirePermission('channel.sync.read'),   c.credentialsStatus);
+  router.post('/credentials',        requirePermission('channel.sync.run'),    c.credentialsSave);
+  router.get( '/mappings',           requirePermission('channel.sync.read'),   c.mappingsList);
+  router.post('/mappings',           requirePermission('channel.sync.run'),    c.mappingsSave);
 
   // Phase 37 WI-2b - readiness-only "test connection" diagnostic (no network, no secrets).
   router.post('/test-connection',   requirePermission('channel.sync.read'),    c.testConnection);
