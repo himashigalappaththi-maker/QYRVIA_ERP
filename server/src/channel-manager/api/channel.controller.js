@@ -8,8 +8,13 @@
  */
 
 const { errorField } = require('../../middleware/errorEnvelope');
+const { buildChannelConnectionTester } = require('../services/channelConnectionTester');
 
 function buildController({ channelManager }) {
+  // Phase 37 WI-2b: readiness-only connection tester, built once. It is fail-closed
+  // and side-effect-free (no network, no send, no secret resolution).
+  const connectionTester = buildChannelConnectionTester({ channelManager });
+
   function ctxOf(req) { return req.ctx || {}; }
 
   function fail(res, req, code, status = 400) {
@@ -60,6 +65,20 @@ function buildController({ channelManager }) {
         const out = await channelManager.cancelBooking(b.channel, b.booking_id, ctxOf(req));
         res.json({ ok: true, result: out, requestId: ctxOf(req).requestId });
       } catch (e) { if (/no adapter|not_implemented/.test(e.message)) return fail(res, req, e.message); next(e); }
+    },
+
+    async testConnection(req, res, next) {
+      try {
+        // Phase 37 WI-2b: readiness-only diagnostic probe. Uses the READ envelope.
+        // The tester is fail-closed (missing tenantId => ready:false) and performs
+        // NO network, NO send(), NO secret resolution; ready:false is a valid 200
+        // payload (with reason), never an HTTP error.
+        const b = req.body || {};
+        if (!b.channel) return fail(res, req, 'channel_required');
+        const ctx = ctxOf(req);
+        const result = await connectionTester.test(b.channel, ctx);
+        res.json({ ok: true, data: { ...result, probe: 'readiness_only' }, requestId: ctx.requestId });
+      } catch (e) { next(e); }
     },
 
     async status(req, res, next) {
