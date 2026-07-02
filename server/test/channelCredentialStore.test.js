@@ -164,7 +164,7 @@ test('migration 0047: encrypted store with RLS + no plaintext columns', () => {
   assert.ok(/current_setting\('app\.tenant_id', true\)/.test(sql));
   assert.ok(/UNIQUE \(tenant_id, credentials_ref\)/.test(sql));
   // the ONLY credential-bearing column is encrypted_payload (no plaintext columns)
-  const ddl = sql.split('\n').map((l) => l.replace(/--.*$/, '')).join('\n'); // strip full + inline comments
+  const ddl = sql.split(/\r?\n/).map((l) => l.replace(/--.*$/, '')).join('\n'); // strip full + inline comments (CRLF-safe: drop \r so --.*$ matches)
   assert.ok(/encrypted_payload\s+JSONB/.test(sql), 'encrypted_payload must be JSONB');
   assert.ok(!/\bplaintext\b|\bpassword\s+(VARCHAR|TEXT)|\bsecret_value\b/i.test(ddl), 'no plaintext credential column allowed');
 });
