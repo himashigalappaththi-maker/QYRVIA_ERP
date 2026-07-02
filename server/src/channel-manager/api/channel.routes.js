@@ -17,7 +17,7 @@ const { buildControlSnapshot } = require('./controlSnapshot');
 function build(deps = {}) {
   const router = express.Router();
   if (!deps.channelManager) return router;   // graceful: no CM wired
-  const c = buildController({ channelManager: deps.channelManager });
+  const c = buildController({ channelManager: deps.channelManager, deadLetter: deps.channelPersistence && deps.channelPersistence.deadLetter });
 
   router.post('/sync/rates',        requirePermission('channel.sync.run'),     c.syncRates);
   router.post('/sync/inventory',    requirePermission('channel.sync.run'),     c.syncInventory);
@@ -25,6 +25,11 @@ function build(deps = {}) {
   router.post('/bookings/confirm',  requirePermission('channel.sync.run'),     c.confirmBooking);
   router.post('/bookings/cancel',   requirePermission('channel.sync.run'),     c.cancelBooking);
   router.get( '/status',            requirePermission('channel.mapping.read'), c.status);
+
+  // Phase 37 WI-3 - channel operational surfaces (READ envelope, metadata-only).
+  router.get( '/sync-health',       requirePermission('channel.sync.read'),    c.syncHealth);
+  router.get( '/dlq',               requirePermission('channel.sync.read'),    c.dlqList);
+  router.post('/dlq/reprocess',     requirePermission('channel.sync.run'),     c.dlqReprocess);
 
   // Phase 37 WI-2b - readiness-only "test connection" diagnostic (no network, no secrets).
   router.post('/test-connection',   requirePermission('channel.sync.read'),    c.testConnection);
