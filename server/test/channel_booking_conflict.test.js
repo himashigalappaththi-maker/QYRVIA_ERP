@@ -47,3 +47,15 @@ test('no conflict when slots differ', () => {
   const res = svc.ingest(other);
   assert.equal(res.conflict, null);
 });
+
+// Phase 37 WI-1: a second CONFIRMED booking on an already-CONFIRMED slot must be flagged as a
+// conflict (incumbent retained) - the channel layer never silently double-books a physical slot.
+test('WI-1: a second CONFIRMED booking on an occupied slot is flagged, incumbent retained (no double-book)', () => {
+  const svc = buildBookingService();
+  svc.ingest(mk('EX-9', CHANNELS.EXPEDIA, 'CONFIRMED'));
+  const res = svc.ingest(mk('BC-9', CHANNELS.BOOKING_COM, 'CONFIRMED')); // races the same slot
+  assert.ok(res.conflict, 'the second CONFIRMED booking on the same slot raises a conflict');
+  assert.equal(res.conflict.winner, 'EX-9', 'the incumbent slot holder is retained');
+  assert.equal(res.conflict.reason, 'incumbent_retained');
+  assert.equal(svc.conflicts().length, 1, 'the conflict is recorded for reconciliation, not dropped');
+});
