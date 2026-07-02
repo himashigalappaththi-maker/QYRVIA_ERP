@@ -26,6 +26,9 @@ function build(deps = {}) {
   router.post('/bookings/cancel',   requirePermission('channel.sync.run'),     c.cancelBooking);
   router.get( '/status',            requirePermission('channel.mapping.read'), c.status);
 
+  // Phase 37 WI-2b - readiness-only "test connection" diagnostic (no network, no secrets).
+  router.post('/test-connection',   requirePermission('channel.sync.read'),    c.testConnection);
+
   // Phase 25 - control-center snapshot (non-secret operational status for the UI).
   router.get( '/control',           requirePermission('channel.mapping.read'), (req, res) => {
     const ctx = req.ctx || {};
