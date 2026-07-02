@@ -1,6 +1,11 @@
 'use strict';
 
 /**
+ * @deprecated Phase 24 B8-A: the Phase 10.2 5-method contract + its `OTAAdapter`
+ * base are SUPERSEDED by the unified `adapters/framework/CanonicalOTAAdapter.js`
+ * (8-method) contract. Retained for backward compatibility with the orphaned
+ * `adapters/otas/*` + `registry/*` system (ota_scale.test.js) until removal.
+ *
  * Phase 10.2 - OTA scaling contract (the "one OTA = one file" base).
  *
  * This is ADDITIVE and independent of the Phase 10.0 `base/OTAAdapter.js`
@@ -95,4 +100,4 @@ function assertAdapter(adapter) {
   return { ok: missing.length === 0 && notAsync.length === 0, missing, notAsync };
 }
 
-module.exports = { OTAAdapter, assertAdapter, REQUIRED_METHODS };
+module.exports = { OTAAdapter, assertAdapter, REQUIRED_METHODS, DEPRECATED: true };

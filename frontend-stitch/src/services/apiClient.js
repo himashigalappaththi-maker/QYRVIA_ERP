@@ -3,7 +3,9 @@
 // injected handlers. fetch + session are injectable for unit testing in Node.
 
 export class ApiError extends Error {
-  constructor(status, code, data) { super(code || ('http_' + status)); this.status = status; this.code = code; this.data = data; }
+  // `message` (R2) is the human-readable string; falls back to the code so existing
+  // callers that pass only (status, code, data) keep `.message === code`.
+  constructor(status, code, data, message) { super(message || code || ('http_' + status)); this.status = status; this.code = code; this.data = data; }
 }
 
 function qs(query) {
@@ -38,7 +40,14 @@ export function createApiClient({ baseUrl = '/api', fetchImpl, session, onUnauth
 
     let data = null;
     try { data = await res.json(); } catch (_) { data = null; }
-    if (!res.ok) throw new ApiError(res.status, (data && data.error) || 'request_failed', data);
+    if (!res.ok) {
+      // R2 dual-shape: `error` may be a string "CODE" (legacy) or an object { code, message }.
+      // Normalize to errorMessage = error.message || error.code || error, keeping `.code` a string.
+      const raw = data && data.error;
+      const code = (raw && typeof raw === 'object') ? raw.code : raw;
+      const message = (raw && typeof raw === 'object') ? raw.message : undefined;
+      throw new ApiError(res.status, code || 'request_failed', data, message);
+    }
     return data;
   }
 

@@ -9,6 +9,7 @@
 
 const { buildRBACEngine } = require('./iam/RBACEngine');
 const { buildPolicyEngine } = require('./iam/PolicyEngine');
+const { buildPropertyAccessEngine } = require('./iam/PropertyAccessEngine');
 const { buildAuthService } = require('./iam/AuthService');
 const { buildRateLimiterEngine } = require('./gateway/RateLimiterEngine');
 const { buildRequestContextEngine } = require('./gateway/RequestContextEngine');
@@ -27,6 +28,7 @@ const { buildCrossPropertyAnalyticsEngine } = require('./enterprise/CrossPropert
 function buildPlatformLayer({ clock, userProvider, businessDateProvider } = {}) {
   const rbac = buildRBACEngine();
   const policy = buildPolicyEngine({ rbac });
+  const propertyAccess = buildPropertyAccessEngine();
   const auth = buildAuthService({ userProvider, clock });
   const rateLimiter = buildRateLimiterEngine({ clock });
   const log = buildLogEngine({ clock });
@@ -44,7 +46,7 @@ function buildPlatformLayer({ clock, userProvider, businessDateProvider } = {}) 
   const config = buildEnterpriseConfigEngine();
   const analytics = buildCrossPropertyAnalyticsEngine();
 
-  return { rbac, policy, auth, rateLimiter, context, gateway, log, metrics, trace, audit,
+  return { rbac, policy, propertyAccess, auth, rateLimiter, context, gateway, log, metrics, trace, audit,
     integrations, adapters, webhooks, properties, config, analytics };
 }
 

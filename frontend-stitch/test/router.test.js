@@ -13,17 +13,17 @@ test('login route: bounce to dashboard when already authed', () => {
   assert.equal(decide('/login', { authenticated: false }).action, 'render');
 });
 
-test('protected route requires auth then permission', () => {
+test('protected route requires auth then permission (real backend codes)', () => {
   assert.deepEqual(decide('/billing', { authenticated: false }), { action: 'redirect', to: '/login' });
   // authed but lacking permission -> redirect to dashboard
-  assert.deepEqual(decide('/billing', { authenticated: true, principal: { roles: ['HOUSEKEEPING'] } }), { action: 'redirect', to: '/dashboard' });
-  // authorized -> render
-  const ok = decide('/billing', { authenticated: true, principal: { roles: ['ACCOUNTING'] } });
+  assert.deepEqual(decide('/billing', { authenticated: true, principal: { permissions: ['housekeeping.read'] } }), { action: 'redirect', to: '/dashboard' });
+  // authorized (has invoice.read) -> render
+  const ok = decide('/billing', { authenticated: true, principal: { permissions: ['invoice.read'] } });
   assert.equal(ok.action, 'render');
   assert.equal(ok.route.id, 'billing');
 });
 
 test('dashboard accessible to any authenticated user (no permission gate)', () => {
-  const d = decide('/dashboard', { authenticated: true, principal: { roles: ['HOUSEKEEPING'] } });
+  const d = decide('/dashboard', { authenticated: true, principal: { permissions: [] } });
   assert.equal(d.action, 'render');
 });

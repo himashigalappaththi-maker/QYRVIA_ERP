@@ -78,6 +78,22 @@ function buildRepos(pool) {
       return r.rows;
     },
 
+    // Phase 31.5: property authorization. True if the user may act on propertyId:
+    // a role explicitly scoped to it, a tenant-wide role (property_id IS NULL =>
+    // all properties of the company), or it being the user's primary property.
+    // RLS additionally guarantees propertyId belongs to the user's tenant.
+    async canAccessProperty(userId, propertyId) {
+      const r = await pool.query(
+        `SELECT EXISTS (
+           SELECT 1 FROM user_roles ur
+            WHERE ur.user_id = $1 AND (ur.property_id = $2 OR ur.property_id IS NULL)
+           UNION ALL
+           SELECT 1 FROM users u
+            WHERE u.id = $1 AND u.primary_property_id = $2
+         ) AS ok`, [userId, propertyId]);
+      return r.rows[0].ok === true;
+    },
+
     async findUserById(id) {
       const r = await pool.query(`SELECT * FROM users WHERE id = $1 AND soft_deleted_at IS NULL LIMIT 1`, [id]);
       return r.rows[0] || null;
@@ -102,6 +118,26 @@ function buildRepos(pool) {
          WHERE ur.user_id = $1`;
       const r = await pool.query(sql, [userId]);
       return r.rows.map((x) => x.code);
+    },
+
+    // Phase 21: read-only IAM listings (no RBAC change). Never returns password_hash.
+    async listUsers(tenantId) {
+      const r = await pool.query(
+        `SELECT id, tenant_id, username, email, full_name, primary_property_id,
+                status, last_login_at, locked_until, created_at
+           FROM users
+          WHERE tenant_id = $1 AND soft_deleted_at IS NULL
+          ORDER BY username
+          LIMIT 500`,
+        [tenantId]
+      );
+      return r.rows;
+    },
+    async listRoles() {
+      const r = await pool.query(
+        `SELECT id, code, name, description, scope, is_system FROM roles ORDER BY code`
+      );
+      return r.rows;
     },
 
     async updateUserOnSuccessfulLogin(userId) {
@@ -882,6 +918,37 @@ function buildRepos(pool) {
       const r = await pool.query(sql, params);
       return r.rows;
     },
+    // Phase 21: modify mutable booking fields (pre-stay). Whitelisted columns only;
+    // the check-in/out lifecycle remains owned by the dedicated transition commands.
+    async updateReservation(tenantId, id, fields = {}) {
+      const ALLOWED = ['reservation_type', 'arrival_date', 'departure_date', 'adults',
+                       'children', 'room_type_id', 'rate_plan_id', 'rooms_count', 'notes'];
+      const sets = [];
+      const params = [tenantId, id];
+      for (const col of ALLOWED) {
+        if (Object.prototype.hasOwnProperty.call(fields, col) && fields[col] !== undefined) {
+          params.push(fields[col]);
+          sets.push(`${col}=$${params.length}${col === 'reservation_type' ? '::reservation_type' : ''}`);
+        }
+      }
+      if (sets.length === 0) return this.findReservationById(tenantId, id);
+      const r = await pool.query(
+        `UPDATE reservations SET ${sets.join(', ')}, updated_at=now()
+          WHERE tenant_id=$1 AND id=$2 RETURNING *`, params);
+      return r.rows[0] || null;
+    },
+    // Phase 21: move an in-house guest to a different room. Reassigns the
+    // reservation and flips both rooms (old -> VACANT_DIRTY, new -> OCCUPIED).
+    async reassignReservationRoom(tenantId, id, newRoomId) {
+      const r = await pool.query(
+        `UPDATE reservations SET assigned_room_id=$3, updated_at=now()
+          WHERE tenant_id=$1 AND id=$2 RETURNING *`,
+        [tenantId, id, newRoomId]);
+      const row = r.rows[0];
+      if (!row) return null;
+      await pool.query(`UPDATE rooms SET status='OCCUPIED'::room_status, updated_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, newRoomId]);
+      return row;
+    },
 
     // ----- rate plans -----
     async insertRatePlan(rec) {
@@ -1236,6 +1303,16 @@ function buildRepos(pool) {
     async listFoliosForReservation(tenantId, reservationId) {
       const r = await pool.query(`SELECT * FROM folios WHERE tenant_id=$1 AND reservation_id=$2 ORDER BY opened_at`,
         [tenantId, reservationId]);
+      return r.rows;
+    },
+    // Phase 21: property-scoped folio listing (read).
+    async listFolios(tenantId, propertyId, opts = {}) {
+      const params = [tenantId, propertyId];
+      let sql = `SELECT * FROM folios WHERE tenant_id=$1 AND property_id=$2`;
+      if (opts.status) { params.push(opts.status); sql += ` AND status=$${params.length}::folio_status`; }
+      if (opts.reservation_id) { params.push(opts.reservation_id); sql += ` AND reservation_id=$${params.length}`; }
+      sql += ` ORDER BY opened_at DESC LIMIT 500`;
+      const r = await pool.query(sql, params);
       return r.rows;
     },
     async insertFolioLine(rec) {
@@ -1621,6 +1698,15 @@ function buildRepos(pool) {
         [tenantId, propertyId]
       );
       return r.rows[0] || null;
+    },
+    // Phase 21: night-audit run history (read).
+    async listRuns(tenantId, propertyId, limit = 50) {
+      const r = await pool.query(
+        `SELECT * FROM night_audit_runs WHERE tenant_id=$1 AND property_id=$2
+         ORDER BY started_at DESC LIMIT $3`,
+        [tenantId, propertyId, Math.min(Number(limit) || 50, 200)]
+      );
+      return r.rows;
     },
     async setPropertyBusinessDateLocked(tenantId, propertyId, locked) {
       await pool.query(

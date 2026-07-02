@@ -146,6 +146,7 @@ function makeCheckinFolioCommands({ pmsRepo, folioRepo, housekeepingRepo }) {
           aggregateId: updated.id,
           payload: { reservation_number: updated.reservation_number,
                      from: fromStatus, to: updated.status,
+                     mode: input.mode || 'STANDARD',
                      folio_id: closedFolio && closedFolio.id || null,
                      business_date: ctx.businessDate }, ctx })
       ];

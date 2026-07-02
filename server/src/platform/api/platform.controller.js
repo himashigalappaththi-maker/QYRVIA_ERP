@@ -2,17 +2,21 @@
 
 /** Platform admin / integration / enterprise HTTP controller (Phase 18). */
 
+const { errorField } = require('../../middleware/errorEnvelope');
+
 function buildController({ platform }) {
   const ctxOf = (req) => req.ctx || {};
   const ok = (res, req, result) => res.json({ ok: true, result, requestId: ctxOf(req).requestId });
-  const fail = (res, req, code, status = 400) => res.status(status).json({ ok: false, error: code, requestId: ctxOf(req).requestId });
+  // READ envelope (Phase 23 R1): GET handlers emit { ok, data }; writes keep ok()/{ ok, result }.
+  const okRead = (res, req, data) => res.json({ ok: true, data, requestId: ctxOf(req).requestId });
+  const fail = (res, req, code, status = 400) => res.status(status).json({ ok: false, error: errorField(code), requestId: ctxOf(req).requestId });
 
   return {
-    metrics(req, res) { ok(res, req, platform.metrics.snapshot()); },
-    logs(req, res) { ok(res, req, platform.log.query({ level: req.query.level, module: req.query.module, correlationId: req.query.correlation_id })); },
-    audit(req, res) { ok(res, req, platform.audit.list({ propertyId: ctxOf(req).propertyId, type: req.query.type })); },
+    metrics(req, res) { okRead(res, req, platform.metrics.snapshot()); },
+    logs(req, res) { okRead(res, req, platform.log.query({ level: req.query.level, module: req.query.module, correlationId: req.query.correlation_id })); },
+    audit(req, res) { okRead(res, req, platform.audit.list({ propertyId: ctxOf(req).propertyId, type: req.query.type })); },
 
-    integrationsStatus(req, res) { ok(res, req, platform.integrations.list()); },
+    integrationsStatus(req, res) { okRead(res, req, platform.integrations.list()); },
     async webhook(req, res, next) {
       try {
         const b = req.body || {};
@@ -30,9 +34,9 @@ function buildController({ platform }) {
       } catch (e) { if (/unknown_adapter/.test(e.message)) return fail(res, req, e.message); next(e); }
     },
 
-    properties(req, res) { ok(res, req, platform.properties.list()); },
-    analytics(req, res) { ok(res, req, platform.analytics.aggregate()); },
-    config(req, res) { ok(res, req, platform.config.getGlobal()); }
+    properties(req, res) { okRead(res, req, platform.properties.list()); },
+    analytics(req, res) { okRead(res, req, platform.analytics.aggregate()); },
+    config(req, res) { okRead(res, req, platform.config.getGlobal()); }
   };
 }
 

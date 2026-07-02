@@ -3,6 +3,8 @@
 const { Pool } = require('pg');
 const env      = require('../config/env');
 const logger   = require('../config/logger');
+const { getObservability } = require('../observability');
+const { instrumentClient } = require('../observability/instrumentedPool');
 
 /**
  * PostgreSQL connection pool. Shared across the process.
@@ -41,7 +43,13 @@ pool.on('error', (err) => {
  * @returns {Promise<T>}
  */
 async function withTenant(tenantId, cb) {
-  if (!tenantId) throw new Error('withTenant: tenantId is required');
+  if (!tenantId) {
+    // Phase 32: a tenant-scoped operation reached the DB without a tenant in
+    // context. Count + log it as a security-relevant RLS context failure, then
+    // fail closed exactly as before.
+    try { getObservability().rls.missingContext('tenant'); } catch (_) { /* never block on telemetry */ }
+    throw new Error('withTenant: tenantId is required');
+  }
   if (typeof cb !== 'function') throw new Error('withTenant: cb must be a function');
 
   const client = await pool.connect();
@@ -49,7 +57,17 @@ async function withTenant(tenantId, cb) {
     await client.query('BEGIN');
     // set_config(name, value, is_local=true) is parameter-safe; SET LOCAL is not.
     await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
-    const result = await cb(client);
+    // Phase 32: successful RLS context bind (no ids logged - just the counter).
+    try { getObservability().rls.contextSet('tenant'); } catch (_) { /* never block on telemetry */ }
+    // Phase 33: instrument the transaction client so the repo queries that run
+    // inside this scope record per-query latency (BEGIN/set_config/COMMIT above
+    // stay on the raw client and are deliberately not counted as data queries).
+    // SQL text/params are never logged - only a hash on the slow path.
+    let scopedClient = client;
+    if (env.DB_OBSERVABILITY !== 'false') {
+      try { scopedClient = instrumentClient(client, getObservability()); } catch (_) { scopedClient = client; }
+    }
+    const result = await cb(scopedClient);
     await client.query('COMMIT');
     return result;
   } catch (err) {

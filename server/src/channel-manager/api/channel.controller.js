@@ -7,11 +7,18 @@
  * controller never publishes events directly.
  */
 
-function buildController({ channelManager }) {
+const { errorField } = require('../../middleware/errorEnvelope');
+const { buildChannelConnectionTester } = require('../services/channelConnectionTester');
+
+function buildController({ channelManager, deadLetter }) {
+  // Phase 37 WI-2b: readiness-only connection tester, built once. It is fail-closed
+  // and side-effect-free (no network, no send, no secret resolution).
+  const connectionTester = buildChannelConnectionTester({ channelManager });
+
   function ctxOf(req) { return req.ctx || {}; }
 
   function fail(res, req, code, status = 400) {
-    return res.status(status).json({ ok: false, error: code, requestId: ctxOf(req).requestId });
+    return res.status(status).json({ ok: false, error: errorField(code), requestId: ctxOf(req).requestId });
   }
 
   return {
@@ -60,9 +67,85 @@ function buildController({ channelManager }) {
       } catch (e) { if (/no adapter|not_implemented/.test(e.message)) return fail(res, req, e.message); next(e); }
     },
 
+    async testConnection(req, res, next) {
+      try {
+        // Phase 37 WI-2b: readiness-only diagnostic probe. Uses the READ envelope.
+        // The tester is fail-closed (missing tenantId => ready:false) and performs
+        // NO network, NO send(), NO secret resolution; ready:false is a valid 200
+        // payload (with reason), never an HTTP error.
+        const b = req.body || {};
+        if (!b.channel) return fail(res, req, 'channel_required');
+        const ctx = ctxOf(req);
+        const result = await connectionTester.test(b.channel, ctx);
+        res.json({ ok: true, data: { ...result, probe: 'readiness_only' }, requestId: ctx.requestId });
+      } catch (e) { next(e); }
+    },
+
     async status(req, res, next) {
       try {
-        res.json({ ok: true, result: channelManager.status(), requestId: ctxOf(req).requestId });
+        // READ envelope (Phase 23 R1): the single GET emits { ok, data }; sync writes keep { ok, result }.
+        res.json({ ok: true, data: channelManager.status(), requestId: ctxOf(req).requestId });
+      } catch (e) { next(e); }
+    },
+
+    // Phase 37 WI-3: channel operational surfaces (READ envelope). Non-secret,
+    // metadata-only; fail-closed on missing tenant. No network, no OTA calls.
+
+    // GET /api/channel/sync-health - core status + tenant-scoped dead-letter count.
+    async syncHealth(req, res, next) {
+      try {
+        const ctx = ctxOf(req);
+        if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
+        const s = channelManager.status() || {};
+        const tenantCount = deadLetter ? (await deadLetter.list({ tenant_id: ctx.tenantId })).length : null;
+        res.json({
+          ok: true,
+          data: {
+            channels: s.channels,
+            queue: s.queue,
+            bookings: s.bookings,
+            deadLetters: { tenantCount }
+          },
+          requestId: ctx.requestId
+        });
+      } catch (e) { next(e); }
+    },
+
+    // GET /api/channel/dlq - tenant-scoped dead-letter metadata (NO payload_json).
+    async dlqList(req, res, next) {
+      try {
+        const ctx = ctxOf(req);
+        if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
+        if (!deadLetter) return res.json({ ok: true, data: { items: [] }, requestId: ctx.requestId });
+        const rows = await deadLetter.list({ tenant_id: ctx.tenantId });
+        const items = (rows || []).map((r) => ({
+          id: r.id,
+          channel: r.channel,
+          action: r.action,
+          reservation_id: r.reservation_id,
+          attempts: r.attempts,
+          last_error: r.last_error,
+          reprocess_requested: r.reprocess_requested,
+          created_at: r.created_at,
+          updated_at: r.updated_at
+        }));
+        res.json({ ok: true, data: { items }, requestId: ctx.requestId });
+      } catch (e) { next(e); }
+    },
+
+    // POST /api/channel/dlq/reprocess - flags reprocess_requested (NO network, NO OTA).
+    async dlqReprocess(req, res, next) {
+      try {
+        const ctx = ctxOf(req);
+        if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
+        const id = (req.body || {}).id;
+        if (!id) return fail(res, req, 'id_required');
+        if (!deadLetter) return fail(res, req, 'dlq_unavailable', 400);
+        // Ownership guard: never reveal cross-tenant existence.
+        const rec = await deadLetter.get(id);
+        if (!rec || rec.tenant_id !== ctx.tenantId) return fail(res, req, 'dead_letter_not_found', 404);
+        const out = await deadLetter.requestReprocess(id);
+        res.json({ ok: true, result: { id: out.id, reprocess_requested: out.reprocess_requested }, requestId: ctx.requestId });
       } catch (e) { next(e); }
     }
   };

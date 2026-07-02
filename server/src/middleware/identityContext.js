@@ -46,12 +46,29 @@ function identityContext(repo) {
       }, '[identity] X-Tenant-Id mismatch with token; header ignored');
     }
 
-    // Optional property override - must be UUID; cross-tenant access blocked by RLS.
+    // Optional property override - must be a UUID, AND the user must be assigned
+    // to it. RLS only blocks cross-TENANT rows; cross-PROPERTY access within a
+    // tenant is application-level (Phase 31.5), so it is enforced here, fail-closed.
     let propertyId = req.user.primary_property_id || null;
     const headerProperty = req.get(HEADER_PROPERTY);
     if (headerProperty) {
       if (!UUID_RE.test(headerProperty)) {
         return res.status(400).json({ error: 'x_property_id_invalid', requestId: req.requestId });
+      }
+      if (headerProperty !== (req.user.primary_property_id || null) &&
+          repo && typeof repo.canAccessProperty === 'function') {
+        let allowed = false;
+        try {
+          allowed = await repo.canAccessProperty(req.user.sub, headerProperty);
+        } catch (err) {
+          logger.error({ err, user_id: req.user.sub }, '[identity] property access check failed');
+          return res.status(500).json({ error: 'property_access_check_failed', requestId: req.requestId });
+        }
+        if (!allowed) {
+          logger.warn({ request_id: req.requestId, user_id: req.user.sub, property_id: headerProperty },
+            '[identity] property access denied (user not assigned to property)');
+          return res.status(403).json({ error: 'property_access_denied', requestId: req.requestId });
+        }
       }
       propertyId = headerProperty;
     }

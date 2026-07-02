@@ -1,6 +1,10 @@
 'use strict';
 
 /**
+ * @deprecated Phase 24 B8-A: part of the SUPERSEDED filesystem-discovery adapter
+ * framework. Use `adapters/framework/*` instead. Retained for backward
+ * compatibility (ota_scale.test.js) until a later removal step.
+ *
  * adapterFactory - instantiates OTA adapters dynamically with lazy loading.
  *
  * An adapter is loaded only when first requested (lazy `require`), then cached.

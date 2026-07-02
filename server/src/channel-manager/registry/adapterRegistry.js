@@ -1,6 +1,13 @@
 'use strict';
 
 /**
+ * @deprecated Phase 24 B8-A: SUPERSEDED by the unified framework registry at
+ * `adapters/framework/adapterRegistry.js` (+ `framework/index.js`). This
+ * filesystem-discovery registry over `adapters/otas/*` is retained for
+ * backward compatibility only (see `ota_scale.test.js`) and will be removed in
+ * a later step. Do NOT add new adapters here. Migration path:
+ * docs/QYRVIA_PHASE24_STEP13_B8A_ADAPTER_CONSOLIDATION.md.
+ *
  * adapterRegistry - the single source of truth for which OTAs exist.
  *
  * Adapters are discovered from the filesystem (`adapters/otas/*.adapter.js`),
@@ -36,4 +43,4 @@ function validateAll() {
   return list().map((name) => Object.assign({ name }, assertAdapter(get(name))));
 }
 
-module.exports = { discover, list, has, get, all, validateAll };
+module.exports = { discover, list, has, get, all, validateAll, DEPRECATED: true };
