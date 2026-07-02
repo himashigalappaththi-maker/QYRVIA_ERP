@@ -4517,6 +4517,46 @@ th{border-bottom:2px solid #C9A84C !important}
         </div>
       </div>
 
+      <!-- ── Booking Engine — Direct Sales (Phase 39) — server-backed, fail-closed availability ── -->
+      <div class="card" id="qvBookingEnginePanel" style="margin-bottom:14px;border-left:3px solid var(--primary)">
+        <div class="card-header">
+          <div class="card-title">🧭 Booking Engine — Direct Sales</div>
+          <span style="font-size:11px;color:var(--grey-500)">Server-backed · fail-closed availability · never overbooks</span>
+        </div>
+        <p style="font-size:12px;color:var(--grey-600);margin:0 0 12px">Guided direct booking. The server confirms availability before creating a reservation; if availability can't be confirmed, the booking is safely declined.</p>
+
+        <!-- 1) Search: dates / guests / room type -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:10px">
+          <div><label class="form-label">Check-in</label><input id="qvBEArrival" type="date" class="form-input"></div>
+          <div><label class="form-label">Check-out</label><input id="qvBEDeparture" type="date" class="form-input"></div>
+          <div><label class="form-label">Adults</label><input id="qvBEAdults" type="number" min="1" value="1" class="form-input"></div>
+          <div><label class="form-label">Children</label><input id="qvBEChildren" type="number" min="0" value="0" class="form-input"></div>
+          <div><label class="form-label">Room type</label><input id="qvBERoomType" type="text" class="form-input" placeholder="e.g. rt-standard"></div>
+          <div><label class="form-label">Base rate / night</label><input id="qvBERate" type="number" min="0" value="0" class="form-input"></div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <button class="btn btn-teal btn-sm" id="qvBECheckBtn" onclick="qvBookingEngineCheck()">🔍 Check Availability</button>
+        </div>
+        <!-- 3) Available result or fail-closed unavailable / API-unavailable state -->
+        <div id="qvBEAvailResult" style="font-size:13px;color:var(--grey-500);margin-bottom:12px">Enter your stay and check availability.</div>
+
+        <!-- 4) Guest / contact details -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:10px">
+          <div><label class="form-label">Guest name</label><input id="qvBEGuest" type="text" class="form-input" placeholder="Full name"></div>
+          <div><label class="form-label">Contact (email / phone)</label><input id="qvBEContact" type="text" class="form-input" placeholder="guest@example.com"></div>
+        </div>
+
+        <!-- 5) Summary + 6) Submit -->
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <button class="btn btn-secondary btn-sm" onclick="qvBookingEngineReview()">🧾 Review Summary</button>
+          <button class="btn btn-primary btn-sm" id="qvBESubmitBtn" onclick="qvBookingEngineSubmit()">✅ Submit Booking</button>
+        </div>
+        <div id="qvBESummary" style="font-size:13px;margin-bottom:10px"></div>
+
+        <!-- 7) Confirmation / user-safe error -->
+        <div id="qvBEResult" style="font-size:13px"></div>
+      </div>
+
       <!-- ── Quick Check-In / Check-Out Panel ── -->
       <div class="dash-grid" style="margin-bottom:14px">
 
@@ -11953,6 +11993,114 @@ async function qvChannelOpsReprocess(id){
   if(!r.ok){ toast('Reprocess request failed: '+((r.data&&r.data.error)||r.status),'error'); return; }
   toast('Reprocess requested (queued for worker) ✅','success');
   qvChannelOpsLoadDlq();
+}
+
+/* ═══ Phase 39 — Booking Engine Direct Sales (qvBookingEngine*) ═══
+   Additive, server-backed guided booking journey:
+     GET  /api/pms/availability   (search / fail-closed availability read)
+     POST /api/booking/create     (create; the Phase 37 fail-closed guard decides)
+   Defensive response parsing, all dynamic values escaped, submit guarded against
+   double-click. Never renders raw payloads, stack traces, secrets, or internal
+   room ids — only the availability count, a friendly reason, and the reservation id. */
+var QV_BE = { avail:'/api/pms/availability', create:'/api/booking/create' };
+var qvBEPending=false;
+function qvBEEsc(v){ return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+function qvBEVal(id){ var el=document.getElementById(id); return el?(el.value||'').trim():''; }
+function qvBEUnavailable(){ return '<span style="color:var(--grey-500)">🔌 Booking service unavailable — running in standalone mode. Connect the QYRVIA server to place live bookings.</span>'; }
+async function qvBEFetch(url,opts){
+  try{
+    var resp=await fetch(url,Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));
+    var body=null; try{ body=await resp.json(); }catch(_){}
+    return {ok:resp.ok,status:resp.status,data:body,unavailable:false};
+  }catch(e){ return {ok:false,status:0,data:null,unavailable:true}; }
+}
+function qvBEReason(code,detail){
+  var map={
+    unavailable:'No rooms available for the selected dates.',
+    availability_provider_unwired:'Availability could not be confirmed — booking declined to prevent overbooking.',
+    availability_unknown:'Availability could not be confirmed — booking declined to prevent overbooking.',
+    property_context_required:'Select a property before booking.',
+    tenant_required:'Please sign in to continue.',
+    room_type_required:'Choose a room type.',
+    room_type_not_found:'That room type was not found.',
+    adult_required:'At least one adult is required.',
+    pricing_failed:'The rate could not be priced — please review the base rate.',
+    booking_failed:'Booking could not be completed. Please try again.'
+  };
+  if(code==='VALIDATION_FAILED' && Array.isArray(detail)){
+    return detail.map(function(d){ return map[d]||'Booking could not be completed.'; }).join(' ');
+  }
+  return map[code]||'Booking could not be completed. Please try again.';
+}
+async function qvBookingEngineCheck(){
+  var out=document.getElementById('qvBEAvailResult');
+  var arrival=qvBEVal('qvBEArrival'), rt=qvBEVal('qvBERoomType');
+  if(!arrival || !rt){ out.innerHTML='<span style="color:#c62828">Enter check-in date and room type first.</span>'; return; }
+  var btn=document.getElementById('qvBECheckBtn'); if(btn)btn.disabled=true;
+  out.innerHTML='<span style="color:var(--grey-500)">⏳ Checking availability…</span>';
+  var r=await qvBEFetch(QV_BE.avail+'?date='+encodeURIComponent(arrival)+'&room_type_id='+encodeURIComponent(rt));
+  if(btn)btn.disabled=false;
+  if(r.unavailable){ out.innerHTML=qvBEUnavailable(); return; }
+  if(!r.ok||!r.data){ out.innerHTML='<span style="color:#c62828">⚠️ '+qvBEEsc((r.data&&r.data.error)||('Could not check availability ('+r.status+')'))+'</span>'; return; }
+  var data=(r.data&&(r.data.data||r.data.result))||{};
+  var slot=data[rt];
+  // fail-closed: unknown/absent inventory => treat as 0 (never assume unlimited)
+  var avail=(slot && Number.isFinite(Number(slot.available)))?Number(slot.available):0;
+  if(avail>0){
+    out.innerHTML='<span class="badge ok">AVAILABLE</span> <span style="color:var(--grey-700)">'+avail+' room(s) of '+qvBEEsc((slot&&slot.room_type_code)||rt)+' on '+qvBEEsc(arrival)+'.</span>';
+  }else{
+    out.innerHTML='<span class="badge" style="background:#fde8e8;color:#c62828">UNAVAILABLE</span> <span style="color:var(--grey-700)">No availability for '+qvBEEsc(rt)+' on '+qvBEEsc(arrival)+'. The server will not overbook.</span>';
+  }
+}
+function qvBookingEngineReview(){
+  var out=document.getElementById('qvBESummary');
+  var f={arrival:qvBEVal('qvBEArrival'),departure:qvBEVal('qvBEDeparture'),adults:qvBEVal('qvBEAdults'),children:qvBEVal('qvBEChildren'),rt:qvBEVal('qvBERoomType'),rate:qvBEVal('qvBERate'),guest:qvBEVal('qvBEGuest'),contact:qvBEVal('qvBEContact')};
+  var missing=[];
+  if(!f.arrival)missing.push('check-in'); if(!f.departure)missing.push('check-out');
+  if(!(Number(f.adults)>=1))missing.push('adults'); if(!f.rt)missing.push('room type'); if(!f.guest)missing.push('guest name');
+  if(missing.length){ out.innerHTML='<span style="color:#c62828">Please complete: '+qvBEEsc(missing.join(', '))+'.</span>'; return false; }
+  out.innerHTML='<div style="background:var(--grey-50,#f7f8fa);border:1px solid var(--grey-200);border-radius:8px;padding:12px">'+
+    '<div style="font-weight:700;margin-bottom:6px">Booking summary</div>'+
+    '<div>Guest: '+qvBEEsc(f.guest)+(f.contact?' · '+qvBEEsc(f.contact):'')+'</div>'+
+    '<div>Stay: '+qvBEEsc(f.arrival)+' → '+qvBEEsc(f.departure)+'</div>'+
+    '<div>Room type: '+qvBEEsc(f.rt)+' · '+qvBEEsc(f.adults)+' adult(s), '+qvBEEsc(f.children||'0')+' child(ren)</div>'+
+    '<div>Base rate / night: '+qvBEEsc(f.rate||'0')+'</div>'+
+    '</div>';
+  return true;
+}
+async function qvBookingEngineSubmit(){
+  if(qvBEPending) return;                 // prevent duplicate double-click submit
+  if(!qvBookingEngineReview()) return;    // validate inputs + render summary first
+  var out=document.getElementById('qvBEResult');
+  var btn=document.getElementById('qvBESubmitBtn');
+  qvBEPending=true; if(btn){ btn.disabled=true; btn.textContent='⏳ Submitting…'; }
+  out.innerHTML='<span style="color:var(--grey-500)">⏳ Submitting booking…</span>';
+  var payload={
+    channel:'DIRECT', external_ref:'ui:'+Date.now(),
+    room_type_id:qvBEVal('qvBERoomType'), guest_name:qvBEVal('qvBEGuest'),
+    arrival:qvBEVal('qvBEArrival'), departure:qvBEVal('qvBEDeparture'),
+    adults:Number(qvBEVal('qvBEAdults'))||0, children:Number(qvBEVal('qvBEChildren'))||0,
+    base_rate:Number(qvBEVal('qvBERate'))||0, currency:'LKR'
+  };
+  var r=await qvBEFetch(QV_BE.create,{method:'POST',body:JSON.stringify(payload)});
+  qvBEPending=false; if(btn){ btn.disabled=false; btn.textContent='✅ Submit Booking'; }
+  if(r.unavailable){ out.innerHTML=qvBEUnavailable(); return; }
+  if(r.ok && r.data && r.data.ok){
+    var res=r.data.result||{};
+    var total=(res.pricing && Number.isFinite(Number(res.pricing.total)))?Number(res.pricing.total):null;
+    out.innerHTML='<div style="background:var(--green-50);border:1.5px solid var(--green-200);border-radius:8px;padding:12px">'+
+      '<span class="badge ok">CONFIRMED</span> <strong>Booking confirmed.</strong>'+
+      (res.reservation_id?'<div style="margin-top:4px">Reservation: '+qvBEEsc(res.reservation_id)+'</div>':'')+
+      (total!=null?'<div>Total: '+qvBEEsc(total)+'</div>':'')+
+      '</div>';
+    return;
+  }
+  // fail-closed / validation / error — user-safe, never shows raw payload or stack trace
+  var code=(r.data&&r.data.error)||'booking_failed';
+  var detail=(r.data&&r.data.detail);
+  out.innerHTML='<div style="background:#fdecea;border:1.5px solid #f5c6cb;border-radius:8px;padding:12px;color:#8a1c1c">'+
+    '<strong>Booking not completed.</strong> '+qvBEEsc(qvBEReason(code,detail))+
+    '<div style="font-size:11px;color:var(--grey-500);margin-top:4px">Reference code: '+qvBEEsc(code)+'</div></div>';
 }
 
 // ── KPI strip — extended with OOO/OOS/Occupancy% ──
