@@ -10,7 +10,7 @@
 const { errorField } = require('../../middleware/errorEnvelope');
 const { buildChannelConnectionTester } = require('../services/channelConnectionTester');
 
-function buildController({ channelManager, deadLetter }) {
+function buildController({ channelManager, deadLetter, credentials, mapping }) {
   // Phase 37 WI-2b: readiness-only connection tester, built once. It is fail-closed
   // and side-effect-free (no network, no send, no secret resolution).
   const connectionTester = buildChannelConnectionTester({ channelManager });
@@ -146,6 +146,92 @@ function buildController({ channelManager, deadLetter }) {
         if (!rec || rec.tenant_id !== ctx.tenantId) return fail(res, req, 'dead_letter_not_found', 404);
         const out = await deadLetter.requestReprocess(id);
         res.json({ ok: true, result: { id: out.id, reprocess_requested: out.reprocess_requested }, requestId: ctx.requestId });
+      } catch (e) { next(e); }
+    },
+
+    // Phase 40: channel credential + mapping management. Credentials are WRITE-ONLY -
+    // status returns safe metadata only (configured flag, ref, type, timestamps),
+    // NEVER the encrypted_payload/secret. Fail-closed on missing tenant.
+
+    // GET /api/channel/credentials/status - safe, non-secret credential status per tenant.
+    async credentialsStatus(req, res, next) {
+      try {
+        const ctx = ctxOf(req);
+        if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
+        const store = credentials && credentials.store;
+        if (!store) return res.json({ ok: true, data: { available: false, items: [] }, requestId: ctx.requestId });
+        const rows = await Promise.resolve(store.list({ tenant_id: ctx.tenantId }));
+        // SAFE projection only - encrypted_payload / secret is NEVER included.
+        const items = (rows || []).map((r) => ({
+          channel: r.channel,
+          credentials_ref: r.credentials_ref,
+          credential_type: r.credential_type,
+          key_version: r.key_version,
+          status: r.status,
+          configured: true,
+          created_at: r.created_at,
+          updated_at: r.updated_at
+        }));
+        res.json({ ok: true, data: { available: true, items }, requestId: ctx.requestId });
+      } catch (e) { next(e); }
+    },
+
+    // POST /api/channel/credentials - store a credential ENCRYPTED via the provider.
+    // The secret payload is used transiently and NEVER returned or logged.
+    async credentialsSave(req, res, next) {
+      try {
+        const ctx = ctxOf(req);
+        if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
+        const b = req.body || {};
+        if (!b.channel || !b.credentials_ref || !b.payload || typeof b.payload !== 'object') {
+          return fail(res, req, 'channel_credentials_required');
+        }
+        const provider = credentials && credentials.provider;
+        if (!provider || typeof provider.put !== 'function') return fail(res, req, 'credentials_provider_unavailable', 400);
+        await provider.put(b.credentials_ref, b.payload, {
+          tenant_id: ctx.tenantId, channel: b.channel, credential_type: b.credential_type || 'API_KEY'
+        });
+        // Return only a non-secret acknowledgement.
+        res.json({ ok: true, result: { channel: b.channel, credentials_ref: b.credentials_ref, configured: true }, requestId: ctx.requestId });
+      } catch (e) { next(e); }
+    },
+
+    // GET /api/channel/mappings - safe operational mapping metadata per tenant.
+    async mappingsList(req, res, next) {
+      try {
+        const ctx = ctxOf(req);
+        if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
+        const svc = mapping && mapping.service;
+        if (!svc || typeof svc.listMappings !== 'function') return res.json({ ok: true, data: { available: false, items: [] }, requestId: ctx.requestId });
+        const rows = await Promise.resolve(svc.listMappings({ tenant_id: ctx.tenantId }));
+        const items = (rows || []).map((m) => ({
+          channel: m.channel,
+          room_type_id: m.room_type_id,
+          ota_room_id: m.ota_room_id,
+          ota_rate_plan_id: m.ota_rate_plan_id,
+          enabled: m.enabled,
+          mapping_version: m.mapping_version
+        }));
+        res.json({ ok: true, data: { available: true, items }, requestId: ctx.requestId });
+      } catch (e) { next(e); }
+    },
+
+    // POST /api/channel/mappings - upsert a room/rate mapping (safe metadata only).
+    async mappingsSave(req, res, next) {
+      try {
+        const ctx = ctxOf(req);
+        if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
+        const b = req.body || {};
+        if (!b.channel || !b.room_type_id) return fail(res, req, 'channel_room_type_required');
+        const svc = mapping && mapping.service;
+        if (!svc || typeof svc.upsertMapping !== 'function') return fail(res, req, 'mapping_unavailable', 400);
+        const out = svc.upsertMapping({
+          tenant_id: ctx.tenantId, channel: b.channel, room_type_id: b.room_type_id,
+          ota_room_id: b.ota_room_id != null ? b.ota_room_id : null,
+          ota_rate_plan_id: b.ota_rate_plan_id != null ? b.ota_rate_plan_id : null
+        }, { actor_id: ctx.actorId });
+        if (!out || out.ok === false) return fail(res, req, (out && out.error) || 'mapping_failed');
+        res.json({ ok: true, result: { channel: b.channel, room_type_id: b.room_type_id, mapping_version: out.mapping_version, change_type: out.change_type }, requestId: ctx.requestId });
       } catch (e) { next(e); }
     }
   };
