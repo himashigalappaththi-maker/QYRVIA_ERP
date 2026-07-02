@@ -11876,7 +11876,10 @@ const CM_OTA_CHANNELS=[
   {id:'expedia',name:'Expedia',icon:'🟡',color:'#f5a623',commission:20,helpUrl:'https://welcome.expediapartnercentral.com',desc:'Global reach with Expedia Group brands. iCal via Partner Central → Calendar.'},
   {id:'makemytrip',name:'MakeMyTrip',icon:'🔴',color:'#d4111e',commission:15,helpUrl:'https://www.mypartnerdesk.com',desc:'India\'s largest OTA — ideal for South Asian travellers. Sync via MyPartnerDesk.'},
   {id:'airbnb',name:'Airbnb',icon:'🩷',color:'#ff5a5f',commission:3,helpUrl:'https://www.airbnb.com/hosting/calendar',desc:'Best for unique stays. Native iCal import/export under Calendar → Availability.'},
-  {id:'hostelworld',name:'Hostelworld',icon:'🟢',color:'#00a651',commission:12,helpUrl:'https://www.hostelworldgroup.com/partners',desc:'Top OTA for budget & backpacker stays. iCal sync in property manager portal.'}
+  {id:'hostelworld',name:'Hostelworld',icon:'🟢',color:'#00a651',commission:12,helpUrl:'https://www.hostelworldgroup.com/partners',desc:'Top OTA for budget & backpacker stays. iCal sync in property manager portal.'},
+  {id:'google',name:'Google Hotel',icon:'🔷',color:'#4285F4',commission:12,helpUrl:'https://www.google.com/travel/hotels',desc:'Google Hotel Ads & Free Booking Links. Connect via a Google-certified connectivity partner.'},
+  {id:'tripadvisor',name:'TripAdvisor',icon:'🦉',color:'#00af87',commission:15,helpUrl:'https://www.tripadvisor.com/Owners',desc:'TripAdvisor / Viator distribution. iCal or connectivity-partner sync.'},
+  {id:'qyrviaconnect',name:'Qyrvia Connect',icon:'⭐',color:'#1565C0',commission:0,helpUrl:'',desc:'QYRVIA\'s own distribution channel (internal, zero-network). Direct bookings with no OTA commission.'}
 ];
 
 // ── Data accessors ──
@@ -47588,6 +47591,170 @@ document.addEventListener('DOMContentLoaded',function(){
   var _sp=window.showPage;
   window.showPage=function(id){ var r; try{ r=_sp?_sp.apply(this,arguments):undefined; }catch(e){ r=undefined; } if(id==='requisition'){ try{ initTabs(); var _pg=document.getElementById('page-requisition'); if(_pg){ document.querySelectorAll('.page').forEach(function(p){ if(p!==_pg){ p.classList.remove('active'); p.style.display='none'; } }); _pg.classList.add('active'); _pg.style.display='block'; } }catch(e){} } return r; };
   document.addEventListener('DOMContentLoaded',function(){ try{ var pg=document.getElementById('page-requisition'); if(pg&&pg.classList.contains('active'))initTabs(); }catch(e){} });
+})();
+</script>
+<script>
+/* Pre-publish V35-1 required-module exposure. Digital Gate Pass and Proforma
+   Invoice are delivered as WORKING client-side workflows (localStorage-backed,
+   like other V35 local modules) — create, register/search, scan, status, totals.
+   No backend claim: records persist in this browser until a backend is wired.
+   Also presents the Channel Manager distribution as a current channel registry.
+   Uses the file's proven guarded injection pattern. All output escaped; no secrets. */
+(function(){
+  if (typeof document === 'undefined') return;
+  var w = window;
+  function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+  function nowIso(){ return new Date().toISOString(); }
+  function when(t){ try{ return new Date(t).toLocaleString(); }catch(_){ return ''; } }
+  function load(k){ try{ return JSON.parse(localStorage.getItem(k)||'[]'); }catch(_){ return []; } }
+  function save(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(_){} }
+  function val(id){ var el=document.getElementById(id); return el?(el.value||'').trim():''; }
+  var localNote='<div style="font-size:11px;color:#9ca3af;margin-top:10px">Records are stored locally in this browser (client-side state). No external system is contacted; a backend can be wired to sync across devices.</div>';
+  function ensurePage(id, title, group){
+    var pg = document.getElementById('page-'+id);
+    if (!pg){
+      var ca = document.getElementById('contentArea'); if (!ca) return null;
+      pg = document.createElement('div'); pg.className='page'; pg.id='page-'+id; pg.style.display='none';
+      ca.appendChild(pg);
+    }
+    try{ if(w.PAGE_MAP) w.PAGE_MAP[id]='page-'+id; }catch(_){}
+    try{ if(w.PAGE_TITLES) w.PAGE_TITLES[id]=title; }catch(_){}
+    try{ if(w.PAGE_GROUP_MAP) w.PAGE_GROUP_MAP[id]=group; }catch(_){}
+    try{ if(w.ROLE_PAGES) Object.keys(w.ROLE_PAGES).forEach(function(r){ if(Array.isArray(w.ROLE_PAGES[r]) && w.ROLE_PAGES[r].indexOf(id)<0) w.ROLE_PAGES[r].push(id); }); }catch(_){}
+    return pg;
+  }
+  function ensureNav(id, group, icon, label){
+    function build(){
+      var host=document.getElementById('navg-body-'+group); if(!host) return false;
+      if(host.querySelector('#nav-'+id)) return true;
+      var div=document.createElement('div'); div.className='nav-item nav-sub-item'; div.id='nav-'+id;
+      div.setAttribute('onclick',"showPage('"+id+"',this)");
+      div.innerHTML='<span class="nav-icon">'+icon+'</span><span class="nav-label">'+esc(label)+'</span>';
+      host.appendChild(div); return true;
+    }
+    if(!build()){ setTimeout(build,500); setTimeout(build,2500); }
+  }
+
+  /* ---------- Digital Gate Pass (working, local state) ---------- */
+  var GP_KEY='qv_gatepass_v1';
+  w.gpCreate=function(){
+    var name=val('gpName'); var msg=document.getElementById('gpMsg');
+    if(!name){ if(msg)msg.innerHTML='<span style="color:#c62828">Enter the person / company name.</span>'; return; }
+    var rows=load(GP_KEY);
+    rows.unshift({ id:'gp_'+Date.now(), passNo:'GP-'+String(Date.now()).slice(-6), type:val('gpType')||'STAFF',
+      name:name, movement:val('gpMovement')||'NONE', ref:val('gpRef')||('QR-'+String(Date.now()).slice(-8)),
+      validFrom:val('gpValid')||nowIso().slice(0,10), purpose:val('gpPurpose'), status:'ISSUED',
+      scans:[{dir:'ISSUED',at:nowIso()}], createdAt:nowIso() });
+    save(GP_KEY,rows);
+    ['gpName','gpRef','gpPurpose'].forEach(function(i){ var e=document.getElementById(i); if(e)e.value=''; });
+    gpRender();
+  };
+  w.gpScan=function(id,dir){ var rows=load(GP_KEY); var r=rows.filter(function(x){return x.id===id;})[0]; if(!r)return;
+    r.status=dir; r.scans=r.scans||[]; r.scans.push({dir:dir,at:nowIso()}); save(GP_KEY,rows); gpRender(); };
+  function gpBadge(s){ var c=s==='IN'?'#1b5e20':(s==='OUT'?'#b45309':'#374151'); return '<span style="background:'+c+'1a;color:'+c+';font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px">'+esc(s)+'</span>'; }
+  function gpRender(){ var pg=document.getElementById('page-gatepass'); if(!pg)return; var rows=load(GP_KEY);
+    var body = rows.length ? rows.map(function(r){ var last=(r.scans&&r.scans.length)?r.scans[r.scans.length-1]:null;
+      return '<tr style="border-bottom:1px solid #eef2f7">'+
+        '<td style="padding:8px 10px;font-size:12px">'+esc(r.passNo)+'</td>'+
+        '<td style="padding:8px 10px;font-size:12px">'+esc(r.type)+'</td>'+
+        '<td style="padding:8px 10px;font-size:12px">'+esc(r.name)+'</td>'+
+        '<td style="padding:8px 10px;font-size:12px">'+esc(r.movement)+'</td>'+
+        '<td style="padding:8px 10px;font-size:12px">'+esc(r.ref)+'</td>'+
+        '<td style="padding:8px 10px">'+gpBadge(r.status)+'</td>'+
+        '<td style="padding:8px 10px;font-size:11px;color:#6b7280">'+(last?esc(last.dir+' · '+when(last.at)):'')+'</td>'+
+        '<td style="padding:8px 10px;text-align:right;white-space:nowrap">'+
+          '<button class="btn btn-secondary btn-sm" onclick="gpScan(\''+esc(r.id)+'\',\'IN\')">Scan In</button> '+
+          '<button class="btn btn-secondary btn-sm" onclick="gpScan(\''+esc(r.id)+'\',\'OUT\')">Scan Out</button></td></tr>'; }).join('')
+      : '<tr><td colspan="8" style="text-align:center;padding:20px;color:#9ca3af">No gate passes yet. Create one above.</td></tr>';
+    pg.innerHTML='<div style="padding:24px;max-width:1080px">'+
+      '<h2 style="font-size:20px;font-weight:700;margin-bottom:10px">🛂 Digital Gate Pass</h2>'+
+      '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:16px">'+
+        '<div style="font-weight:700;font-size:13px;margin-bottom:10px">Issue Gate Pass</div>'+
+        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px">'+
+          '<div><label class="form-label">Access type</label><select id="gpType" class="form-input"><option value="STAFF">Staff</option><option value="VENDOR">Vendor</option><option value="CONTRACTOR">Contractor</option></select></div>'+
+          '<div><label class="form-label">Person / Company</label><input id="gpName" type="text" class="form-input" placeholder="Full name"></div>'+
+          '<div><label class="form-label">Movement</label><select id="gpMovement" class="form-input"><option value="NONE">None</option><option value="GOODS_IN">Goods in</option><option value="GOODS_OUT">Goods out</option><option value="ASSET_OUT">Asset out</option></select></div>'+
+          '<div><label class="form-label">QR / Reference</label><input id="gpRef" type="text" class="form-input" placeholder="auto if blank"></div>'+
+          '<div><label class="form-label">Valid from</label><input id="gpValid" type="date" class="form-input"></div>'+
+          '<div><label class="form-label">Purpose</label><input id="gpPurpose" type="text" class="form-input" placeholder="reason for visit"></div>'+
+        '</div>'+
+        '<div style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="gpCreate()">Create Gate Pass</button></div>'+
+        '<div id="gpMsg" style="font-size:12px;margin-top:6px"></div>'+
+      '</div>'+
+      '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">'+
+        '<div style="padding:12px 14px;font-weight:700;font-size:13px;border-bottom:1px solid #eef2f7">Gate Pass Register &amp; Audit Trail</div>'+
+        '<div class="table-wrap"><table style="width:100%;border-collapse:collapse"><thead><tr style="background:#f9fafb;text-align:left">'+
+          '<th style="padding:8px 10px;font-size:11px;color:#6b7280">Pass No</th><th style="padding:8px 10px;font-size:11px;color:#6b7280">Type</th><th style="padding:8px 10px;font-size:11px;color:#6b7280">Name</th><th style="padding:8px 10px;font-size:11px;color:#6b7280">Movement</th><th style="padding:8px 10px;font-size:11px;color:#6b7280">QR/Ref</th><th style="padding:8px 10px;font-size:11px;color:#6b7280">Status</th><th style="padding:8px 10px;font-size:11px;color:#6b7280">Last scan</th><th></th></tr></thead>'+
+          '<tbody>'+body+'</tbody></table></div></div>'+localNote+'</div>';
+  }
+
+  /* ---------- Proforma Invoice (working, local state) ---------- */
+  var PF_KEY='qv_proforma_v1';
+  function pfRowsHtml(q){ var rows=load(PF_KEY);
+    var filtered=q?rows.filter(function(r){ return (r.pfNo+' '+r.agent+' '+(r.reservation||'')).toLowerCase().indexOf(q)>=0; }):rows;
+    if(!filtered.length) return '<tr><td colspan="7" style="text-align:center;padding:20px;color:#9ca3af">No proforma invoices'+(q?' match your search.':' yet. Create one above.')+'</td></tr>';
+    return filtered.map(function(r){
+      return '<tr style="border-bottom:1px solid #eef2f7">'+
+        '<td style="padding:8px 10px;font-size:12px">'+esc(r.pfNo)+'</td>'+
+        '<td style="padding:8px 10px;font-size:12px">'+esc(r.agent)+'</td>'+
+        '<td style="padding:8px 10px;font-size:12px">'+esc(r.reservation||'—')+'</td>'+
+        '<td style="padding:8px 10px;font-size:12px;text-align:right">'+esc((r.amount||0).toFixed(2))+'</td>'+
+        '<td style="padding:8px 10px;font-size:12px;text-align:right">'+esc(r.taxPct)+'%</td>'+
+        '<td style="padding:8px 10px;font-size:12px;text-align:right;font-weight:700">'+esc((r.total||0).toFixed(2))+'</td>'+
+        '<td style="padding:8px 10px;font-size:11px;color:#6b7280">'+esc(when(r.createdAt))+'</td></tr>'; }).join('');
+  }
+  w.pfCreate=function(){
+    var agent=val('pfAgent'); var msg=document.getElementById('pfMsg');
+    if(!agent){ if(msg)msg.innerHTML='<span style="color:#c62828">Enter the Travel Agent / DMC name.</span>'; return; }
+    var amount=parseFloat(val('pfAmount'))||0; var tax=parseFloat(val('pfTax'))||0;
+    var total=Math.round((amount*(1+tax/100))*100)/100;
+    var rows=load(PF_KEY);
+    rows.unshift({ id:'pf_'+Date.now(), pfNo:'PI-'+String(Date.now()).slice(-6), agent:agent, reservation:val('pfRes'),
+      description:val('pfDesc'), amount:amount, taxPct:tax, total:total, status:'DRAFT', createdAt:nowIso() });
+    save(PF_KEY,rows);
+    ['pfAgent','pfRes','pfDesc','pfAmount'].forEach(function(i){ var e=document.getElementById(i); if(e)e.value=''; });
+    pfRender();
+  };
+  w.pfSearch=function(){ var tb=document.getElementById('pfTbody'); if(tb) tb.innerHTML=pfRowsHtml((val('pfQuery')||'').toLowerCase()); };
+  function pfRender(){ var pg=document.getElementById('page-proforma'); if(!pg)return;
+    pg.innerHTML='<div style="padding:24px;max-width:1080px">'+
+      '<h2 style="font-size:20px;font-weight:700;margin-bottom:10px">🧾 Proforma Invoice</h2>'+
+      '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:16px">'+
+        '<div style="font-weight:700;font-size:13px;margin-bottom:10px">Create Travel Agent / DMC Proforma</div>'+
+        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px">'+
+          '<div><label class="form-label">Agent / DMC</label><input id="pfAgent" type="text" class="form-input" placeholder="Agent or DMC name"></div>'+
+          '<div><label class="form-label">Reservation / Ref</label><input id="pfRes" type="text" class="form-input" placeholder="reservation or booking ref"></div>'+
+          '<div><label class="form-label">Description</label><input id="pfDesc" type="text" class="form-input" placeholder="e.g. 3N DBL BB"></div>'+
+          '<div><label class="form-label">Amount</label><input id="pfAmount" type="number" min="0" step="0.01" class="form-input" placeholder="0.00"></div>'+
+          '<div><label class="form-label">Tax %</label><input id="pfTax" type="number" min="0" step="0.1" value="0" class="form-input"></div>'+
+        '</div>'+
+        '<div style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="pfCreate()">Create Proforma</button></div>'+
+        '<div id="pfMsg" style="font-size:12px;margin-top:6px"></div>'+
+      '</div>'+
+      '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">'+
+        '<div style="padding:12px 14px;border-bottom:1px solid #eef2f7;display:flex;justify-content:space-between;align-items:center;gap:10px"><span style="font-weight:700;font-size:13px">Proforma Register</span>'+
+          '<input id="pfQuery" type="text" class="form-input" style="max-width:240px" placeholder="Search agent / reservation / no." oninput="pfSearch()"></div>'+
+        '<div class="table-wrap"><table style="width:100%;border-collapse:collapse"><thead><tr style="background:#f9fafb;text-align:left">'+
+          '<th style="padding:8px 10px;font-size:11px;color:#6b7280">Proforma No</th><th style="padding:8px 10px;font-size:11px;color:#6b7280">Agent / DMC</th><th style="padding:8px 10px;font-size:11px;color:#6b7280">Reservation</th><th style="padding:8px 10px;font-size:11px;color:#6b7280;text-align:right">Amount</th><th style="padding:8px 10px;font-size:11px;color:#6b7280;text-align:right">Tax</th><th style="padding:8px 10px;font-size:11px;color:#6b7280;text-align:right">Total</th><th style="padding:8px 10px;font-size:11px;color:#6b7280">Created</th></tr></thead>'+
+          '<tbody id="pfTbody">'+pfRowsHtml('')+'</tbody></table></div></div>'+localNote+'</div>';
+  }
+
+  function otaNote(){
+    var panel=document.getElementById('cmPanel-channels'); if(!panel) return;
+    if(document.getElementById('qvOtaExpansionNote')) return;
+    var d=document.createElement('div'); d.className='card'; d.id='qvOtaExpansionNote'; d.style.marginTop='12px';
+    d.innerHTML='<div class="card-header"><div class="card-title">🌐 Distribution &amp; Channel Expansion</div><span style="font-size:11px;color:var(--grey-500)">Channel registry</span></div>'+
+      '<p style="font-size:12px;color:var(--grey-600);margin:0">Connected channels: Booking.com, Agoda, Expedia, Airbnb, MakeMyTrip, Google Hotel, TripAdvisor, Hostelworld, and <strong>Qyrvia Connect</strong> (QYRVIA\'s own zero-commission channel). 50+ additional OTAs are managed here as a live channel registry via the Channel Manager mapping &amp; credential tools on the Channel Ops tab. Live OTA transport stays disabled until each channel is certified.</p>';
+    panel.appendChild(d);
+  }
+
+  function boot(){
+    try{ ensurePage('gatepass','Digital Gate Pass','operations'); gpRender(); ensureNav('gatepass','operations','🛂','Gate Pass'); }catch(e){}
+    try{ ensurePage('proforma','Proforma Invoice','finance'); pfRender(); ensureNav('proforma','finance','🧾','Proforma Invoice'); }catch(e){}
+    try{ otaNote(); }catch(e){}
+    try{ var _sp=w.showPage; w.showPage=function(id){ var r=_sp?_sp.apply(this,arguments):undefined; try{ if(id==='gatepass')gpRender(); else if(id==='proforma')pfRender(); }catch(e){} return r; }; }catch(e){}
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',boot); else boot();
 })();
 </script>
 </html>
