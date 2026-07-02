@@ -17,7 +17,11 @@ function buildBookingValidator({ roomTypeExists } = {}) {
       if (!input.room_type_id) reasons.push('room_type_required');
       else if (typeof roomTypeExists === 'function' && !roomTypeExists(input.room_type_id)) reasons.push('room_type_not_found');
       if (!(Number(input.adults) >= 1)) reasons.push('adult_required');
-      if (availability && availability.available === false) reasons.push('unavailable');
+      // Fail-closed availability (Phase 37 WI-1): surface the specific reason the
+      // guard reported (availability_provider_unwired / availability_unknown /
+      // property_context_required), falling back to the generic 'unavailable' for a
+      // genuine zero-inventory result. Additive detail only; envelope shape unchanged.
+      if (availability && availability.available === false) reasons.push(availability.reason || 'unavailable');
       if (pricing && pricing.ok === false) reasons.push('pricing_failed');
       return reasons.length ? { ok: false, reason: 'VALIDATION_FAILED', detail: reasons } : { ok: true };
     }

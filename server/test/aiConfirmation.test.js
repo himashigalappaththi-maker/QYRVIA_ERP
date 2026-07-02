@@ -187,7 +187,9 @@ test('Booking Engine onEvent drives a confirmation for a real create', async () 
   // collect events synchronously so the assertion is deterministic (onEvent is fire-and-forget)
   const seen = [];
   const onEvent = (ev) => { seen.push(ev); };
-  const engine = buildBookingEngine({ commandBus, onEvent });
+  // Phase 37 WI-1: availability is fail-closed; supply an explicit finite provider so this
+  // AI-confirmation integration test's (pre-WI-1 implicit) availability assumption is honest.
+  const engine = buildBookingEngine({ commandBus, onEvent, availabilityProvider: () => 5 });
   const ctx = { tenantId: 't1', propertyId: 'p1' };
   const r = await engine.service.createBooking({
     channel: 'AI_WHATSAPP', external_ref: 'wa:+15559999', room_type_id: 'rt-deluxe',
