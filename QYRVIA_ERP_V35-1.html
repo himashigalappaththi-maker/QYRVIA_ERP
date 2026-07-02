@@ -4496,6 +4496,49 @@ th{border-bottom:2px solid #C9A84C !important}
           <p style="font-size:12px;color:var(--grey-600);margin-bottom:10px">Entries you have flagged for reprocess. The background worker retries them — requesting reprocess does not trigger a live OTA sync directly.</p>
           <div id="qvOpsReprocessBody" style="font-size:13px"></div>
         </div>
+
+        <!-- Credentials (Phase 40) — write-only; secrets are never displayed -->
+        <div class="card">
+          <div class="card-header"><div class="card-title">🔐 Channel Credentials</div><button class="btn btn-secondary btn-sm" onclick="qvChannelCredLoad()">↻ Refresh</button></div>
+          <p style="font-size:12px;color:var(--grey-600);margin-bottom:10px">Credentials are stored <strong>encrypted</strong> and are <strong>never displayed again</strong> after saving. This form only writes new values.</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:10px">
+            <div><label class="form-label">Channel</label><input id="qvCredChannel" type="text" class="form-input" placeholder="e.g. BOOKING_COM"></div>
+            <div><label class="form-label">Credential ref</label><input id="qvCredRef" type="text" class="form-input" placeholder="e.g. bookingcom-main"></div>
+            <div><label class="form-label">Type</label><select id="qvCredType" class="form-input"><option value="API_KEY">API Key</option><option value="OAUTH2">OAuth2 token</option><option value="HMAC">HMAC secret</option><option value="BASIC">Basic (user:pass)</option></select></div>
+            <div><label class="form-label">Secret value</label><input id="qvCredSecret" type="password" class="form-input" autocomplete="new-password" placeholder="write-only"></div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+            <button class="btn btn-primary btn-sm" id="qvCredSaveBtn" onclick="qvChannelCredSave()">💾 Save Credential</button>
+            <button class="btn btn-teal btn-sm" onclick="qvChannelCredTest()">🔌 Test Connection</button>
+          </div>
+          <div id="qvCredResult" style="font-size:13px;margin-bottom:8px"></div>
+          <div class="table-wrap">
+            <table><thead><tr><th>Channel</th><th>Ref</th><th>Type</th><th>Status</th><th>Configured</th><th>Updated</th></tr></thead>
+            <tbody id="qvCredBody"></tbody></table>
+          </div>
+          <div id="qvCredEmpty" style="text-align:center;padding:20px;color:var(--grey-500);font-size:13px;display:none">No credentials configured yet.</div>
+        </div>
+
+        <!-- Room / Rate Mapping (Phase 40) -->
+        <div class="card">
+          <div class="card-header"><div class="card-title">🗺️ Room / Rate Mapping</div><button class="btn btn-secondary btn-sm" onclick="qvChannelMapLoad()">↻ Refresh</button></div>
+          <p style="font-size:12px;color:var(--grey-600);margin-bottom:10px">Map your internal room type (and rate plan) to each channel's codes. Operational metadata only.</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:10px">
+            <div><label class="form-label">Channel</label><input id="qvMapChannel" type="text" class="form-input" placeholder="e.g. AGODA"></div>
+            <div><label class="form-label">Local room type</label><input id="qvMapRoomType" type="text" class="form-input" placeholder="e.g. rt-standard"></div>
+            <div><label class="form-label">Channel room code</label><input id="qvMapOtaRoom" type="text" class="form-input" placeholder="remote room id"></div>
+            <div><label class="form-label">Channel rate plan</label><input id="qvMapOtaRate" type="text" class="form-input" placeholder="remote rate plan id"></div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+            <button class="btn btn-primary btn-sm" id="qvMapSaveBtn" onclick="qvChannelMapSave()">💾 Save Mapping</button>
+          </div>
+          <div id="qvMapResult" style="font-size:13px;margin-bottom:8px"></div>
+          <div class="table-wrap">
+            <table><thead><tr><th>Channel</th><th>Local room type</th><th>Channel room</th><th>Rate plan</th><th>Enabled</th><th>Ver</th></tr></thead>
+            <tbody id="qvMapBody"></tbody></table>
+          </div>
+          <div id="qvMapEmpty" style="text-align:center;padding:20px;color:var(--grey-500);font-size:13px;display:none">No mappings configured yet.</div>
+        </div>
       </div>
 
     </div>
@@ -11898,6 +11941,8 @@ function qvChannelOpsInit(){
   qvChannelOpsInited=true;
   qvChannelOpsLoadHealth();
   qvChannelOpsLoadDlq();
+  if(typeof qvChannelCredLoad==='function')qvChannelCredLoad();   // Phase 40
+  if(typeof qvChannelMapLoad==='function')qvChannelMapLoad();     // Phase 40
 }
 function qvChannelOpsEsc(v){
   return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});
@@ -12101,6 +12146,104 @@ async function qvBookingEngineSubmit(){
   out.innerHTML='<div style="background:#fdecea;border:1.5px solid #f5c6cb;border-radius:8px;padding:12px;color:#8a1c1c">'+
     '<strong>Booking not completed.</strong> '+qvBEEsc(qvBEReason(code,detail))+
     '<div style="font-size:11px;color:var(--grey-500);margin-top:4px">Reference code: '+qvBEEsc(code)+'</div></div>';
+}
+
+/* ═══ Phase 40 — Channel Credentials + Mapping (qvChannelCred* / qvChannelMap*) ═══
+   Reuses the Phase 37 helpers (qvChannelOpsFetch / qvChannelOpsEsc /
+   qvChannelOpsUnavailable / qvChannelOpsErr). Credentials are WRITE-ONLY: the
+   secret is sent once, cleared from the DOM immediately, and NEVER read back —
+   status/list render safe metadata only (no secret, no payload). Save buttons are
+   guarded against duplicate submit. */
+var QV_CRED = { status:'/api/channel/credentials/status', save:'/api/channel/credentials' };
+var QV_MAP  = { list:'/api/channel/mappings', save:'/api/channel/mappings' };
+var qvCredPending=false, qvMapPending=false;
+function qvCredPayload(type,secret){
+  if(type==='OAUTH2')return {token:secret};
+  if(type==='HMAC')return {secret:secret};
+  if(type==='BASIC'){ var i=secret.indexOf(':'); return {username:i>=0?secret.slice(0,i):secret, password:i>=0?secret.slice(i+1):''}; }
+  return {api_key:secret};
+}
+async function qvChannelCredLoad(){
+  var body=document.getElementById('qvCredBody'), empty=document.getElementById('qvCredEmpty');
+  if(!body)return;
+  body.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--grey-500);padding:14px">⏳ Loading…</td></tr>';
+  if(empty)empty.style.display='none';
+  var r=await qvChannelOpsFetch(QV_CRED.status);
+  if(r.unavailable){ body.innerHTML='<tr><td colspan="6" style="padding:10px">'+qvChannelOpsUnavailable()+'</td></tr>'; return; }
+  if(!r.ok||!r.data){ body.innerHTML='<tr><td colspan="6" style="padding:10px">'+qvChannelOpsErr(r)+'</td></tr>'; return; }
+  var items=(r.data.data&&r.data.data.items)||[];
+  if(!items.length){ body.innerHTML=''; if(empty)empty.style.display='block'; return; }
+  body.innerHTML=items.map(function(x){
+    return '<tr>'+
+      '<td>'+qvChannelOpsEsc(x.channel)+'</td>'+
+      '<td>'+qvChannelOpsEsc(x.credentials_ref)+'</td>'+
+      '<td>'+qvChannelOpsEsc(x.credential_type)+'</td>'+
+      '<td>'+qvChannelOpsEsc(x.status)+'</td>'+
+      '<td>'+(x.configured?'<span class="badge ok">yes</span>':'no')+'</td>'+
+      '<td>'+qvChannelOpsEsc(x.updated_at)+'</td></tr>';
+  }).join('');
+}
+async function qvChannelCredSave(){
+  if(qvCredPending)return;                       // prevent duplicate submit
+  var channel=(document.getElementById('qvCredChannel').value||'').trim();
+  var ref=(document.getElementById('qvCredRef').value||'').trim();
+  var type=document.getElementById('qvCredType').value||'API_KEY';
+  var secret=document.getElementById('qvCredSecret').value||'';
+  var out=document.getElementById('qvCredResult');
+  if(!channel||!ref||!secret){ out.innerHTML='<span style="color:#c62828">Enter channel, credential ref, and a secret value.</span>'; return; }
+  var btn=document.getElementById('qvCredSaveBtn');
+  qvCredPending=true; if(btn){ btn.disabled=true; btn.textContent='⏳ Saving…'; }
+  out.innerHTML='<span style="color:var(--grey-500)">⏳ Saving securely…</span>';
+  var r=await qvChannelOpsFetch(QV_CRED.save,{method:'POST',body:JSON.stringify({channel:channel,credentials_ref:ref,credential_type:type,payload:qvCredPayload(type,secret)})});
+  qvCredPending=false; if(btn){ btn.disabled=false; btn.textContent='💾 Save Credential'; }
+  document.getElementById('qvCredSecret').value=''; // clear the secret from the DOM immediately
+  if(r.unavailable){ out.innerHTML=qvChannelOpsUnavailable(); return; }
+  if(r.ok&&r.data&&r.data.ok){ out.innerHTML='<span class="badge ok">SAVED</span> <span style="color:var(--grey-700)">Credential stored securely for '+qvChannelOpsEsc(channel)+'. It is encrypted and will not be shown again.</span>'; qvChannelCredLoad(); return; }
+  out.innerHTML='<span style="color:#c62828">⚠️ '+qvChannelOpsEsc((r.data&&r.data.error)||('Save failed ('+r.status+')'))+'</span>';
+}
+function qvChannelCredTest(){
+  // Reuse the Channel Ops Test Connection card (readiness-only, sandbox).
+  var channel=(document.getElementById('qvCredChannel').value||'').trim();
+  var el=document.getElementById('qvOpsTestChannel');
+  if(channel && el)el.value=channel;
+  if(typeof qvChannelOpsTest==='function')qvChannelOpsTest();
+}
+async function qvChannelMapLoad(){
+  var body=document.getElementById('qvMapBody'), empty=document.getElementById('qvMapEmpty');
+  if(!body)return;
+  body.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--grey-500);padding:14px">⏳ Loading…</td></tr>';
+  if(empty)empty.style.display='none';
+  var r=await qvChannelOpsFetch(QV_MAP.list);
+  if(r.unavailable){ body.innerHTML='<tr><td colspan="6" style="padding:10px">'+qvChannelOpsUnavailable()+'</td></tr>'; return; }
+  if(!r.ok||!r.data){ body.innerHTML='<tr><td colspan="6" style="padding:10px">'+qvChannelOpsErr(r)+'</td></tr>'; return; }
+  var items=(r.data.data&&r.data.data.items)||[];
+  if(!items.length){ body.innerHTML=''; if(empty)empty.style.display='block'; return; }
+  body.innerHTML=items.map(function(x){
+    return '<tr>'+
+      '<td>'+qvChannelOpsEsc(x.channel)+'</td>'+
+      '<td>'+qvChannelOpsEsc(x.room_type_id)+'</td>'+
+      '<td>'+qvChannelOpsEsc(x.ota_room_id||'—')+'</td>'+
+      '<td>'+qvChannelOpsEsc(x.ota_rate_plan_id||'—')+'</td>'+
+      '<td>'+(x.enabled===false?'no':'yes')+'</td>'+
+      '<td>'+qvChannelOpsEsc(x.mapping_version)+'</td></tr>';
+  }).join('');
+}
+async function qvChannelMapSave(){
+  if(qvMapPending)return;                        // prevent duplicate submit
+  var channel=(document.getElementById('qvMapChannel').value||'').trim();
+  var rt=(document.getElementById('qvMapRoomType').value||'').trim();
+  var otaRoom=(document.getElementById('qvMapOtaRoom').value||'').trim();
+  var otaRate=(document.getElementById('qvMapOtaRate').value||'').trim();
+  var out=document.getElementById('qvMapResult');
+  if(!channel||!rt){ out.innerHTML='<span style="color:#c62828">Enter channel and local room type.</span>'; return; }
+  var btn=document.getElementById('qvMapSaveBtn');
+  qvMapPending=true; if(btn){ btn.disabled=true; btn.textContent='⏳ Saving…'; }
+  out.innerHTML='<span style="color:var(--grey-500)">⏳ Saving mapping…</span>';
+  var r=await qvChannelOpsFetch(QV_MAP.save,{method:'POST',body:JSON.stringify({channel:channel,room_type_id:rt,ota_room_id:otaRoom||null,ota_rate_plan_id:otaRate||null})});
+  qvMapPending=false; if(btn){ btn.disabled=false; btn.textContent='💾 Save Mapping'; }
+  if(r.unavailable){ out.innerHTML=qvChannelOpsUnavailable(); return; }
+  if(r.ok&&r.data&&r.data.ok){ var res=r.data.result||{}; out.innerHTML='<span class="badge ok">SAVED</span> <span style="color:var(--grey-700)">Mapping v'+qvChannelOpsEsc(res.mapping_version||1)+' saved for '+qvChannelOpsEsc(channel)+'.</span>'; qvChannelMapLoad(); return; }
+  out.innerHTML='<span style="color:#c62828">⚠️ '+qvChannelOpsEsc((r.data&&r.data.error)||('Save failed ('+r.status+')'))+'</span>';
 }
 
 // ── KPI strip — extended with OOO/OOS/Occupancy% ──
