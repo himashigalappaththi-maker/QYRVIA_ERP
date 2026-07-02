@@ -303,6 +303,7 @@ try {
   bookingEngine = buildBookingEngine({
     commandBus,
     bookingStore: channelPersistence && channelPersistence.booking,
+    pmsRepo, // Phase 37 WI-1b: back the fail-closed availability guard with real PMS inventory
     onEvent: aiConfirmation && aiConfirmation.onEvent // Phase 27.3: undefined when confirmation is OFF
   });
   logger.info('[boot] booking engine ready');
