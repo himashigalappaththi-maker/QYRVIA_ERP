@@ -3905,6 +3905,7 @@ th{border-bottom:2px solid #C9A84C !important}
         <button id="cmTab-agents" class="cm-tab" onclick="cmShowTab('agents')">🤝 Travel Agents</button>
         <button id="cmTab-log" class="cm-tab" onclick="cmShowTab('log')">📋 Bookings Log</button>
         <button id="cmTab-revenue" class="cm-tab" onclick="cmShowTab('revenue')">📊 Revenue</button>
+        <button id="cmTab-ops" class="cm-tab" onclick="cmShowTab('ops')">🩺 Channel Ops</button>
       </div>
 
       <!-- TAB: OTA CHANNELS -->
@@ -4449,6 +4450,51 @@ th{border-bottom:2px solid #C9A84C !important}
             <tbody id="cmAgentLogBody"></tbody></table>
           </div>
           <div id="cmAgentLogEmpty" style="text-align:center;padding:20px;color:var(--grey-500);font-size:12px">No agent bookings logged yet.</div>
+        </div>
+      </div>
+
+      <!-- TAB: CHANNEL OPS (Phase 37 WI-4a) — read-only diagnostics, sandbox probes, no live OTA -->
+      <div id="cmPanel-ops" class="cm-panel" style="display:none">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">🩺 Channel Ops — Diagnostics</div>
+            <span style="font-size:11px;color:var(--grey-500)">Read-only diagnostics · sandbox probes only · no live OTA calls</span>
+          </div>
+          <p style="font-size:12px;color:var(--grey-600);margin:0">Operational health and failed-sync recovery for connected channels. Connection tests are readiness-only (sandbox) and never expose credentials or payloads.</p>
+        </div>
+
+        <!-- Test Connection -->
+        <div class="card">
+          <div class="card-header"><div class="card-title">🔌 Test Connection</div></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+            <input id="qvOpsTestChannel" class="form-input" style="max-width:240px" placeholder="Channel code (e.g. QTCN)">
+            <button class="btn btn-teal btn-sm" onclick="qvChannelOpsTest()">Run Test</button>
+          </div>
+          <div id="qvOpsTestResult" style="font-size:13px;color:var(--grey-500)">Enter a channel code and run a readiness-only sandbox probe.</div>
+        </div>
+
+        <!-- Sync Health -->
+        <div class="card">
+          <div class="card-header"><div class="card-title">📈 Sync Health</div><button class="btn btn-secondary btn-sm" onclick="qvChannelOpsLoadHealth()">↻ Refresh</button></div>
+          <div id="qvOpsHealthBody" style="font-size:13px;color:var(--grey-500)">Loading…</div>
+        </div>
+
+        <!-- DLQ / Failed Syncs -->
+        <div class="card">
+          <div class="card-header"><div class="card-title">🧯 DLQ / Failed Syncs</div><button class="btn btn-secondary btn-sm" onclick="qvChannelOpsLoadDlq()">↻ Reload</button></div>
+          <p style="font-size:12px;color:var(--grey-600);margin-bottom:10px">Failed sync operations for your property. Metadata only — guest, payment, and channel payloads are never shown.</p>
+          <div class="table-wrap">
+            <table><thead><tr><th>ID</th><th>Channel</th><th>Action</th><th>Reservation</th><th>Attempts</th><th>Last Error</th><th>Reprocess?</th><th>Created</th><th></th></tr></thead>
+            <tbody id="qvOpsDlqBody"></tbody></table>
+          </div>
+          <div id="qvOpsDlqEmpty" style="text-align:center;padding:24px;color:var(--grey-500);font-size:13px;display:none">✅ No failed syncs. Your channel queue is clean.</div>
+        </div>
+
+        <!-- Reprocess Queue -->
+        <div class="card">
+          <div class="card-header"><div class="card-title">🔁 Reprocess Queue</div></div>
+          <p style="font-size:12px;color:var(--grey-600);margin-bottom:10px">Entries you have flagged for reprocess. The background worker retries them — requesting reprocess does not trigger a live OTA sync directly.</p>
+          <div id="qvOpsReprocessBody" style="font-size:13px"></div>
         </div>
       </div>
 
@@ -11792,6 +11838,121 @@ function cmShowTab(tab){
   if(tab==='protection'){cmRenderUpgradeLog();cmPopulateRoomChangeSelects();}
   if(tab==='yield'){cmRenderYieldTab();}
   if(tab==='agents'){cmRenderAgentGrid();cmRenderAgentLog();}
+  if(tab==='ops')qvChannelOpsInit();
+}
+
+/* ═══ Phase 37 WI-4a — Channel Ops Dashboard (qvChannelOps*) ═══
+   Additive, read-mostly UI over backend ops APIs:
+     POST /api/channel/test-connection · GET /api/channel/sync-health
+     GET /api/channel/dlq · POST /api/channel/dlq/reprocess
+   Renders metadata only — never payload_json, guest/payment payloads, or secrets.
+   No live-OTA wording; test is a sandbox readiness probe. Standalone-safe: any
+   fetch failure degrades to an "API unavailable" state (no throws). */
+var QV_CHANNEL_OPS = {
+  test:'/api/channel/test-connection', health:'/api/channel/sync-health',
+  dlq:'/api/channel/dlq', reprocess:'/api/channel/dlq/reprocess'
+};
+var qvChannelOpsInited=false;
+function qvChannelOpsInit(){
+  if(qvChannelOpsInited)return;
+  qvChannelOpsInited=true;
+  qvChannelOpsLoadHealth();
+  qvChannelOpsLoadDlq();
+}
+function qvChannelOpsEsc(v){
+  return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});
+}
+function qvChannelOpsBool(v){ return v?'<span style="color:var(--green-700,#2e7d32);font-weight:700">✔</span>':'<span style="color:#c62828;font-weight:700">✕</span>'; }
+function qvChannelOpsUnavailable(){ return '<span style="color:var(--grey-500)">🔌 Channel API unavailable — running in standalone mode. Connect the QYRVIA server to use live ops.</span>'; }
+function qvChannelOpsErr(r){ return '<span style="color:#c62828">⚠️ '+qvChannelOpsEsc((r.data&&r.data.error)||('Request failed ('+r.status+')'))+'</span>'; }
+async function qvChannelOpsFetch(url,opts){
+  try{
+    const resp=await fetch(url,Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));
+    let body=null; try{ body=await resp.json(); }catch(_){}
+    return {ok:resp.ok,status:resp.status,data:body,unavailable:false};
+  }catch(e){ return {ok:false,status:0,data:null,unavailable:true}; }
+}
+async function qvChannelOpsTest(){
+  const chan=(document.getElementById('qvOpsTestChannel').value||'').trim();
+  const out=document.getElementById('qvOpsTestResult');
+  if(!chan){ out.innerHTML='<span style="color:var(--grey-500)">Enter a channel code first.</span>'; return; }
+  out.innerHTML='<span style="color:var(--grey-500)">⏳ Testing…</span>';
+  const r=await qvChannelOpsFetch(QV_CHANNEL_OPS.test,{method:'POST',body:JSON.stringify({channel:chan})});
+  if(r.unavailable){ out.innerHTML=qvChannelOpsUnavailable(); return; }
+  if(!r.ok||!r.data){ out.innerHTML=qvChannelOpsErr(r); return; }
+  const d=(r.data&&r.data.data)||{}, checks=d.checks||{}, tr=checks.transport||{};
+  const badge=d.ready?'<span class="badge ok">READY</span>':'<span class="badge" style="background:#fde8e8;color:#c62828">NOT READY</span>';
+  out.innerHTML=
+    '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">'+badge+
+      '<span style="font-size:11px;color:var(--grey-600)">mode: '+qvChannelOpsEsc(d.mode||'sandbox')+' · probe: '+qvChannelOpsEsc(d.probe||'readiness_only')+'</span></div>'+
+    '<div style="font-size:12px;color:var(--grey-700)">adapter '+qvChannelOpsBool(checks.adapter)+
+      ' · transport '+qvChannelOpsBool(tr.ok)+(tr.kind?' <span style="color:var(--grey-500)">('+qvChannelOpsEsc(tr.kind)+')</span>':'')+
+      ' · credentials '+qvChannelOpsBool(checks.credentials)+'</div>'+
+    (d.reason?'<div style="font-size:12px;color:#c62828;margin-top:4px">reason: '+qvChannelOpsEsc(d.reason)+'</div>':'');
+}
+function qvChannelOpsMetric(label,val){
+  return '<div style="background:var(--grey-50,#f7f8fa);border:1px solid var(--grey-200);border-radius:8px;padding:12px;text-align:center">'+
+    '<div style="font-size:22px;font-weight:800;color:#1565C0">'+qvChannelOpsEsc(val)+'</div>'+
+    '<div style="font-size:11px;color:var(--grey-600);margin-top:2px">'+qvChannelOpsEsc(label)+'</div></div>';
+}
+async function qvChannelOpsLoadHealth(){
+  const out=document.getElementById('qvOpsHealthBody');
+  if(!out)return;
+  out.innerHTML='<span style="color:var(--grey-500)">⏳ Loading…</span>';
+  const r=await qvChannelOpsFetch(QV_CHANNEL_OPS.health);
+  if(r.unavailable){ out.innerHTML=qvChannelOpsUnavailable(); return; }
+  if(!r.ok||!r.data){ out.innerHTML=qvChannelOpsErr(r); return; }
+  const d=(r.data&&r.data.data)||{}, q=d.queue||{}, chans=d.channels||[];
+  const dlqTenant=(d.deadLetters&&d.deadLetters.tenantCount!=null)?d.deadLetters.tenantCount:'—';
+  out.innerHTML='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">'+
+    qvChannelOpsMetric('Channels',chans.length)+
+    qvChannelOpsMetric('Queue size',q.size!=null?q.size:'—')+
+    qvChannelOpsMetric('Queue DLQ (node)',q.deadLetter!=null?q.deadLetter:'—')+
+    qvChannelOpsMetric('Bookings',d.bookings!=null?d.bookings:'—')+
+    qvChannelOpsMetric('DLQ (this property)',dlqTenant)+
+    '</div>';
+}
+function qvChannelOpsDlqRow(x){
+  const reqd=!!x.reprocess_requested;
+  const act=reqd
+    ? '<span class="badge ok" title="Flagged for reprocess">Requested</span>'
+    : '<button class="btn btn-secondary btn-sm" onclick="qvChannelOpsReprocess(\''+qvChannelOpsEsc(x.id)+'\')">Request Reprocess</button>';
+  return '<tr>'+
+    '<td>'+qvChannelOpsEsc(x.id)+'</td>'+
+    '<td>'+qvChannelOpsEsc(x.channel)+'</td>'+
+    '<td>'+qvChannelOpsEsc(x.action)+'</td>'+
+    '<td>'+qvChannelOpsEsc(x.reservation_id)+'</td>'+
+    '<td>'+qvChannelOpsEsc(x.attempts)+'</td>'+
+    '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+qvChannelOpsEsc(x.last_error)+'">'+qvChannelOpsEsc(x.last_error||'—')+'</td>'+
+    '<td>'+(reqd?'yes':'no')+'</td>'+
+    '<td title="updated: '+qvChannelOpsEsc(x.updated_at)+'">'+qvChannelOpsEsc(x.created_at)+'</td>'+
+    '<td>'+act+'</td></tr>';
+}
+async function qvChannelOpsLoadDlq(){
+  const body=document.getElementById('qvOpsDlqBody');
+  const empty=document.getElementById('qvOpsDlqEmpty');
+  const rq=document.getElementById('qvOpsReprocessBody');
+  if(!body)return;
+  body.innerHTML='<tr><td colspan="9" style="text-align:center;color:var(--grey-500);padding:16px">⏳ Loading…</td></tr>';
+  if(empty)empty.style.display='none';
+  const r=await qvChannelOpsFetch(QV_CHANNEL_OPS.dlq);
+  if(r.unavailable){ body.innerHTML='<tr><td colspan="9" style="padding:12px">'+qvChannelOpsUnavailable()+'</td></tr>'; if(rq)rq.innerHTML='<span style="color:var(--grey-500)">'+qvChannelOpsUnavailable()+'</span>'; return; }
+  if(!r.ok||!r.data){ body.innerHTML='<tr><td colspan="9" style="padding:12px">'+qvChannelOpsErr(r)+'</td></tr>'; if(rq)rq.innerHTML=''; return; }
+  const items=(r.data.data&&r.data.data.items)||[];
+  if(!items.length){ body.innerHTML=''; if(empty)empty.style.display='block'; if(rq)rq.innerHTML='<div style="color:var(--grey-500);padding:8px">No entries flagged for reprocess.</div>'; return; }
+  body.innerHTML=items.map(qvChannelOpsDlqRow).join('');
+  const flagged=items.filter(x=>x.reprocess_requested);
+  if(rq)rq.innerHTML=flagged.length
+    ? flagged.map(x=>'<div style="padding:6px 8px;border-bottom:1px solid var(--grey-100)">🔁 <strong>'+qvChannelOpsEsc(x.channel)+'</strong> · '+qvChannelOpsEsc(x.action)+' · res '+qvChannelOpsEsc(x.reservation_id)+' <span style="color:var(--grey-500)">('+qvChannelOpsEsc(x.id)+')</span></div>').join('')
+    : '<div style="color:var(--grey-500);padding:8px">No entries flagged for reprocess.</div>';
+}
+async function qvChannelOpsReprocess(id){
+  if(!id)return;
+  const r=await qvChannelOpsFetch(QV_CHANNEL_OPS.reprocess,{method:'POST',body:JSON.stringify({id:id})});
+  if(r.unavailable){ toast('Channel API unavailable — standalone mode','info'); return; }
+  if(!r.ok){ toast('Reprocess request failed: '+((r.data&&r.data.error)||r.status),'error'); return; }
+  toast('Reprocess requested (queued for worker) ✅','success');
+  qvChannelOpsLoadDlq();
 }
 
 // ── KPI strip — extended with OOO/OOS/Occupancy% ──
