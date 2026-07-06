@@ -3906,6 +3906,7 @@ th{border-bottom:2px solid #C9A84C !important}
         <button id="cmTab-log" class="cm-tab" onclick="cmShowTab('log')">📋 Bookings Log</button>
         <button id="cmTab-revenue" class="cm-tab" onclick="cmShowTab('revenue')">📊 Revenue</button>
         <button id="cmTab-ops" class="cm-tab" onclick="cmShowTab('ops')">🩺 Channel Ops</button>
+        <button id="cmTab-tests" class="cm-tab" onclick="cmShowTab('tests')">🧪 Smoke Tests</button>
       </div>
 
       <!-- TAB: OTA CHANNELS -->
@@ -4049,6 +4050,18 @@ th{border-bottom:2px solid #C9A84C !important}
                 <label class="form-label">Net (Auto)</label>
                 <input type="text" id="cmNetDisplay" class="form-control" disabled placeholder="Rs. 0.00"/>
               </div>
+              <div class="form-group">
+                <label class="form-label">Deposit / Advance (Rs.)</label>
+                <input type="number" id="cmDeposit" class="form-control" placeholder="0.00" min="0"/>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Payment State</label>
+                <select id="cmPayState" class="form-control">
+                  <option value="unpaid">Unpaid — collect at property</option>
+                  <option value="deposit">Deposit taken — balance due</option>
+                  <option value="paid">Paid in full</option>
+                </select>
+              </div>
             </div>
             <div class="form-group" style="margin-top:4px">
               <label class="form-label">Special Requests / Notes</label>
@@ -4080,7 +4093,7 @@ th{border-bottom:2px solid #C9A84C !important}
           <div class="table-wrap">
             <table><thead><tr>
               <th>OTA</th><th>Ref ID</th><th>Guest</th><th>Room</th>
-              <th>Check-In</th><th>Check-Out</th><th>Nights</th><th>Gross</th><th>Comm%</th><th>Net</th><th>Status</th><th></th>
+              <th>Check-In</th><th>Check-Out</th><th>Nights</th><th>Gross</th><th>Comm%</th><th>Net</th><th>Deposit</th><th>Payment</th><th>Status</th><th></th>
             </tr></thead><tbody id="cmLogBody"></tbody></table>
           </div>
           <div id="cmLogEmpty" style="text-align:center;padding:30px;color:var(--grey-500);font-size:13px;display:none">No OTA reservations yet. Use Push/Pull tab to import one.</div>
@@ -4538,6 +4551,24 @@ th{border-bottom:2px solid #C9A84C !important}
             <tbody id="qvMapBody"></tbody></table>
           </div>
           <div id="qvMapEmpty" style="text-align:center;padding:20px;color:var(--grey-500);font-size:13px;display:none">No mappings configured yet.</div>
+        </div>
+      </div>
+
+      <!-- TAB: SMOKE TESTS — in-browser, non-destructive verification of the distribution/booking logic -->
+      <div id="cmPanel-tests" class="cm-panel" style="display:none">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">🧪 Channel Manager Smoke Tests</div>
+            <button class="btn btn-primary btn-sm" onclick="cmRunSmokeTests()">▶ Run All Tests</button>
+          </div>
+          <p style="font-size:12px;color:var(--grey-600);margin:0">Runs the OTA import / cancel / modify, idempotency, no-overbooking, payment-state and distribution-core logic against a snapshot of your data, then restores it. <strong>Non-destructive</strong> — your live reservations are untouched. Results are also exposed on <code>window.__qvSmoke</code> for CI.</p>
+        </div>
+        <div class="card">
+          <div id="cmSmokeSummary" style="font-size:13px;color:var(--grey-500);margin-bottom:10px">Press “Run All Tests” to verify the channel manager end-to-end.</div>
+          <div class="table-wrap">
+            <table><thead><tr><th style="width:36px">#</th><th>Test</th><th style="width:80px">Result</th><th>Detail</th></tr></thead>
+            <tbody id="cmSmokeBody"></tbody></table>
+          </div>
         </div>
       </div>
 
@@ -11925,6 +11956,7 @@ function cmShowTab(tab){
   if(tab==='yield'){cmRenderYieldTab();}
   if(tab==='agents'){cmRenderAgentGrid();cmRenderAgentLog();}
   if(tab==='ops')qvChannelOpsInit();
+  if(tab==='tests'){/* run on demand via button; no auto-run to keep the tab instant */}
 }
 
 /* ═══ Phase 37 WI-4a — Channel Ops Dashboard (qvChannelOps*) ═══
@@ -12492,13 +12524,61 @@ function cmImportBooking(){
     }
   }
   const nights=Math.ceil((new Date(co)-new Date(ci))/(1000*60*60*24));
+  const deposit=parseFloat(document.getElementById('cmDeposit')?.value)||0;
+  // Derive payment state from the selected state, upgraded by any deposit entered.
+  let payState=document.getElementById('cmPayState')?.value||'unpaid';
+  if(payState==='unpaid' && deposit>0) payState='deposit';
   const d=getCMData();
-  d.bookings.push({id:'cm_'+Date.now(),otaSource:ota,otaRefId:ref,guestName:guest,guestEmail:email,room,checkIn:ci,checkOut:co,nights,amount,commission,net:amount-(amount*commission/100),notes,status:'confirmed',createdAt:new Date().toISOString()});
+  d.bookings.push({id:'cm_'+Date.now(),otaSource:ota,otaRefId:ref,guestName:guest,guestEmail:email,room,checkIn:ci,checkOut:co,nights,amount,commission,net:amount-(amount*commission/100),deposit,refund:0,payState,notes,status:'confirmed',createdAt:new Date().toISOString()});
   saveCMData(d);
   cmClearImportForm();cmRenderLog();cmRenderRevenueChart();cmRenderRevTable();cmRenderChannels();cmUpdateKPIs();
   toast('✅ Reservation from '+ota+' imported & inventory verified!','success');
 }
-function cmClearImportForm(){['cmOtaSource','cmOtaRefId','cmGuestName','cmGuestEmail','cmRoomNo','cmCheckIn','cmCheckOut','cmAmount','cmCommission','cmNotes','cmNetDisplay'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});}
+function cmClearImportForm(){['cmOtaSource','cmOtaRefId','cmGuestName','cmGuestEmail','cmRoomNo','cmCheckIn','cmCheckOut','cmAmount','cmCommission','cmNotes','cmNetDisplay','cmDeposit'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});const ps=document.getElementById('cmPayState');if(ps)ps.value='unpaid';}
+
+// ── Payment / deposit / refund state machine for OTA reservations ──
+// States: unpaid → deposit → paid ; and paid|deposit → refunded ; confirmed → no_show (deposit forfeit)
+const CM_PAY_STATES=['unpaid','deposit','paid','refunded','no_show'];
+function cmPayBadge(state){
+  const m={
+    unpaid:{t:'Unpaid',bg:'#f3f4f6',c:'#6b7280'},
+    deposit:{t:'Deposit',bg:'#fff7e6',c:'#b45309'},
+    paid:{t:'Paid',bg:'#e7f6ec',c:'#2e7d32'},
+    refunded:{t:'Refunded',bg:'#eef2ff',c:'#4338ca'},
+    no_show:{t:'No-show',bg:'#fdecea',c:'#c62828'}
+  };
+  const s=m[state]||m.unpaid;
+  return `<span style="background:${s.bg};color:${s.c};padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700">${s.t}</span>`;
+}
+function cmSetPayState(id,state){
+  if(!CM_PAY_STATES.includes(state))return;
+  const d=getCMData();
+  const b=(d.bookings||[]).find(x=>x.id===id);
+  if(!b)return;
+  b.payState=state;
+  if(state==='paid'){ b.refund=b.refund||0; }
+  if(state==='no_show'){ b.status='no-show'; }        // deposit is forfeited, kept as revenue
+  saveCMData(d);
+  cmRenderLog();cmRenderRevTable();cmRenderRevenueChart();
+  toast('Payment state → '+state,'success');
+}
+function cmRefundBooking(id){
+  const d=getCMData();
+  const b=(d.bookings||[]).find(x=>x.id===id);
+  if(!b)return;
+  const already=Number(b.refund)||0;
+  const max=Number(b.amount)||0;
+  const val=prompt('Refund amount (Rs.) — max '+max.toLocaleString('en-LK'), String(b.deposit||0));
+  if(val===null)return;
+  const amt=parseFloat(val)||0;
+  if(amt<0){ toast('Refund cannot be negative.','error'); return; }
+  if(amt>max){ toast('Refund exceeds booking amount.','error'); return; }
+  b.refund=amt;
+  b.payState='refunded';
+  saveCMData(d);
+  cmRenderLog();cmRenderRevTable();cmRenderRevenueChart();
+  toast('Refund of Rs. '+amt.toLocaleString('en-LK')+' recorded.','success');
+}
 
 // ── Bookings Log ──
 function cmRenderLog(){
@@ -12522,7 +12602,14 @@ function cmRenderLog(){
       <td>Rs. ${(b.amount||0).toLocaleString('en-LK',{minimumFractionDigits:2})}</td>
       <td>${b.commission||0}%</td>
       <td style="color:var(--green-700);font-weight:600">Rs. ${(b.net||0).toLocaleString('en-LK',{minimumFractionDigits:2})}</td>
-      <td><span class="badge ok">Confirmed</span></td>
+      <td>${(b.deposit||0)>0?'Rs. '+(b.deposit||0).toLocaleString('en-LK',{maximumFractionDigits:0}):'—'}${(b.refund||0)>0?'<div style="font-size:9px;color:#4338ca">↩ Rs. '+(b.refund||0).toLocaleString('en-LK',{maximumFractionDigits:0})+'</div>':''}</td>
+      <td>${cmPayBadge(b.payState||'unpaid')}
+        <select class="form-control" style="width:104px;font-size:10px;padding:2px 4px;margin-top:3px" onchange="cmSetPayState('${b.id}',this.value)">
+          ${CM_PAY_STATES.map(s=>`<option value="${s}"${(b.payState||'unpaid')===s?' selected':''}>${s}</option>`).join('')}
+        </select>
+        <button class="btn btn-secondary btn-xs" style="margin-top:2px;color:#4338ca" onclick="cmRefundBooking('${b.id}')">↩ Refund</button>
+      </td>
+      <td>${b.status==='no-show'?'<span class="badge" style="background:#fdecea;color:#c62828">No-show</span>':b.status==='cancelled'?'<span class="badge" style="background:#f3f4f6;color:#6b7280">Cancelled</span>':'<span class="badge ok">Confirmed</span>'}</td>
       <td><button class="btn btn-secondary btn-xs" style="color:var(--red-800)" onclick="cmDeleteBooking('${b.id}')">🗑️</button></td>
     </tr>`;
   }).join('');
@@ -12564,6 +12651,161 @@ function cmExportLogCSV(){
   const h='OTA,Ref ID,Guest,Email,Room,Check-In,Check-Out,Nights,Amount,Commission%,Net,Notes\n';
   const rows=d.bookings.map(b=>[b.otaSource,b.otaRefId||'',b.guestName,b.guestEmail||'',b.room,b.checkIn,b.checkOut,b.nights||'',b.amount||0,b.commission||0,b.net||0,b.notes||''].map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\n');
   const blob=new Blob([h+rows],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='ota-reservations.csv';a.click();URL.revokeObjectURL(url);toast('CSV exported.','success');
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ─── CHANNEL MANAGER SMOKE TESTS (item 14) ──────────────────────────
+//   In-browser, non-destructive verification of the distribution + booking
+//   logic. Snapshots the affected localStorage keys, exercises the real
+//   functions, then restores state so live reservations are never mutated.
+//   Results are mirrored to window.__qvSmoke for external/CI inspection.
+// ════════════════════════════════════════════════════════════════════
+function cmRunSmokeTests(){
+  const results=[];
+  const add=(name,pass,detail,skip)=>results.push({name,pass:!!pass,skip:!!skip,detail:detail||''});
+  const KEYS=['gk_v8',CM_KEY,CM_IDEMPOTENCY_KEY];
+  const snap={}; KEYS.forEach(k=>snap[k]=localStorage.getItem(k));
+  // far-future dates so tests never collide with real inventory
+  const ymd=d=>d.toISOString().slice(0,10);
+  const bd=new Date(); bd.setFullYear(bd.getFullYear()+50);
+  const D1=ymd(bd); const bd2=new Date(bd); bd2.setDate(bd2.getDate()+2); const D2=ymd(bd2);
+  const bd3=new Date(bd); bd3.setDate(bd3.getDate()+4); const D3=ymd(bd3);
+  try{
+    if(typeof loadDB==='function')loadDB();
+    if(typeof loadRoomDB==='function')loadRoomDB();
+
+    // T1 — Distribution core: channel registry present & includes direct channel
+    try{
+      const has=Array.isArray(CM_OTA_CHANNELS)&&CM_OTA_CHANNELS.length>0;
+      const direct=has&&CM_OTA_CHANNELS.some(c=>c.id==='qyrviaconnect');
+      add('Distribution core — channel registry',has&&direct,has?CM_OTA_CHANNELS.length+' channels; direct channel '+(direct?'present':'MISSING'):'no channels');
+    }catch(e){add('Distribution core — channel registry',false,'error: '+e.message);}
+
+    // T2 — OTA idempotency guard (unique-key dedupe)
+    try{
+      const ref='SMOKE-IDEM-'+Date.now();
+      const first=cmIsOTADuplicate(ref,'SMOKE');
+      const second=cmIsOTADuplicate(ref,'SMOKE');
+      add('OTA idempotency guard',first===false&&second===true,'first='+first+' second='+second);
+    }catch(e){add('OTA idempotency guard',false,'error: '+e.message);}
+
+    // Room-dependent tests need at least one room
+    const haveRooms=Array.isArray(DB.rooms)&&DB.rooms.length>0;
+
+    // T3 — OTA reservation import (inbound webhook → PMS booking)
+    let resRef=null;
+    try{
+      if(!haveRooms){ add('OTA reservation import',false,'no rooms configured',true); }
+      else{
+        resRef='SMOKE-RES-'+Date.now();
+        const r=cmProcessInboundWebhook({action:'new_reservation',channel:'SMOKE',reservation_id:resRef,guest_name:'Smoke Guest',check_in:D1,check_out:D2,amount:12000,currency:'LKR'});
+        const booked=(DB.bookings||[]).some(b=>b.otaRef===resRef);
+        add('OTA reservation import',r&&r.ok&&booked,'ok='+(r&&r.ok)+' booked='+booked+(r&&r.error?' err='+r.error:''));
+      }
+    }catch(e){add('OTA reservation import',false,'error: '+e.message);}
+
+    // T4 — OTA idempotency on re-delivery of same reservation
+    try{
+      if(!resRef){ add('OTA import de-dup on re-delivery',false,'prereq missing',true); }
+      else{
+        const before=(DB.bookings||[]).filter(b=>b.otaRef===resRef).length;
+        const r=cmProcessInboundWebhook({action:'new_reservation',channel:'SMOKE',reservation_id:resRef,guest_name:'Smoke Guest',check_in:D1,check_out:D2,amount:12000,currency:'LKR'});
+        const after=(DB.bookings||[]).filter(b=>b.otaRef===resRef).length;
+        add('OTA import de-dup on re-delivery',r&&r.duplicate===true&&after===before,'duplicate='+(r&&r.duplicate)+' count '+before+'→'+after);
+      }
+    }catch(e){add('OTA import de-dup on re-delivery',false,'error: '+e.message);}
+
+    // T5 — OTA modification import
+    try{
+      if(!resRef){ add('OTA modification import',false,'prereq missing',true); }
+      else{
+        const r=cmProcessInboundWebhook({action:'modify',channel:'SMOKE',reservation_id:resRef,check_in:D1,check_out:D3});
+        const bk=(DB.bookings||[]).find(b=>b.otaRef===resRef);
+        add('OTA modification import',r&&r.ok&&bk&&bk.checkOut===D3,'ok='+(r&&r.ok)+' checkOut='+(bk&&bk.checkOut));
+      }
+    }catch(e){add('OTA modification import',false,'error: '+e.message);}
+
+    // T6 — OTA cancellation import
+    try{
+      if(!resRef){ add('OTA cancellation import',false,'prereq missing',true); }
+      else{
+        const r=cmProcessInboundWebhook({action:'cancel',channel:'SMOKE',reservation_id:resRef});
+        const bk=(DB.bookings||[]).find(b=>b.otaRef===resRef);
+        add('OTA cancellation import',r&&r.ok&&bk&&bk.status==='cancelled','ok='+(r&&r.ok)+' status='+(bk&&bk.status));
+      }
+    }catch(e){add('OTA cancellation import',false,'error: '+e.message);}
+
+    // T7 — No-overbooking guard (conflict detection)
+    try{
+      if(!haveRooms){ add('No-overbooking guard',false,'no rooms configured',true); }
+      else{
+        const rid=DB.rooms[0].id;
+        const freeBefore=validateBookingNoConflict(D1,D2,[{roomId:rid}]);
+        DB.bookings.push({id:'smoke_ob_'+Date.now(),room:rid,checkIn:D1,checkOut:D2,status:'confirmed',guest:'OB',nights:2});
+        const conflict=validateBookingNoConflict(D1,D2,[{roomId:rid}]);
+        add('No-overbooking guard',freeBefore===null&&!!conflict,'free-before='+(freeBefore===null)+' conflict-after='+(!!conflict));
+      }
+    }catch(e){add('No-overbooking guard',false,'error: '+e.message);}
+
+    // T8 — Availability read fail-closed messaging
+    try{
+      const msg=qvBEReason('availability_unknown');
+      add('Availability fail-closed',/overbooking/i.test(msg),msg);
+    }catch(e){add('Availability fail-closed',false,'error: '+e.message);}
+
+    // T9 — Payment / deposit / refund state machine
+    try{
+      const d=getCMData();
+      const id='smoke_pay_'+Date.now();
+      d.bookings.push({id,otaSource:'SMOKE',guestName:'Pay Guest',room:'x',checkIn:D1,checkOut:D2,nights:2,amount:10000,commission:10,net:9000,deposit:3000,refund:0,payState:'deposit',status:'confirmed',createdAt:new Date().toISOString()});
+      saveCMData(d);
+      cmSetPayState(id,'paid');
+      let b=getCMData().bookings.find(x=>x.id===id); const paidOk=b&&b.payState==='paid';
+      cmSetPayState(id,'no_show');
+      b=getCMData().bookings.find(x=>x.id===id); const noShowOk=b&&b.payState==='no_show'&&b.status==='no-show';
+      const badgeOk=/Refunded/.test(cmPayBadge('refunded'))&&/Deposit/.test(cmPayBadge('deposit'));
+      add('Payment/deposit/refund state',paidOk&&noShowOk&&badgeOk,'paid='+paidOk+' no-show-forfeit='+noShowOk+' badges='+badgeOk);
+    }catch(e){add('Payment/deposit/refund state',false,'error: '+e.message);}
+
+    // T10 — iCal availability feed builds
+    try{
+      const ical=cmBuildIcalContent();
+      const ok=/BEGIN:VCALENDAR/.test(ical)&&/END:VCALENDAR/.test(ical);
+      add('iCal availability feed',ok,ok?'valid VCALENDAR ('+ical.length+' chars)':'malformed feed');
+    }catch(e){add('iCal availability feed',false,'error: '+e.message);}
+
+  }finally{
+    // Restore every touched key exactly as it was, then reload in-memory state.
+    KEYS.forEach(k=>{ if(snap[k]===null) localStorage.removeItem(k); else localStorage.setItem(k,snap[k]); });
+    try{ if(typeof loadDB==='function')loadDB(); if(typeof loadRoomDB==='function')loadRoomDB(); }catch(e){}
+    try{ if(typeof renderRooms==='function')renderRooms(); if(typeof cmUpdateKPIs==='function')cmUpdateKPIs(); if(typeof cmRenderLog==='function')cmRenderLog(); }catch(e){}
+  }
+
+  const passed=results.filter(r=>r.pass).length;
+  const skipped=results.filter(r=>r.skip).length;
+  const failed=results.filter(r=>!r.pass&&!r.skip).length;
+  window.__qvSmoke={ts:new Date().toISOString(),passed,failed,skipped,total:results.length,results};
+  cmRenderSmokeResults();
+  toast(failed===0?('✅ Smoke tests passed ('+passed+'/'+results.length+(skipped?', '+skipped+' skipped':'')+')'):('⚠️ '+failed+' smoke test(s) failed'),failed===0?'success':'error');
+  return window.__qvSmoke;
+}
+function cmRenderSmokeResults(){
+  const s=window.__qvSmoke; if(!s)return;
+  const sum=document.getElementById('cmSmokeSummary');
+  const body=document.getElementById('cmSmokeBody');
+  const esc=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  if(sum)sum.innerHTML=(s.failed===0
+      ?'<span class="badge ok">ALL PASS</span>'
+      :'<span class="badge" style="background:#fde8e8;color:#c62828">'+s.failed+' FAILED</span>')+
+    ' <strong>'+s.passed+'</strong> passed'+(s.failed?' · <strong style="color:#c62828">'+s.failed+'</strong> failed':'')+
+    (s.skipped?' · <span style="color:var(--grey-500)">'+s.skipped+' skipped</span>':'')+
+    ' <span style="color:var(--grey-500)">· '+esc(s.ts)+'</span>';
+  if(body)body.innerHTML=s.results.map((r,i)=>{
+    const badge=r.skip?'<span class="badge" style="background:#f3f4f6;color:#6b7280">SKIP</span>'
+      :r.pass?'<span class="badge ok">PASS</span>'
+      :'<span class="badge" style="background:#fde8e8;color:#c62828">FAIL</span>';
+    return '<tr><td>'+(i+1)+'</td><td>'+esc(r.name)+'</td><td>'+badge+'</td><td style="font-size:11px;color:var(--grey-600)">'+esc(r.detail)+'</td></tr>';
+  }).join('');
 }
 
 function cmInitPage(){
