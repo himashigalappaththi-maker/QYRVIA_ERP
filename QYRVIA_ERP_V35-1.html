@@ -12375,20 +12375,30 @@ function cmRenderChannels(){
     const cnt=(d.bookings||[]).filter(b=>b.otaSource===ch.name).length;
     const rate=rates.base?Math.round(rates.base*(1+((rates.channels[ch.id]&&rates.channels[ch.id].markup)||0)/100)):'—';
     const net=rates.base?Math.round(rate*(1-ch.commission/100)):'—';
+    const chQ=(typeof DB!=='undefined'&&Array.isArray(DB.otaQueue)?DB.otaQueue:[]).filter(r=>r.channel===ch.name);
+    const hasDLQ=chQ.some(r=>r.rollbackPending);
+    const hasFailed=chQ.some(r=>r.status==='Failed'&&!r.rollbackPending);
+    const hasRetrying=chQ.some(r=>r.status==='Queued'&&r.attempts>0);
+    const healthBadge=hasDLQ?'<span class="badge" style="font-size:9px;background:#fde8e8;color:#c62828">DLQ</span>'
+      :hasFailed?'<span class="badge" style="font-size:9px;background:#fff3cd;color:#856404">Degraded</span>'
+      :hasRetrying?'<span class="badge" style="font-size:9px;background:#e0f2fe;color:#0369a1">Recovering</span>'
+      :'<span class="badge ok" style="font-size:9px">iCal Ready</span>';
+    const healthStatus=hasDLQ?'⛔ Failed':hasFailed?'⚠️ Degraded':hasRetrying?'🔄 Recovering':'✅ Active';
+    const healthColor=hasDLQ?'#c62828':hasFailed?'#856404':hasRetrying?'#0369a1':'var(--green-700)';
     return `<div class="cm-channel-card" style="border:2px solid ${ch.color}22;border-top:4px solid ${ch.color}">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
         <div style="display:flex;align-items:center;gap:8px">
           <span style="font-size:24px">${ch.icon}</span>
           <div><div style="font-size:13px;font-weight:700">${ch.name}</div><div style="font-size:10px;color:var(--grey-500)">Commission: ${ch.commission}%</div></div>
         </div>
-        <span class="badge ok" style="font-size:9px">iCal Ready</span>
+        ${healthBadge}
       </div>
       <p style="font-size:11px;color:var(--grey-600);margin-bottom:10px;line-height:1.5">${ch.desc}</p>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px;background:var(--grey-50);border-radius:var(--radius-sm);padding:8px">
         <div style="font-size:10px;color:var(--grey-500)">Published Rate<br><strong style="color:var(--grey-900);font-size:12px">${rate!=='—'?'Rs. '+rate.toLocaleString('en-LK'):rate}</strong></div>
         <div style="font-size:10px;color:var(--grey-500)">Net You Receive<br><strong style="color:var(--green-700);font-size:12px">${net!=='—'?'Rs. '+net.toLocaleString('en-LK'):net}</strong></div>
         <div style="font-size:10px;color:var(--grey-500)">Bookings Logged<br><strong style="color:var(--grey-900);font-size:12px">${cnt}</strong></div>
-        <div style="font-size:10px;color:var(--grey-500)">Status<br><strong style="color:var(--green-700);font-size:12px">✅ Active</strong></div>
+        <div style="font-size:10px;color:var(--grey-500)">Status<br><strong style="color:${healthColor};font-size:12px">${healthStatus}</strong></div>
       </div>
       <div style="display:flex;gap:6px;margin-bottom:8px">
         <button class="btn btn-primary btn-xs" onclick="cmExportICal()">📅 iCal</button>
@@ -43579,8 +43589,8 @@ T.register('crm-flows', 'guest.merge rejects same-id', function () {
 
 // connector probes - use a fetch stub
 T.register('connectors-ext', 'probe updates configured=true on backend OK', async function () {
-  var orig = w.fetch || global.fetch;
-  w.fetch = global.fetch = async function (url) {
+  var orig = w.fetch || globalThis.fetch;
+  w.fetch = globalThis.fetch = async function (url) {
     return { ok:true, status:200, json: async function () { return { configured:true }; } };
   };
   try {
@@ -43589,22 +43599,22 @@ T.register('connectors-ext', 'probe updates configured=true on backend OK', asyn
     var s = c.status();
     T.assertEq(s.configured, true);
     T.assertEq(s.lastResult, 'configured');
-  } finally { w.fetch = global.fetch = orig; }
+  } finally { w.fetch = globalThis.fetch = orig; }
 });
 T.register('connectors-ext', 'probe marks unreachable on network fail', async function () {
-  var orig = w.fetch || global.fetch;
-  w.fetch = global.fetch = async function () { throw new Error('econnrefused'); };
+  var orig = w.fetch || globalThis.fetch;
+  w.fetch = globalThis.fetch = async function () { throw new Error('econnrefused'); };
   try {
     var c = C.get('stripe');
     await c.probe();
     var s = c.status();
     T.assertEq(s.configured, false);
     T.assert(s.lastResult.indexOf('unreachable') === 0);
-  } finally { w.fetch = global.fetch = orig; }
+  } finally { w.fetch = globalThis.fetch = orig; }
 });
 T.register('connectors-ext', 'healthCheck records healthy=true', async function () {
-  var orig = w.fetch || global.fetch;
-  w.fetch = global.fetch = async function () {
+  var orig = w.fetch || globalThis.fetch;
+  w.fetch = globalThis.fetch = async function () {
     return { ok:true, status:200, json: async function () { return { healthy:true }; } };
   };
   try {
@@ -43612,7 +43622,7 @@ T.register('connectors-ext', 'healthCheck records healthy=true', async function 
     await c.healthCheck();
     var s = c.status();
     T.assertEq(s.lastResult, 'healthy');
-  } finally { w.fetch = global.fetch = orig; }
+  } finally { w.fetch = globalThis.fetch = orig; }
 });
 
 try { console.log('[QYRVIA_CORE.ext] loaded - schemas=' + V.listSchemas().length + ' rbac=' + R.listActions().length); } catch (_) {}
