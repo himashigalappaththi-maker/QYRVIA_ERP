@@ -14610,11 +14610,14 @@ function saveKOT(doPrint,doWhatsApp){
     }
   }
   if(!items.length)return toast('Add at least one order item','error');
+  if(window.AUTH&&window.AUTH.user&&window.AUTH.user.role==='agent'&&type!=='Room Service')return toast('Agents may only create Room Service orders','error');
   const kot={
     id:uid(),kotNo,table,waiter,covers:+covers,type,notes,
     items,status:'Pending',date:today(),
     time:new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}),
-    createdBy:AUTH.user?AUTH.user.name:'System'
+    createdBy:AUTH.user?AUTH.user.name:'System',
+    agentId:(AUTH.user&&AUTH.user.role==='agent')?AUTH.user.id:null,
+    reservationId:(AUTH.user&&AUTH.user.role==='agent')?table:null
   };
   const kots=loadKOTs();
   kots.push(kot);
@@ -14984,7 +14987,8 @@ function kotPostToRoom(kotId){
 }
 
 function renderKOT(){
-  const kots=loadKOTs();
+  const _allKots=loadKOTs();
+  const kots=(window.AUTH&&window.AUTH.user&&window.AUTH.user.role==='agent')?_allKots.filter(k=>k.agentId===window.AUTH.user.id):_allKots;
   const todayStr=today();
   const todayKOTs=kots.filter(k=>k.date===todayStr&&!k.voided);
   const pending=todayKOTs.filter(k=>k.status==='Pending').length;
@@ -15119,6 +15123,7 @@ function filterKOTTable(){
 }
 
 function updateKOTStatus(id,status){
+  if(window.AUTH&&window.AUTH.user&&window.AUTH.user.role==='agent'){if(typeof toast==='function')toast('Agents may not change order status','error');return;}
   const kots=loadKOTs();
   const idx=kots.findIndex(k=>k.id===id);
   if(idx>=0){kots[idx].status=status;saveKOTs(kots);}
@@ -28693,6 +28698,11 @@ function patchShowPage() {
   const orig = window.showPage;
   window.showPage = function(id, navEl) {
     if (OPS_PAGE_IDS.includes(id)) {
+      // Agent access guard — OPS pages are not accessible to agents
+      if(window.AUTH&&window.AUTH.user&&window.AUTH.user.role==='agent'){
+        if(typeof toast==='function')toast('Access denied','error');
+        return;
+      }
       // Hide all V26 pages
       document.querySelectorAll(".page.active").forEach(el => el.classList.remove("active"));
       // Hide all ops pages
@@ -47904,7 +47914,7 @@ document.addEventListener('DOMContentLoaded',function(){
   w.gpScan=function(id,dir){ var rows=load(GP_KEY); var r=rows.filter(function(x){return x.id===id;})[0]; if(!r)return;
     r.status=dir; r.scans=r.scans||[]; r.scans.push({dir:dir,at:nowIso()}); save(GP_KEY,rows); gpRender(); };
   function gpBadge(s){ var c=s==='IN'?'#1b5e20':(s==='OUT'?'#b45309':'#374151'); return '<span style="background:'+c+'1a;color:'+c+';font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px">'+esc(s)+'</span>'; }
-  function gpRender(){ var pg=document.getElementById('page-gatepass'); if(!pg)return; var rows=load(GP_KEY);
+  function gpRender(){ var pg=document.getElementById('page-gatepass'); if(!pg)return; var _gpAllRows=load(GP_KEY); var rows=(window.AUTH&&window.AUTH.user&&window.AUTH.user.role==='agent')?_gpAllRows.filter(function(r){return r.agentId===window.AUTH.user.id;}):_gpAllRows;
     var body = rows.length ? rows.map(function(r){ var last=(r.scans&&r.scans.length)?r.scans[r.scans.length-1]:null;
       return '<tr style="border-bottom:1px solid #eef2f7">'+
         '<td style="padding:8px 10px;font-size:12px">'+esc(r.passNo)+'</td>'+
@@ -47923,7 +47933,7 @@ document.addEventListener('DOMContentLoaded',function(){
       '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:16px">'+
         '<div style="font-weight:700;font-size:13px;margin-bottom:10px">Issue Gate Pass</div>'+
         '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px">'+
-          '<div><label class="form-label">Access type</label><select id="gpType" class="form-input"><option value="STAFF">Staff</option><option value="VENDOR">Vendor</option><option value="CONTRACTOR">Contractor</option></select></div>'+
+          '<div><label class="form-label">Access type</label><select id="gpType" class="form-input"><option value="GUEST">Guest</option><option value="VISITOR">Visitor</option><option value="STAFF">Staff</option><option value="VENDOR">Vendor</option><option value="CONTRACTOR">Contractor</option></select></div>'+
           '<div><label class="form-label">Person / Company</label><input id="gpName" type="text" class="form-input" placeholder="Full name"></div>'+
           '<div><label class="form-label">Movement</label><select id="gpMovement" class="form-input"><option value="NONE">None</option><option value="GOODS_IN">Goods in</option><option value="GOODS_OUT">Goods out</option><option value="ASSET_OUT">Asset out</option></select></div>'+
           '<div><label class="form-label">QR / Reference</label><input id="gpRef" type="text" class="form-input" placeholder="auto if blank"></div>'+
@@ -48007,6 +48017,163 @@ document.addEventListener('DOMContentLoaded',function(){
     try{ var _sp=w.showPage; w.showPage=function(id){ var r=_sp?_sp.apply(this,arguments):undefined; try{ if(id==='gatepass')gpRender(); else if(id==='proforma')pfRender(); }catch(e){} return r; }; }catch(e){}
   }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',boot); else boot();
+})();
+</script>
+<script>
+/* ── Phase 46A: Agent Access Control ─────────────────────────────────────────
+   Browser/localStorage RBAC: UI + function-level enforcement only.
+   True data isolation requires server-side enforcement (see final report).
+────────────────────────────────────────────────────────────────────────────── */
+(function(){
+  'use strict';
+
+  // ── 1. Register agent role in RBAC tables ─────────────────────────────────
+  if(typeof ROLE_PAGES!=='undefined'&&!ROLE_PAGES.agent){
+    ROLE_PAGES.agent=['dashboard','gatepass','kot'];
+  }
+  if(typeof ROLE_LABELS!=='undefined'&&!ROLE_LABELS.agent){
+    ROLE_LABELS.agent='Agent/DMC';
+  }
+  if(typeof ROLE_ICONS!=='undefined'&&!ROLE_ICONS.agent){
+    ROLE_ICONS.agent='🤝';
+  }
+
+  // ── 2. Helpers ─────────────────────────────────────────────────────────────
+  function isAgent(){ return !!(window.AUTH&&window.AUTH.user&&window.AUTH.user.role==='agent'); }
+
+  function agentAudit46(action,detail){
+    try{
+      if(typeof DB==='undefined'||!Array.isArray(DB.qyAuditLog))return;
+      DB.qyAuditLog.push({
+        ts:new Date().toISOString(),userId:window.AUTH.user.id,
+        username:window.AUTH.user.username||window.AUTH.user.name,
+        role:'agent',action:action,detail:detail||{}
+      });
+      if(typeof saveDB==='function')try{saveDB();}catch(e){}
+    }catch(e){}
+  }
+
+  window.agentScope46=function(){ return (window.AUTH&&window.AUTH.user)?window.AUTH.user.agentId||null:null; };
+
+  // ── 3. Gate Pass — gpCreate wrapper ───────────────────────────────────────
+  var GP_KEY_46='qv_gatepass_v1';
+  var _origGpCreate=window.gpCreate;
+  window.gpCreate=function(){
+    if(isAgent()){
+      var type=(document.getElementById('gpType')||{}).value||'';
+      if(type!=='GUEST'&&type!=='VISITOR'){
+        if(typeof toast==='function')toast('Agents may only issue GUEST or VISITOR passes','error');
+        return;
+      }
+      var ref=(document.getElementById('gpRef')||{}).value.trim();
+      if(!ref){
+        if(typeof toast==='function')toast('Booking reference is required for agent gate passes','error');
+        return;
+      }
+    }
+    if(_origGpCreate)_origGpCreate.apply(this,arguments);
+    if(isAgent()){
+      try{
+        var rows=JSON.parse(localStorage.getItem(GP_KEY_46)||'[]');
+        if(rows.length&&!rows[0].agentId){
+          rows[0].agentId=window.AUTH.user.id;
+          rows[0].reservationId=rows[0].ref||'';
+          rows[0].propertyId=window.AUTH.user.propertyId||'';
+          localStorage.setItem(GP_KEY_46,JSON.stringify(rows));
+          agentAudit46('gatepass.create',{passNo:rows[0].passNo,reservationId:rows[0].reservationId});
+        }
+      }catch(e){}
+    }
+  };
+
+  // ── 4. Gate Pass — gpScan wrapper ─────────────────────────────────────────
+  var _origGpScan=window.gpScan;
+  window.gpScan=function(id,dir){
+    if(isAgent()){
+      if(typeof toast==='function')toast('Agents may not approve or scan gate passes','error');
+      return;
+    }
+    if(_origGpScan)_origGpScan.apply(this,arguments);
+  };
+
+  // ── 5. Security Patrol — patrolCheckIn wrapper ────────────────────────────
+  var _origPatrolCheckIn=window.patrolCheckIn;
+  window.patrolCheckIn=function(ptId){
+    if(isAgent()){
+      if(typeof toast==='function')toast('Security patrol check-in is not available to agents','error');
+      return;
+    }
+    if(_origPatrolCheckIn)_origPatrolCheckIn.apply(this,arguments);
+  };
+
+  // ── 6. Security Patrol — adminTogglePoint wrapper ─────────────────────────
+  var _origAdminTogglePoint=window.adminTogglePoint;
+  window.adminTogglePoint=function(id){
+    if(isAgent()){
+      if(typeof toast==='function')toast('Access denied','error');
+      return;
+    }
+    if(_origAdminTogglePoint)_origAdminTogglePoint.apply(this,arguments);
+  };
+
+  // ── 7. Security Patrol — adminAddPoint wrapper ────────────────────────────
+  var _origAdminAddPoint=window.adminAddPoint;
+  window.adminAddPoint=function(){
+    if(isAgent()){
+      if(typeof toast==='function')toast('Access denied','error');
+      return;
+    }
+    if(_origAdminAddPoint)_origAdminAddPoint.apply(this,arguments);
+  };
+
+  // ── 8. showPage guard — block agent from non-agent pages ──────────────────
+  var _agentAllowedPages=['dashboard','gatepass','kot'];
+  var _origShowPage46=window.showPage;
+  window.showPage=function(pg){
+    if(isAgent()&&!_agentAllowedPages.includes(pg)){
+      if(typeof toast==='function')toast('Access denied','error');
+      return;
+    }
+    if(_origShowPage46)return _origShowPage46.apply(this,arguments);
+  };
+
+  // ── 9. User modal — inject agentId field ──────────────────────────────────
+  var _origOpenUserModal46=window.openUserModal;
+  window.openUserModal=function(id){
+    if(_origOpenUserModal46)_origOpenUserModal46.apply(this,arguments);
+    setTimeout(function(){
+      var body=document.querySelector('#userModal .modal-body');
+      if(body&&!document.getElementById('fUserAgentId46')){
+        var div=document.createElement('div');
+        div.className='form-group';
+        div.innerHTML='<label class="form-label">Linked Agent ID <span style="font-size:10px;color:#6b7280">(for Agent role only)</span></label>'
+          +'<input id="fUserAgentId46" class="form-control" placeholder="CM agent record ID (leave blank for non-agents)">';
+        body.appendChild(div);
+      }
+      if(id){
+        var users=JSON.parse(localStorage.getItem('gk_users')||'[]');
+        var u=users.find(function(x){return x.id===id;});
+        if(u){var el=document.getElementById('fUserAgentId46');if(el)el.value=u.agentId||'';}
+      }
+    },80);
+  };
+
+  var _origSaveUser46=window.saveUser;
+  window.saveUser=function(){
+    if(_origSaveUser46)_origSaveUser46.apply(this,arguments);
+    setTimeout(function(){
+      var agentIdEl=document.getElementById('fUserAgentId46');
+      if(!agentIdEl)return;
+      var agentId=agentIdEl.value.trim();
+      var usernameEl=document.getElementById('fUsername');
+      if(!usernameEl)return;
+      var username=usernameEl.value.trim();
+      var users=JSON.parse(localStorage.getItem('gk_users')||'[]');
+      var idx=users.findIndex(function(u){return u.username===username;});
+      if(idx>=0){users[idx].agentId=agentId||null;localStorage.setItem('gk_users',JSON.stringify(users));}
+    },50);
+  };
+
 })();
 </script>
 </html>
