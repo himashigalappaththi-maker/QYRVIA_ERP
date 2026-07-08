@@ -2541,8 +2541,8 @@ th{border-bottom:2px solid #C9A84C !important}
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
 
             <!-- Cash In Form -->
-            <div style="background:#F1F8E9;border:1.5px solid #A5D6A7;border-radius:8px;padding:14px">
-              <div style="font-weight:700;font-size:13px;color:#1B5E20;margin-bottom:12px;display:flex;align-items:center;gap:6px"><span>💵</span> Cash In</div>
+            <div style="background:#fff8ee;border:1.5px solid #C9A84C;border-radius:8px;padding:14px">
+              <div style="font-weight:700;font-size:13px;color:#b38b4d;margin-bottom:12px;display:flex;align-items:center;gap:6px"><span>💵</span> Cash In</div>
               <div class="form-group" style="margin-bottom:8px">
                 <label class="form-label" style="font-size:11px">Type</label>
                 <select id="invCashInType" class="form-control" style="font-size:12px">
@@ -2565,7 +2565,7 @@ th{border-bottom:2px solid #C9A84C !important}
                 <label class="form-label" style="font-size:11px">Description</label>
                 <input id="invCashInDesc" class="form-control" placeholder="Notes" style="font-size:12px"/>
               </div>
-              <button class="btn btn-primary" onclick="invSaveCashIn()" style="width:100%;background:#2E7D32;border-color:#2E7D32">💵 Record Cash In</button>
+              <button class="btn btn-primary" onclick="invSaveCashIn()" style="width:100%;background:#b38b4d;border-color:#b38b4d;color:#2e3132">💵 Record Cash In</button>
             </div>
 
             <!-- Cash Out Form — Smart Integration -->
@@ -7759,12 +7759,12 @@ function invUpdateCashierBar() {
     title.textContent = '🟢 Shift Open — ' + (sess.openedBy || 'Cashier');
     sub.textContent   = 'Opening: ' + fmtLKR(sess.openingBalance) + '  |  Income: ' + fmtLKR(calc.totalIncome) + '  |  Expenses: ' + fmtLKR(calc.totalExpenses) + '  |  Expected Closing: ' + fmtLKR(calc.closingCash);
     badge.textContent = 'OPEN';
-    badge.style.cssText = 'background:#C8E6C9;color:#1B5E20;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700';
-    header.style.background = '#1B5E20';
+    badge.style.cssText = 'background:rgba(179,139,77,.2);color:#b38b4d;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700';
+    header.style.background = '#2e3132';
 
     if (summary) summary.innerHTML = [
       {icon:'💰', label:'Opening Balance', val:fmtLKR(sess.openingBalance), col:'#37474F'},
-      {icon:'⬇️', label:'Total Income',    val:fmtLKR(calc.totalIncome),    col:'#2E7D32'},
+      {icon:'⬇️', label:'Total Income',    val:fmtLKR(calc.totalIncome),    col:'#b38b4d'},
       {icon:'⬆️', label:'Total Expenses',  val:fmtLKR(calc.totalExpenses),  col:'#C62828'},
       {icon:'🧾', label:'Expected Closing',val:fmtLKR(calc.closingCash),    col:'#E65100'},
     ].map(k=>`<div style="background:${k.col}12;border:1px solid ${k.col}30;border-radius:6px;padding:8px 12px;display:flex;align-items:center;gap:8px">
