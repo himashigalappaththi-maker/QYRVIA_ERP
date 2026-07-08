@@ -10,7 +10,7 @@
 const { errorField } = require('../../middleware/errorEnvelope');
 const { buildChannelConnectionTester } = require('../services/channelConnectionTester');
 
-function buildController({ channelManager, deadLetter, credentials, mapping }) {
+function buildController({ channelManager, deadLetter, credentials, mapping, channelRegistry }) {
   // Phase 37 WI-2b: readiness-only connection tester, built once. It is fail-closed
   // and side-effect-free (no network, no send, no secret resolution).
   const connectionTester = buildChannelConnectionTester({ channelManager });
@@ -232,6 +232,96 @@ function buildController({ channelManager, deadLetter, credentials, mapping }) {
         }, { actor_id: ctx.actorId });
         if (!out || out.ok === false) return fail(res, req, (out && out.error) || 'mapping_failed');
         res.json({ ok: true, result: { channel: b.channel, room_type_id: b.room_type_id, mapping_version: out.mapping_version, change_type: out.change_type }, requestId: ctx.requestId });
+      } catch (e) { next(e); }
+    },
+
+    // Phase 49 - channel registry handlers.
+    // All registry ops are fail-closed on missing tenant and missing channelRegistry.
+
+    async registryList(req, res, next) {
+      try {
+        const ctx = ctxOf(req);
+        if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
+        if (!channelRegistry) return res.json({ ok: true, data: { items: [] }, requestId: ctx.requestId });
+        const items = await channelRegistry.list({ tenantId: ctx.tenantId, propertyId: ctx.propertyId });
+        res.json({ ok: true, data: { items }, requestId: ctx.requestId });
+      } catch (e) { next(e); }
+    },
+
+    async registryAdd(req, res, next) {
+      try {
+        const ctx = ctxOf(req);
+        if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
+        if (!channelRegistry) return fail(res, req, 'channel_registry_unavailable', 400);
+        const b = req.body || {};
+        if (!b.channel_code) return fail(res, req, 'channel_code_required');
+        const row = await channelRegistry.add(b, { tenantId: ctx.tenantId, propertyId: ctx.propertyId });
+        res.status(201).json({ ok: true, data: row, requestId: ctx.requestId });
+      } catch (e) { next(e); }
+    },
+
+    async registryGet(req, res, next) {
+      try {
+        const ctx = ctxOf(req);
+        if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
+        if (!channelRegistry) return fail(res, req, 'channel_registry_unavailable', 400);
+        const row = await channelRegistry.get(req.params.channel, { tenantId: ctx.tenantId, propertyId: ctx.propertyId });
+        if (!row) return fail(res, req, 'channel_not_found', 404);
+        res.json({ ok: true, data: row, requestId: ctx.requestId });
+      } catch (e) { next(e); }
+    },
+
+    async registrySetStatus(req, res, next) {
+      try {
+        const ctx = ctxOf(req);
+        if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
+        if (!channelRegistry) return fail(res, req, 'channel_registry_unavailable', 400);
+        const { status } = req.body || {};
+        if (!status) return fail(res, req, 'status_required');
+        const row = await channelRegistry.setStatus(req.params.channel, status,
+          { tenantId: ctx.tenantId, propertyId: ctx.propertyId });
+        res.json({ ok: true, data: row, requestId: ctx.requestId });
+      } catch (e) {
+        if (/invalid_status|channel_not_found/.test(e.message)) return fail(res, req, e.message, /channel_not_found/.test(e.message) ? 404 : 400);
+        next(e);
+      }
+    },
+
+    async registryToggle(req, res, next) {
+      try {
+        const ctx = ctxOf(req);
+        if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
+        if (!channelRegistry) return fail(res, req, 'channel_registry_unavailable', 400);
+        const row = await channelRegistry.toggle(req.params.channel,
+          { tenantId: ctx.tenantId, propertyId: ctx.propertyId });
+        res.json({ ok: true, data: row, requestId: ctx.requestId });
+      } catch (e) {
+        if (/channel_not_found/.test(e.message)) return fail(res, req, e.message, 404);
+        next(e);
+      }
+    },
+
+    async registryRecordError(req, res, next) {
+      try {
+        const ctx = ctxOf(req);
+        if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
+        if (!channelRegistry) return fail(res, req, 'channel_registry_unavailable', 400);
+        const { error } = req.body || {};
+        if (!error) return fail(res, req, 'error_required');
+        const row = await channelRegistry.recordError(req.params.channel, error,
+          { tenantId: ctx.tenantId, propertyId: ctx.propertyId });
+        res.json({ ok: true, data: row, requestId: ctx.requestId });
+      } catch (e) { next(e); }
+    },
+
+    async registryRecordSync(req, res, next) {
+      try {
+        const ctx = ctxOf(req);
+        if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
+        if (!channelRegistry) return fail(res, req, 'channel_registry_unavailable', 400);
+        const row = await channelRegistry.recordSync(req.params.channel,
+          { tenantId: ctx.tenantId, propertyId: ctx.propertyId });
+        res.json({ ok: true, data: row, requestId: ctx.requestId });
       } catch (e) { next(e); }
     }
   };

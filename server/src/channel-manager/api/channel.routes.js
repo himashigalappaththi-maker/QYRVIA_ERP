@@ -21,7 +21,8 @@ function build(deps = {}) {
     channelManager: deps.channelManager,
     deadLetter: deps.channelPersistence && deps.channelPersistence.deadLetter,
     credentials: deps.channelCredentials,
-    mapping: deps.channelMapping
+    mapping: deps.channelMapping,
+    channelRegistry: deps.channelRegistry   // Phase 49
   });
 
   router.post('/sync/rates',        requirePermission('channel.sync.run'),     c.syncRates);
@@ -45,6 +46,15 @@ function build(deps = {}) {
 
   // Phase 37 WI-2b - readiness-only "test connection" diagnostic (no network, no secrets).
   router.post('/test-connection',   requirePermission('channel.sync.read'),    c.testConnection);
+
+  // Phase 49 - channel registry CRUD. channel.sync.read = list/get; channel.sync.run = mutations.
+  router.get(   '/registry',                     requirePermission('channel.sync.read'), c.registryList);
+  router.post(  '/registry',                     requirePermission('channel.sync.run'),  c.registryAdd);
+  router.get(   '/registry/:channel',            requirePermission('channel.sync.read'), c.registryGet);
+  router.patch( '/registry/:channel/status',     requirePermission('channel.sync.run'),  c.registrySetStatus);
+  router.patch( '/registry/:channel/toggle',     requirePermission('channel.sync.run'),  c.registryToggle);
+  router.post(  '/registry/:channel/sync-error', requirePermission('channel.sync.run'),  c.registryRecordError);
+  router.post(  '/registry/:channel/sync-ok',    requirePermission('channel.sync.run'),  c.registryRecordSync);
 
   // Phase 25 - control-center snapshot (non-secret operational status for the UI).
   router.get( '/control',           requirePermission('channel.mapping.read'), (req, res) => {

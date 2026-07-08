@@ -180,14 +180,21 @@ const { QTCNAdapter } = require('./channel-manager/adapters/qyrcn/QTCNAdapter');
 const { AgodaAdapter } = require('./channel-manager/adapters/agoda/AgodaAdapter');
 const { ExpediaAdapter } = require('./channel-manager/adapters/expedia/ExpediaAdapter');
 const { AirbnbAdapter } = require('./channel-manager/adapters/airbnb/AirbnbAdapter');
+// Phase 49: three new OTA stub adapters (not_configured until credentials obtained)
+const { MakeMyTripAdapter } = require('./channel-manager/adapters/makemytrip/MakeMyTripAdapter');
+const { GoogleAdapter }     = require('./channel-manager/adapters/google/GoogleAdapter');
+const { TripAdvisorAdapter }= require('./channel-manager/adapters/tripadvisor/TripAdvisorAdapter');
 let channelManager = null;
 try {
   channelManager = new ChannelManagerCore();
-  channelManager.registerAdapter(new QTCNAdapter());        // internal, first-class
-  channelManager.registerAdapter(new BookingComAdapter());  // working mock
-  channelManager.registerAdapter(new AgodaAdapter());       // stubs (contract-complete)
+  channelManager.registerAdapter(new QTCNAdapter());         // internal, first-class
+  channelManager.registerAdapter(new BookingComAdapter());   // working mock
+  channelManager.registerAdapter(new AgodaAdapter());        // stubs (contract-complete)
   channelManager.registerAdapter(new ExpediaAdapter());
   channelManager.registerAdapter(new AirbnbAdapter());
+  channelManager.registerAdapter(new MakeMyTripAdapter());   // Phase 49 stubs
+  channelManager.registerAdapter(new GoogleAdapter());
+  channelManager.registerAdapter(new TripAdvisorAdapter());
 } catch (e) { logger.warn({ err: e }, '[boot] channel manager init skipped'); }
 
 // Phase 17 - Revenue Management (deterministic dynamic pricing + forecasting).
@@ -251,6 +258,18 @@ try {
   channelMapping = buildChannelMappingManagement({ db: db.pool, mappingStore: channelPersistence && channelPersistence.mapping });
   logger.info({ mode: channelMapping.mode }, '[boot] channel mapping management');
 } catch (e) { logger.warn({ err: e }, '[boot] channel mapping init skipped'); }
+
+// Phase 49 - channel registry service (per-tenant OTA enable/status store).
+// DB-backed via channel_registry table (migration 0055). Graceful: if table
+// not yet migrated, the route handlers return empty list, never crash.
+const { buildChannelRegistryRepoDb } = require('./channel-manager/registry/channelRegistryRepo.db');
+const { buildChannelRegistryService } = require('./channel-manager/registry/channelRegistryService');
+let channelRegistry = null;
+try {
+  const registryRepo = buildChannelRegistryRepoDb({ db: db.pool });
+  channelRegistry = buildChannelRegistryService({ repo: registryRepo });
+  logger.info('[boot] channel registry ready');
+} catch (e) { logger.warn({ err: e }, '[boot] channel registry init skipped'); }
 
 // Phase 24 B8-B3 - outbound sync (real QTCN via in-process transport; third-party OTAs
 // mock + HTTP transport disabled). DI only; delta-aware. No external network, no webhooks.
@@ -481,6 +500,7 @@ const app = createApp({
   channelPersistence,
   channelCredentials,
   channelMapping,
+  channelRegistry,    // Phase 49
   channelOutboundSync,
   channelInbound,
   bookingEngine,

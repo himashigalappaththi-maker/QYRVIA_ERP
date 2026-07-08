@@ -13,12 +13,16 @@
 
 // First-class channels. QTCN is QYRVIA's own internal, zero-commission
 // distribution engine - it behaves like an OTA adapter but is first-class.
+// Phase 49: MAKEMYTRIP, GOOGLE, TRIPADVISOR added (stub adapters, not_configured).
 const CHANNELS = Object.freeze({
-  BOOKING_COM: 'BOOKING_COM',
-  AGODA: 'AGODA',
-  EXPEDIA: 'EXPEDIA',
-  AIRBNB: 'AIRBNB',
-  QTCN: 'QTCN'
+  BOOKING_COM:  'BOOKING_COM',
+  AGODA:        'AGODA',
+  EXPEDIA:      'EXPEDIA',
+  AIRBNB:       'AIRBNB',
+  MAKEMYTRIP:   'MAKEMYTRIP',
+  GOOGLE:       'GOOGLE',
+  TRIPADVISOR:  'TRIPADVISOR',
+  QTCN:         'QTCN'
 });
 
 const BOOKING_STATUS = Object.freeze({
