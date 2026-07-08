@@ -28,6 +28,8 @@ const revenueRouterMod       = require('../revenue/api/revenue.routes');
 const platformRouterMod      = require('../platform/api/platform.routes');
 const bookingRouterMod       = require('../booking-engine/api/booking.routes');
 const aiConfirmationRouterMod = require('../ai-confirmation/api/confirmation.routes');
+const gatepasRouterMod        = require('./gatepass');
+const posRouterMod            = require('./pos');
 
 function build(deps = {}) {
   const router = express.Router();
@@ -67,6 +69,8 @@ function build(deps = {}) {
   router.use('/platform',      ...protectedChain, platformRouterMod.build(deps));
   router.use('/booking',       ...protectedChain, bookingRouterMod.build(deps)); // Phase 26: official reservation entry
   router.use('/ai-confirmation', ...protectedChain, aiConfirmationRouterMod.build(deps)); // Phase 27.3: confirmation pipeline (empty router when OFF)
+  router.use('/gatepass',       ...protectedChain, gatepasRouterMod.build(deps));        // Phase 46B: agent-isolated gate passes
+  router.use('/pos',            ...protectedChain, posRouterMod.build(deps));            // Phase 46B: agent-isolated POS orders
 
   return router;
 }
