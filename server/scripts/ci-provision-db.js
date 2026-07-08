@@ -40,6 +40,13 @@ if (!/^[a-z_][a-z0-9_]*$/.test(ROLE)) { console.error('ci-provision-db: invalid 
       END $$;`);
     await su.query(`ALTER ROLE ${ROLE} PASSWORD '${PW.replace(/'/g, "''")}'`);
 
+    // Pre-install extensions that require superuser. Neither pgcrypto nor
+    // uuid-ossp is a "trusted" extension in PostgreSQL 13+, so a non-superuser
+    // role cannot install them even as database owner. 0001_init.sql uses
+    // IF NOT EXISTS, so these become silent no-ops when migrations run later.
+    await su.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`);
+    await su.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`);
+
     // Ownership + privileges so the role can migrate and own the resulting tables.
     await su.query(`ALTER DATABASE ${dbName} OWNER TO ${ROLE}`);
     await su.query('ALTER SCHEMA public OWNER TO ' + ROLE);
