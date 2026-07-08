@@ -48514,4 +48514,158 @@ document.addEventListener('DOMContentLoaded',function(){
 
 })(window);
 </script>
+<script>
+/* ── Phase 48: Frontend API Bridge — Security Patrol ─────────────────────────
+   Wires patrolCheckIn, adminAddPoint, and adminTogglePoint to the Phase 48
+   backend routes (/api/patrol/points and /api/patrol/logs).
+
+   Strategy mirrors Phase 47:
+     • On showPage('security-patrol'): load points + logs from API, merge into
+       OPS.patrolPoints / OPS.patrolLog / OPS.patrolChecks, re-render.
+     • patrolCheckIn: original runs first (GPS + local state), then fire-and-
+       forget POST /api/patrol/logs.
+     • adminAddPoint: API-first; on success stamp the returned id back into
+       OPS.patrolPoints; fall through to original on network failure.
+     • adminTogglePoint: best-effort PATCH; local state updated via original.
+─────────────────────────────────────────────────────────────────────────────── */
+(function (w) {
+  'use strict';
+  if (typeof document === 'undefined') return;
+
+  var TOKEN_KEY48 = 'gk_v26_token';
+
+  // ── 1. Auth-aware fetch ──────────────────────────────────────────────────
+  function _apiFetch48(method, url, body) {
+    var tok = null;
+    try { tok = localStorage.getItem(TOKEN_KEY48); } catch (_) {}
+    var h = { 'Content-Type': 'application/json' };
+    if (tok) h['Authorization'] = 'Bearer ' + tok;
+    try {
+      var propId = (w.AUTH && w.AUTH.user && w.AUTH.user.propertyId) || null;
+      if (propId) h['X-Property-ID'] = propId;
+    } catch (_) {}
+    return fetch(url, {
+      method: method, headers: h,
+      body: body ? JSON.stringify(body) : undefined,
+      credentials: 'include'
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        return { ok: r.ok, status: r.status, data: d, unavailable: false };
+      });
+    }).catch(function () {
+      return { ok: false, status: 0, data: null, unavailable: true };
+    });
+  }
+
+  function ptFetch(method, path, body) { return _apiFetch48(method, '/api/patrol/points' + (path || ''), body); }
+  function lgFetch(method, path, body) { return _apiFetch48(method, '/api/patrol/logs'   + (path || ''), body); }
+
+  // ── 2. Normalize API point → OPS format ─────────────────────────────────
+  function normalizePoint(p) {
+    return { id: p.id, _serverId: p.id, name: p.name, zone: p.zone || 'Exterior',
+             lat: p.lat || null, lng: p.lng || null, active: !!p.active };
+  }
+
+  // ── 3. Load patrol data from API and refresh UI ──────────────────────────
+  function patrol48Load() {
+    ptFetch('GET', '').then(function (r) {
+      if (r.unavailable || !r.ok || !r.data || !Array.isArray(r.data.data)) return;
+      var apiPts = r.data.data.map(normalizePoint);
+      // Merge: API points win; locally-added (no _serverId) are appended
+      var local = (typeof OPS !== 'undefined') ? (OPS.patrolPoints || []) : [];
+      var seen = {};
+      apiPts.forEach(function (p) { if (p._serverId) seen[p._serverId] = true; });
+      var localOnly = local.filter(function (p) { return !p._serverId || !seen[p._serverId]; });
+      if (typeof OPS !== 'undefined') OPS.patrolPoints = apiPts.concat(localOnly);
+    }).catch(function () {});
+
+    lgFetch('GET', '').then(function (r) {
+      if (r.unavailable || !r.ok || !r.data || !Array.isArray(r.data.data)) return;
+      var apiLogs = r.data.data;
+      if (typeof OPS !== 'undefined') {
+        // Rebuild patrolChecks and patrolLog from server data + any unsaved local entries
+        var apiChecks = {};
+        var logEntries = apiLogs.map(function (l) {
+          if (l.point_id) apiChecks[l.point_id] = { gps: { lat: String(l.gps_lat || ''), lng: String(l.gps_lng || ''), acc: l.gps_acc || '~' }, ts: (l.checked_at || '').slice(11, 16) };
+          return { id: l.point_id, name: l.point_name || l.point_id, ts: (l.checked_at || '').slice(11, 16),
+                   gps: { lat: String(l.gps_lat || ''), lng: String(l.gps_lng || ''), acc: l.gps_acc || '~' }, officer: 'Officer' };
+        });
+        // Merge: keep local entries not yet in server log (no _serverId)
+        var existingLocal = OPS.patrolLog.filter(function (e) { return !e._serverId; });
+        OPS.patrolChecks = Object.assign({}, apiChecks, OPS.patrolChecks);
+        OPS.patrolLog = logEntries.concat(existingLocal);
+      }
+      if (typeof renderPatrolOps === 'function') { try { renderPatrolOps(); } catch (_) {} }
+    }).catch(function () {});
+  }
+
+  // ── 4. Wrap showPage: load patrol data on navigation ────────────────────
+  var _prevShowPage48 = w.showPage;
+  w.showPage = function showPage48(pg) {
+    var ret = _prevShowPage48 ? _prevShowPage48.apply(this, arguments) : undefined;
+    if (pg === 'security-patrol') { try { patrol48Load(); } catch (_) {} }
+    return ret;
+  };
+
+  // ── 5. Wrap patrolCheckIn: local-first, then fire-and-forget to API ──────
+  var _origPatrolCheckIn48 = w.patrolCheckIn;
+  w.patrolCheckIn = function patrolCheckIn48(ptId) {
+    // Original updates GPS, local state, renders, toasts
+    if (_origPatrolCheckIn48) _origPatrolCheckIn48.apply(this, arguments);
+    // Fire-and-forget to server; security staff only (agents already blocked by Phase 46A)
+    try {
+      var chk = (typeof OPS !== 'undefined') && OPS.patrolChecks && OPS.patrolChecks[ptId];
+      var gps = chk ? chk.gps : {};
+      lgFetch('POST', '', { point_id: ptId, gps: { lat: gps.lat || null, lng: gps.lng || null, acc: gps.acc || null } })
+        .catch(function () {});
+    } catch (_) {}
+  };
+
+  // ── 6. Wrap adminAddPoint: API-first, stamp returned id back into local ──
+  var _origAdminAddPoint48 = w.adminAddPoint;
+  w.adminAddPoint = function adminAddPoint48() {
+    var name = (document.getElementById('apName') || {}).value;
+    if (!name || !name.trim()) {
+      if (_origAdminAddPoint48) _origAdminAddPoint48.apply(this, arguments);
+      return;
+    }
+    var zone = ((document.getElementById('apZone') || {}).value) || 'Exterior';
+    var lat  = parseFloat((document.getElementById('apLat') || {}).value) || null;
+    var lng  = parseFloat((document.getElementById('apLng') || {}).value) || null;
+
+    ptFetch('POST', '', { name: name.trim(), zone: zone, lat: lat, lng: lng }).then(function (r) {
+      if (!r.unavailable && r.ok && r.data && r.data.data) {
+        var pt = normalizePoint(r.data.data);
+        if (typeof OPS !== 'undefined') {
+          OPS.patrolPoints = OPS.patrolPoints.concat([pt]);
+          // Clear the form fields (mirror what the original does)
+          var form = document.getElementById('adminNewPointForm');
+          if (form) form.style.display = 'none';
+          if (typeof renderAdminPanel === 'function') { try { renderAdminPanel(); } catch (_) {} }
+          if (typeof toast === 'function') toast('Patrol point added', 'success');
+        }
+      } else {
+        // API unavailable or rejected — fall through to original
+        if (_origAdminAddPoint48) _origAdminAddPoint48.apply(this, arguments);
+      }
+    }.bind(this)).catch(function () {
+      if (_origAdminAddPoint48) _origAdminAddPoint48.apply(this, arguments);
+    }.bind(this));
+  };
+
+  // ── 7. Wrap adminTogglePoint: local update via original + best-effort API ─
+  var _origAdminTogglePoint48 = w.adminTogglePoint;
+  w.adminTogglePoint = function adminTogglePoint48(id) {
+    // Original updates local state and re-renders
+    if (_origAdminTogglePoint48) _origAdminTogglePoint48.apply(this, arguments);
+    // Best-effort server sync (managers+ can toggle; agents already blocked by Phase 46A)
+    try {
+      var pt = (typeof OPS !== 'undefined') && OPS.patrolPoints && OPS.patrolPoints.find(function (p) { return p.id === id; });
+      var sid = pt && pt._serverId;
+      if (sid) ptFetch('PATCH', '/' + sid + '/toggle', {}).catch(function () {});
+    } catch (_) {}
+  };
+
+})(window);
+</script>
 </html>
