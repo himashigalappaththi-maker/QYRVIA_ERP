@@ -25,10 +25,10 @@ const CTX = { tenantId: 't-1', propertyId: 'p-1', requestId: 'rq' };
 const silentBus = () => ({ emitted: [], emit(e) { this.emitted.push(e); return Promise.resolve(); } });
 
 // A pure-canonical adapter test double (8-method contract, no legacy methods).
-function fakeCanonicalAdapter(channel, { internal = false, commissionPct = 7 } = {}) {
+function fakeCanonicalAdapter(channel, { qyrvia_owned = false, commissionPct = 7 } = {}) {
   const calls = [];
   return {
-    channel, auth: null, internal, commissionPct, calls,
+    channel, auth: null, qyrvia_owned, commissionPct, calls,
     async init() {},
     async health() { return { ok: true }; },
     async close() {},
@@ -98,15 +98,15 @@ test('booking-ingestion compatibility: canonical-native adapter pulls nothing (w
 });
 
 // 5. status() shape preserved across legacy + canonical adapters
-test('status() preserves shape (internal/commissionPct, queue, bookings)', () => {
+test('status() preserves shape (qyrvia_owned/commissionPct, queue, bookings)', () => {
   const core = new ChannelManagerCore({ eventBus: silentBus() });
   core.registerAdapter(new BookingComAdapter());
-  core.registerAdapter(fakeCanonicalAdapter(CHANNELS.AGODA, { internal: true, commissionPct: 12 }));
+  core.registerAdapter(fakeCanonicalAdapter(CHANNELS.AGODA, { qyrvia_owned: true, commissionPct: 12 }));
   const s = core.status();
   const bc = s.channels.find((c) => c.channel === CHANNELS.BOOKING_COM);
   const ag = s.channels.find((c) => c.channel === CHANNELS.AGODA);
-  assert.deepEqual(bc, { channel: CHANNELS.BOOKING_COM, internal: false, commissionPct: null });
-  assert.deepEqual(ag, { channel: CHANNELS.AGODA, internal: true, commissionPct: 12 });
+  assert.deepEqual(bc, { channel: CHANNELS.BOOKING_COM, qyrvia_owned: false, commissionPct: null });
+  assert.deepEqual(ag, { channel: CHANNELS.AGODA, qyrvia_owned: true, commissionPct: 12 });
   assert.deepEqual(Object.keys(s).sort(), ['bookings', 'channels', 'queue']);
   assert.equal(typeof s.queue.size, 'number');
   assert.equal(typeof s.bookings, 'number');

@@ -16,7 +16,7 @@ function hashInv(i) {
   return [String(i && i.available), (i && i.stopSell) ? 1 : 0, String(i && i.minLos), String(i && i.maxLos)].join('|');
 }
 
-function buildChannelSyncService({ registry, syncStateStore, realChannels = new Set(['QTCN']), clock = () => Date.now(), onAudit } = {}) {
+function buildChannelSyncService({ registry, syncStateStore, realChannels = new Set(['QYRVIA_CONNECT']), clock = () => Date.now(), onAudit } = {}) {
   if (!registry) throw new Error('channelSyncService: registry required');
   if (!syncStateStore) throw new Error('channelSyncService: syncStateStore required');
 

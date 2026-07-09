@@ -6,9 +6,8 @@
  * A transport is how an adapter actually DELIVERS an outbound request:
  *   send(req) -> { ok, status, ackId?, error? }   req = { channel, op, endpoint, payload }
  *
- * - InProcessTransport: QTCN's internal, zero-network delivery (loopback sink).
- *   "Real" connectivity for QYRVIA's own distribution engine WITHOUT any external
- *   network call.
+ * - InProcessTransport: QYRVIA Connect (QYRVIA_CONNECT) in-process delivery — no
+ *   external network call. Real ARI/booking-event delivery for QYRVIA's owned platform.
  * - HttpTransport: real HTTP for third-party OTAs. DISABLED BY DEFAULT - send()
  *   refuses unless explicitly enabled with an endpoint, so no external network
  *   call can happen in tests or default runtime (wired for B8-B5).

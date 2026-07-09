@@ -187,7 +187,7 @@ const { TripAdvisorAdapter }= require('./channel-manager/adapters/tripadvisor/Tr
 let channelManager = null;
 try {
   channelManager = new ChannelManagerCore();
-  channelManager.registerAdapter(new QTCNAdapter());         // internal, first-class
+  channelManager.registerAdapter(new QTCNAdapter());         // QYRVIA Connect — QYRVIA-owned B2B OTA/distribution platform
   channelManager.registerAdapter(new BookingComAdapter());   // working mock
   channelManager.registerAdapter(new AgodaAdapter());        // stubs (contract-complete)
   channelManager.registerAdapter(new ExpediaAdapter());
@@ -271,7 +271,7 @@ try {
   logger.info('[boot] channel registry ready');
 } catch (e) { logger.warn({ err: e }, '[boot] channel registry init skipped'); }
 
-// Phase 24 B8-B3 - outbound sync (real QTCN via in-process transport; third-party OTAs
+// Phase 24 B8-B3 - outbound sync (real QYRVIA_CONNECT via in-process transport; third-party OTAs
 // mock + HTTP transport disabled). DI only; delta-aware. No external network, no webhooks.
 const { buildChannelOutboundSync } = require('./channel-manager/sync');
 let channelOutboundSync = null;

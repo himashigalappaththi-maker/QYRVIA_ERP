@@ -25,7 +25,7 @@ function fakeCommandBus() {
 }
 function failingCommandBus() { return { async dispatch() { return { ok: false, error: 'business_date_locked' }; } }; }
 
-const booking = (id, status, extra = {}) => Object.assign({ bookingId: id, channel: 'QTCN', status, externalRef: id, roomTypeId: 'rt1', arrival: '2026-07-01', departure: '2026-07-03', guestName: 'A' }, extra);
+const booking = (id, status, extra = {}) => Object.assign({ bookingId: id, channel: 'QYRVIA_CONNECT', status, externalRef: id, roomTypeId: 'rt1', arrival: '2026-07-01', departure: '2026-07-03', guestName: 'A' }, extra);
 
 // ---- signature verification ------------------------------------------------
 test('verifier: valid HMAC passes, tampered fails', () => {
@@ -49,7 +49,7 @@ test('ingest create: dispatches pms.reservation.create and links pms_reservation
   assert.equal(bus.dispatched[0].name, 'pms.reservation.create');
   assert.equal(bus.dispatched[0].input.external_ref, 'B1');
   assert.equal(r.pms_reservation_id, 'res-1');
-  assert.equal(store.getByExternalRef('t1', 'QTCN', 'B1').pms_reservation_id, 'res-1');
+  assert.equal(store.getByExternalRef('t1', 'QYRVIA_CONNECT', 'B1').pms_reservation_id, 'res-1');
 });
 
 // ---- idempotency: duplicate + stale ---------------------------------------
@@ -82,7 +82,7 @@ test('ingest cancel after CHECKED_IN is rejected as an exception (no mutation)',
   assert.equal(cancel.ok, false);
   assert.equal(cancel.exception, true);
   assert.equal(cancel.error, 'cannot_cancel_present');
-  assert.equal(store.getByExternalRef('t1', 'QTCN', 'B1').status, 'CHECKED_IN'); // unchanged
+  assert.equal(store.getByExternalRef('t1', 'QYRVIA_CONNECT', 'B1').status, 'CHECKED_IN'); // unchanged
 });
 
 // ---- command failure -> link pending --------------------------------------
@@ -93,13 +93,13 @@ test('ingest with PMS command failure retains booking as link-pending (no duplic
   assert.equal(r.ok, false);
   assert.equal(r.link_pending, true);
   assert.equal(r.error, 'business_date_locked');
-  const row = store.getByExternalRef('t1', 'QTCN', 'B9');
+  const row = store.getByExternalRef('t1', 'QYRVIA_CONNECT', 'B9');
   assert.equal(row.pms_reservation_id, null);
 });
 
 // ---- ingress: signature + adapter normalization ---------------------------
 function fakeAdapter() {
-  return { channel: 'QTCN', handleWebhook: (req) => ({ verified: true, events: (req.bookings || []).map((b) => booking(b.id, b.status || 'CONFIRMED')) }) };
+  return { channel: 'QYRVIA_CONNECT', handleWebhook: (req) => ({ verified: true, events: (req.bookings || []).map((b) => booking(b.id, b.status || 'CONFIRMED')) }) };
 }
 function fakeRegistry(adapter) { return { get: (c) => { if (c !== adapter.channel) throw new Error('unknown'); return adapter; } }; }
 
@@ -109,12 +109,12 @@ test('ingress: valid signature ingests; invalid signature 401; unknown channel 4
   const ingress = buildWebhookIngress({ registry: fakeRegistry(fakeAdapter()), inboundService: svc, resolveSecret: async () => 'whsec' });
   const body = { bookings: [{ id: 'B1', status: 'CONFIRMED' }] };
 
-  const good = await ingress.handle({ channel: 'QTCN', body, signature: sign('whsec', body), ctx: CTX });
+  const good = await ingress.handle({ channel: 'QYRVIA_CONNECT', body, signature: sign('whsec', body), ctx: CTX });
   assert.equal(good.ok, true);
   assert.equal(good.status, 200);
   assert.equal(good.ingested[0].ok, true);
 
-  const bad = await ingress.handle({ channel: 'QTCN', body, signature: 'bad', ctx: CTX });
+  const bad = await ingress.handle({ channel: 'QYRVIA_CONNECT', body, signature: 'bad', ctx: CTX });
   assert.equal(bad.ok, false);
   assert.equal(bad.status, 401);
   assert.equal(bad.error, 'invalid_signature');
@@ -127,7 +127,7 @@ test('ingress: no secret configured + signature not required => ingests', async 
   const store = buildBookingStoreMemory();
   const svc = buildChannelInboundService({ bookingStore: store, commandBus: fakeCommandBus() });
   const ingress = buildWebhookIngress({ registry: fakeRegistry(fakeAdapter()), inboundService: svc, resolveSecret: async () => null });
-  const out = await ingress.handle({ channel: 'QTCN', body: { bookings: [{ id: 'B1' }] }, ctx: CTX });
+  const out = await ingress.handle({ channel: 'QYRVIA_CONNECT', body: { bookings: [{ id: 'B1' }] }, ctx: CTX });
   assert.equal(out.ok, true);
 });
 

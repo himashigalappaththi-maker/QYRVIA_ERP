@@ -17,7 +17,7 @@
  *
  * Business rules enforced:
  *   - First list() seeds 8 default channels for the tenant.
- *   - QTCN seeds as enabled=true, status='live'.
+ *   - QYRVIA_CONNECT seeds as enabled=true, status='live'.
  *   - All others seed as enabled=false, status='not_configured'.
  *   - status='live' is only set via setStatus(); never auto-promoted.
  *   - toggle() on a live channel → status becomes 'paused'.
@@ -172,18 +172,18 @@ test('GET /api/channel/registry: seeds 8 default channels on first call', async 
   } finally { srv.close(); }
 });
 
-test('GET /api/channel/registry: QTCN is live+enabled; others are not_configured+disabled', async () => {
+test('GET /api/channel/registry: QYRVIA_CONNECT is live+enabled; others are not_configured+disabled', async () => {
   const { app } = makeApp();
   const { srv, url } = await fx.listen(app);
   try {
     const tk = fx.issueTestToken({ userId: READER_ID, roleCodes: ['manager'] });
     const r  = await fx.fetchJson(url + '/api/channel/registry', { headers: fx.authHeader(tk) });
     const items = r.body.data.items;
-    const qtcn = items.find(i => i.channel_code === 'QTCN');
-    assert.ok(qtcn, 'QTCN must be in list');
-    assert.equal(qtcn.enabled, true);
-    assert.equal(qtcn.status, 'live');
-    const others = items.filter(i => i.channel_code !== 'QTCN');
+    const qc = items.find(i => i.channel_code === 'QYRVIA_CONNECT');
+    assert.ok(qc, 'QYRVIA_CONNECT must be in list');
+    assert.equal(qc.enabled, true);
+    assert.equal(qc.status, 'live');
+    const others = items.filter(i => i.channel_code !== 'QYRVIA_CONNECT');
     for (const ch of others) {
       assert.equal(ch.enabled, false, `${ch.channel_code} must be disabled`);
       assert.equal(ch.status, 'not_configured', `${ch.channel_code} must be not_configured`);
@@ -198,7 +198,7 @@ test('GET /api/channel/registry: all 8 channel codes present', async () => {
     const tk = fx.issueTestToken({ userId: READER_ID, roleCodes: ['manager'] });
     const r  = await fx.fetchJson(url + '/api/channel/registry', { headers: fx.authHeader(tk) });
     const codes = r.body.data.items.map(i => i.channel_code).sort();
-    const expected = ['AGODA','AIRBNB','BOOKING_COM','EXPEDIA','GOOGLE','MAKEMYTRIP','QTCN','TRIPADVISOR'].sort();
+    const expected = ['AGODA','AIRBNB','BOOKING_COM','EXPEDIA','GOOGLE','MAKEMYTRIP','QYRVIA_CONNECT','TRIPADVISOR'].sort();
     assert.deepEqual(codes, expected);
   } finally { srv.close(); }
 });
@@ -345,14 +345,14 @@ test('PATCH /api/channel/registry/AGODA/toggle: flips enabled', async () => {
   } finally { srv.close(); }
 });
 
-test('PATCH /api/channel/registry/QTCN/toggle: disabling live channel → status=paused', async () => {
+test('PATCH /api/channel/registry/QYRVIA_CONNECT/toggle: disabling live channel → status=paused', async () => {
   const { app } = makeApp();
   const { srv, url } = await fx.listen(app);
   try {
     const tk = fx.issueTestToken({ userId: MANAGER_ID, roleCodes: ['manager'] });
     await fx.fetchJson(url + '/api/channel/registry', { headers: fx.authHeader(tk) });
-    // QTCN starts enabled+live; toggle should disable it and set status=paused
-    const r = await fx.fetchJson(url + '/api/channel/registry/QTCN/toggle', {
+    // QYRVIA_CONNECT starts enabled+live; toggle should disable it and set status=paused
+    const r = await fx.fetchJson(url + '/api/channel/registry/QYRVIA_CONNECT/toggle', {
       method: 'PATCH',
       headers: { ...fx.authHeader(tk), 'content-type': 'application/json' },
       body: JSON.stringify({}),

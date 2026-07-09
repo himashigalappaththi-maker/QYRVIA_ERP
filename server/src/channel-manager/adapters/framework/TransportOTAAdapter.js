@@ -2,9 +2,9 @@
 
 /**
  * TransportOTAAdapter (Phase 24 B8-B3) - a REAL (non-mock) canonical adapter that
- * delivers outbound pushes through an injected transport. For QTCN the transport
- * is in-process (no network); for third-party OTAs it would be an (HTTP) transport
- * - wired but disabled by default until B8-B5.
+ * delivers outbound pushes through an injected transport. For QYRVIA_CONNECT the
+ * transport is in-process (QYRVIA-owned B2B OTA/distribution platform); for
+ * third-party OTAs it would be an (HTTP) transport — wired but disabled by default.
  *
  * Satisfies the canonical 8-method contract; auth resolves only via AuthStrategy
  * (credentials_ref), never raw secrets.

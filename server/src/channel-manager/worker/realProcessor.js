@@ -17,13 +17,16 @@
 
 const { CredentialAuthStrategy } = require('../adapters/framework/AuthStrategy');
 const { buildOtaTransport, buildDisabledHttp } = require('../ota/transport');
+const { buildInProcessTransport } = require('../transport/transport');
+const { CHANNELS } = require('../core/canonical/types');
 const providers = require('../ota/providers');
 
 const ACTIONS = Object.freeze(['CREATE_BOOKING', 'UPDATE_BOOKING', 'CANCEL_BOOKING', 'CHECK_IN', 'CHECK_OUT']);
 
-function buildRealProcessor({ secretProvider, http, clock, sleep } = {}) {
+function buildRealProcessor({ secretProvider, http, qtcnTransport, clock, sleep } = {}) {
   if (!secretProvider) throw new Error('realProcessor: secretProvider required');
   const _http = http || buildDisabledHttp();
+  const _qtcn = qtcnTransport || buildInProcessTransport();
 
   return {
     actions: ACTIONS,
@@ -40,7 +43,18 @@ function buildRealProcessor({ secretProvider, http, clock, sleep } = {}) {
         return { ok: true, result: { action, dispatch: 'local_only' } };
       }
 
-      // Resolve codec provider.
+      // QYRVIA Connect — QYRVIA-owned B2B OTA/distribution platform. Delivered via
+      // in-process transport (loopback sink). Accepts both canonical QYRVIA_CONNECT
+      // and legacy QTCN channel codes for backward compat with old queued jobs.
+      if (channel === CHANNELS.QYRVIA_CONNECT || channel === CHANNELS.QTCN) {
+        const p = payload || {};
+        const status = action === 'CANCEL_BOOKING' ? 'CANCELLED' : (p.status || 'CONFIRMED');
+        const ack = await _qtcn.send({ channel, op: action, payload: { ...p, status } });
+        if (ack && ack.ok) return { ok: true, result: { action, ackId: ack.ackId, channel: CHANNELS.QYRVIA_CONNECT, dispatch: 'in_process' } };
+        return { ok: false, error: (ack && ack.error) || 'qtcn_dispatch_error' };
+      }
+
+      // Resolve codec provider for external OTAs.
       let provider;
       try { provider = providers.getProvider(channel); }
       catch (_) { return { ok: false, error: 'no_provider_for_channel' }; }

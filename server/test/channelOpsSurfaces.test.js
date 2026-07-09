@@ -34,7 +34,7 @@ function fakeCM() {
   return {
     status() {
       return {
-        channels: [{ channel: 'QTCN', internal: false, commissionPct: 12 }],
+        channels: [{ channel: 'QYRVIA_CONNECT', qyrvia_owned: true, commissionPct: 0 }],
         queue: { size: 3, deadLetter: 1 },
         bookings: 7
       };
@@ -45,8 +45,8 @@ function fakeCM() {
 // Seed a dead-letter store with realistic records across two tenants.
 function seededDLQ() {
   const dlq = buildDeadLetterStoreMemory();
-  const a = dlq.insert({ tenant_id: 't1', reservation_id: 'res-1', action: 'push_inventory', channel: 'QTCN', last_error: 'timeout', payload_json: { api_key: SECRET, rate: 100 } });
-  const b = dlq.insert({ tenant_id: 't1', reservation_id: 'res-2', action: 'push_rates', channel: 'QTCN', last_error: 'http_500', payload_json: { secret: SECRET } });
+  const a = dlq.insert({ tenant_id: 't1', reservation_id: 'res-1', action: 'push_inventory', channel: 'QYRVIA_CONNECT', last_error: 'timeout', payload_json: { api_key: SECRET, rate: 100 } });
+  const b = dlq.insert({ tenant_id: 't1', reservation_id: 'res-2', action: 'push_rates', channel: 'QYRVIA_CONNECT', last_error: 'http_500', payload_json: { secret: SECRET } });
   const c = dlq.insert({ tenant_id: 't2', reservation_id: 'res-9', action: 'confirm_booking', channel: 'EXPEDIA', last_error: 'boom', payload_json: { token: SECRET } });
   return { dlq, ids: { t1a: a.item.id, t1b: b.item.id, t2c: c.item.id } };
 }
@@ -61,7 +61,7 @@ test('sync-health: ready => 200 with channels/queue/bookings and tenant-scoped d
   assert.equal(res._status, 200);
   assert.equal(res._json.ok, true);
   assert.ok(Array.isArray(res._json.data.channels));
-  assert.equal(res._json.data.channels[0].channel, 'QTCN');
+  assert.equal(res._json.data.channels[0].channel, 'QYRVIA_CONNECT');
   assert.deepEqual(res._json.data.queue, { size: 3, deadLetter: 1 });
   assert.equal(res._json.data.bookings, 7);
   assert.equal(res._json.data.deadLetters.tenantCount, 2, 't1 owns two dead letters');

@@ -38,12 +38,13 @@ test('Booking.com mock pulls + maps to canonical', async () => {
   assert.equal(canon.status, 'CONFIRMED');
 });
 
-test('QTCN is a standard OTA (15% commission, no privilege)', () => {
+test('QYRVIA_CONNECT (QTCNAdapter) is a QYRVIA-owned OTA (15% adapter commission, no privilege)', () => {
   const q = new QTCNAdapter();
-  assert.ok(!q.internal, 'QTCN must have no privileged/internal flag');
+  assert.equal(q.internal, undefined, 'QYRVIA_CONNECT adapter has no internal flag — use qyrvia_owned in defaultChannels.js');
+  assert.equal(q.qyrvia_owned, undefined, 'QYRVIA_CONNECT adapter has no qyrvia_owned — that is a registry/seeding concern only');
   assert.equal(q.commissionPct, 15);
   const c = q.mapToCanonical({ id: 'Q1', guestName: 'Direct', propertyId: 'p', roomTypeId: 'rt' });
-  assert.equal(c.channel, CHANNELS.QTCN);
+  assert.equal(c.channel, CHANNELS.QYRVIA_CONNECT);
   assert.equal(c.commissionPct, 15);
 });
 

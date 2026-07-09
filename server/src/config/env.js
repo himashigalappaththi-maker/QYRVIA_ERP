@@ -56,9 +56,9 @@ const config = Object.freeze({
   // Phase 24 B8-B1: encryption key for the local SecretProvider (32-byte: 64-hex,
   // base64-32, or passphrase). Empty default => no provider (credential subsystem dormant).
   CHANNEL_CREDENTIAL_KEY: getOptional('CHANNEL_CREDENTIAL_KEY', ''),
-  // Phase 24 B8-B3: channels enabled for REAL outbound sync (CSV). Default QTCN
-  // (internal engine, in-process, no network). Third-party OTAs stay mock until B8-B5.
-  CHANNEL_REALSYNC_CHANNELS: getOptional('CHANNEL_REALSYNC_CHANNELS', 'QTCN'),
+  // Phase 24 B8-B3: channels enabled for REAL outbound sync (CSV). Default QYRVIA_CONNECT
+  // (in-process, QYRVIA-owned B2B OTA/distribution platform). Third-party OTAs stay mock until B8-B5.
+  CHANNEL_REALSYNC_CHANNELS: getOptional('CHANNEL_REALSYNC_CHANNELS', 'QYRVIA_CONNECT'),
   // Phase 24 B8-B4: inbound webhook ingress route. Default OFF; mounted only when 'true'.
   CHANNEL_WEBHOOK_ENABLED: getOptional('CHANNEL_WEBHOOK_ENABLED', 'false'),
   // Phase 24 B8-B5: master switch for real third-party HTTP transport. Default OFF =>

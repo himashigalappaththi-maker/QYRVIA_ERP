@@ -29,7 +29,7 @@ function makeCanonicalBooking(fields = {}) {
     departure:    f.departure || null,     // 'YYYY-MM-DD'
     amount:       f.amount != null ? Number(f.amount) : null,
     currency:     f.currency || null,
-    // Channel-side commission. QTCN is zero-commission by definition.
+    // Channel-side commission. QYRVIA_CONNECT is zero-commission (QYRVIA-owned).
     commissionPct: f.commissionPct != null ? Number(f.commissionPct) : null,
     externalRef:  f.externalRef || String(f.bookingId),
     raw:          f.raw || null            // opaque vendor payload, for audit only

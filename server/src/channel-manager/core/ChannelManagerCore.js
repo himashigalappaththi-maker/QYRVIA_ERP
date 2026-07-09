@@ -115,7 +115,7 @@ class ChannelManagerCore {
     // Pure-canonical adapter -> synthesize the orchestration surface.
     return {
       channel: a.channel,
-      internal: a.internal,
+      qyrvia_owned: a.qyrvia_owned,
       commissionPct: a.commissionPct,
       pushRates: (r) => a.pushRateUpdate(r),
       pushInventory: (i) => a.pushAvailability(i),
@@ -174,7 +174,7 @@ class ChannelManagerCore {
     return {
       channels: this.listChannels().map((c) => {
         const ops = this._ops(c);
-        return { channel: c, internal: !!ops.internal, commissionPct: ops.commissionPct != null ? ops.commissionPct : null };
+        return { channel: c, qyrvia_owned: !!ops.qyrvia_owned, commissionPct: ops.commissionPct != null ? ops.commissionPct : null };
       }),
       queue: { size: this.queue.size(), deadLetter: this.queue.deadLetter.length },
       bookings: this.bookings.count()

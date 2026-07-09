@@ -12,12 +12,12 @@ const { CHANNELS } = require('../src/channel-manager/core/canonical/types');
 const slot = { propertyId: 'p1', roomTypeId: 'rt1', arrival: '2026-07-01', departure: '2026-07-03' };
 const mk = (id, channel, status) => makeCanonicalBooking(Object.assign({ bookingId: id, channel, status }, slot));
 
-test('no OTA has priority: QTCN does not win over an incumbent OTA on the same slot', () => {
+test('no OTA has priority: QYRVIA_CONNECT does not win over an incumbent OTA on the same slot', () => {
   const svc = buildBookingService();
   svc.ingest(mk('BC-1', CHANNELS.BOOKING_COM, 'CONFIRMED'));
-  const res = svc.ingest(mk('Q-1', CHANNELS.QTCN, 'CONFIRMED'));
+  const res = svc.ingest(mk('Q-1', CHANNELS.QYRVIA_CONNECT, 'CONFIRMED'));
   assert.ok(res.conflict, 'conflict detected');
-  // QTCN is just another OTA - the incumbent is retained, no channel favoritism.
+  // QYRVIA_CONNECT is just another OTA - the incumbent is retained, no channel favoritism.
   assert.equal(res.conflict.winner, 'BC-1');
   assert.equal(res.conflict.reason, 'incumbent_retained');
 });
@@ -30,7 +30,7 @@ test('idempotent ingest: same booking + status is deduped', () => {
   assert.equal(svc.count(), 1);
 });
 
-test('CONFIRMED beats PENDING when neither is QTCN', () => {
+test('CONFIRMED beats PENDING when neither is QYRVIA_CONNECT', () => {
   const svc = buildBookingService();
   svc.ingest(mk('BC-3', CHANNELS.BOOKING_COM, 'CONFIRMED'));
   const res = svc.ingest(mk('EX-3', CHANNELS.EXPEDIA, 'CONFIRMED'));   // both confirmed -> incumbent retained

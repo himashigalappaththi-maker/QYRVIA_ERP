@@ -15,8 +15,8 @@ const ENV = { CHANNEL_HTTP_ENABLED: 'false', CHANNEL_WORKER_ENABLED: 'false', CH
 
 function fullDeps() {
   return {
-    channelManager: { status: () => ({ channels: [{ channel: 'QTCN', internal: false, commissionPct: 15 }], queue: { size: 2, deadLetter: 0 }, bookings: 3 }) },
-    channelOutboundSync: { realChannels: new Set(['QTCN']), httpChannels: [] },
+    channelManager: { status: () => ({ channels: [{ channel: 'QYRVIA_CONNECT', qyrvia_owned: true, commissionPct: 0 }], queue: { size: 2, deadLetter: 0 }, bookings: 3 }) },
+    channelOutboundSync: { realChannels: new Set(['QYRVIA_CONNECT']), httpChannels: [] },
     channelMapping: { service: { listMappings: (f) => (f.tenant_id === 't1' ? [{}, {}] : []) } },
     channelCredentials: { hasProvider: false },
     channelPersistence: { mode: 'memory' }
@@ -26,10 +26,10 @@ function fullDeps() {
 test('snapshot aggregates non-secret status from all subsystems', () => {
   const snap = buildControlSnapshot(fullDeps(), CTX, ENV);
   assert.equal(snap.channels.length, 1);
-  assert.equal(snap.channels[0].channel, 'QTCN');
+  assert.equal(snap.channels[0].channel, 'QYRVIA_CONNECT');
   assert.equal(snap.queue.size, 2);
   assert.equal(snap.bookings, 3);
-  assert.deepEqual(snap.sync.realChannels, ['QTCN']);
+  assert.deepEqual(snap.sync.realChannels, ['QYRVIA_CONNECT']);
   assert.deepEqual(snap.sync.httpChannels, []);
   assert.equal(snap.sync.httpEnabled, false);
   assert.equal(snap.persistence.mode, 'memory');

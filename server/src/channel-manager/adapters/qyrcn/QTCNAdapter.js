@@ -21,7 +21,7 @@ const QTCN_COMMISSION_PCT = 15;
 
 class QTCNAdapter extends OTAAdapter {
   constructor({ source = [] } = {}) {
-    super(CHANNELS.QTCN);
+    super(CHANNELS.QYRVIA_CONNECT);
     this.commissionPct = QTCN_COMMISSION_PCT;   // commercial model only; not a privilege
     this._source = source;
   }
@@ -49,7 +49,7 @@ class QTCNAdapter extends OTAAdapter {
   mapToCanonical(raw) {
     return makeCanonicalBooking({
       bookingId: raw.id,
-      channel: CHANNELS.QTCN,
+      channel: CHANNELS.QYRVIA_CONNECT,
       status: raw.status && BOOKING_STATUS[raw.status] ? raw.status : BOOKING_STATUS.PENDING,
       guestName: raw.guestName,
       arrival: raw.checkin || raw.arrival || null,

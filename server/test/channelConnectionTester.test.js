@@ -31,9 +31,9 @@ function fakeCM(map) {
 
 // 1. ready: internal in-process transport, no external auth required
 test('WI-2a: in-process channel with no auth is ready', async () => {
-  const adapter = new TransportOTAAdapter({ channel: 'QTCN', transport: buildInProcessTransport() });
-  const tester = buildChannelConnectionTester({ channelManager: fakeCM({ QTCN: adapter }) });
-  const r = await tester.test('QTCN', CTX);
+  const adapter = new TransportOTAAdapter({ channel: 'QYRVIA_CONNECT', transport: buildInProcessTransport() });
+  const tester = buildChannelConnectionTester({ channelManager: fakeCM({ QYRVIA_CONNECT: adapter }) });
+  const r = await tester.test('QYRVIA_CONNECT', CTX);
   assert.equal(r.ready, true);
   assert.equal(r.mode, 'sandbox');
   assert.deepEqual(r.checks, { adapter: true, transport: { ok: true, kind: 'in-process' }, credentials: true });
@@ -73,9 +73,9 @@ test('WI-2a: disabled HTTP transport reports not-ready via health() only (no sen
 
 // 3. fail closed: missing tenant context => not ready, no probe
 test('WI-2a: missing tenantId fails closed (no probe)', async () => {
-  const adapter = new TransportOTAAdapter({ channel: 'QTCN', transport: buildInProcessTransport() });
-  const tester = buildChannelConnectionTester({ channelManager: fakeCM({ QTCN: adapter }) });
-  const r = await tester.test('QTCN', { requestId: 'rq' }); // no tenantId
+  const adapter = new TransportOTAAdapter({ channel: 'QYRVIA_CONNECT', transport: buildInProcessTransport() });
+  const tester = buildChannelConnectionTester({ channelManager: fakeCM({ QYRVIA_CONNECT: adapter }) });
+  const r = await tester.test('QYRVIA_CONNECT', { requestId: 'rq' }); // no tenantId
   assert.equal(r.ready, false);
   assert.equal(r.reason, 'tenant_context_required');
   assert.equal(r.checks.adapter, false, 'no probe runs when tenant context is missing');

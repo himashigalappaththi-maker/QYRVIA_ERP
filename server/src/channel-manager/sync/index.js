@@ -4,7 +4,7 @@
  * Channel outbound sync / connectivity factory (Phase 24 B8-B3 + B8-B5).
  *
  * Builds the canonical adapter registry and the sync service:
- *   - QTCN: real, in-process transport (no network).
+ *   - QYRVIA_CONNECT: real, in-process transport (QYRVIA-owned B2B OTA/distribution platform).
  *   - Third-party OTAs: REAL HttpTransport when ACTIVATED (per-channel config with
  *     endpoint + credentials_ref); otherwise bridged mocks.
  * HTTP is gated by CHANNEL_HTTP_ENABLED (default off) so no external network call
@@ -53,7 +53,7 @@ function buildChannelOutboundSync({ mode, db, realChannels, onAudit, httpEnabled
 
   const inproc = buildInProcessTransport();
   const registry = buildAdapterRegistry();
-  registry.register(new TransportOTAAdapter({ channel: CHANNELS.QTCN, transport: inproc })); // REAL, internal
+  registry.register(new TransportOTAAdapter({ channel: CHANNELS.QYRVIA_CONNECT, transport: inproc })); // REAL, in-process (QYRVIA Connect — QYRVIA-owned B2B OTA/distribution platform)
 
   const httpChannels = [];
   for (const [channel, Legacy] of Object.entries(THIRD_PARTY)) {
@@ -70,7 +70,7 @@ function buildChannelOutboundSync({ mode, db, realChannels, onAudit, httpEnabled
     }
   }
 
-  const envReal = (env.CHANNEL_REALSYNC_CHANNELS || 'QTCN').split(',').map((s) => s.trim()).filter(Boolean);
+  const envReal = (env.CHANNEL_REALSYNC_CHANNELS || 'QYRVIA_CONNECT').split(',').map((s) => s.trim()).filter(Boolean);
   const real = (realChannels instanceof Set) ? realChannels : new Set([...envReal, ...httpChannels]);
   const service = buildChannelSyncService({ registry, syncStateStore, realChannels: real, onAudit });
 

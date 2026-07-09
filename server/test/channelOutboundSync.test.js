@@ -1,6 +1,6 @@
 'use strict';
 
-/** Phase 24 B8-B3 - real QTCN outbound sync (in-process), delta, per-channel gating, no network. */
+/** Phase 24 B8-B3 - real QYRVIA_CONNECT outbound sync (in-process), delta, per-channel gating, no network. */
 
 process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://test:test@127.0.0.1:5432/test_db';
 process.env.JWT_SECRET   = process.env.JWT_SECRET   || 'test-jwt-secret-with-enough-length-1234567890';
@@ -15,10 +15,10 @@ const { validator } = require('../src/channel-manager/adapters/framework');
 
 const base = (channel, hash) => ({ tenant_id: 't1', property_id: 'p1', channel, room_type_id: 'rt1', rate: { amount: hash, currency: 'USD', date: '2026-07-01' } });
 
-// ---- real QTCN delivery (in-process, no network) --------------------------
-test('QTCN rate push delivers via in-process transport + records sync_state', async () => {
+// ---- real QYRVIA_CONNECT delivery (in-process, no network) --------------------------
+test('QYRVIA_CONNECT rate push delivers via in-process transport + records sync_state', async () => {
   const sync = buildChannelOutboundSync({ mode: 'memory' });
-  const r = await sync.service.pushRate(base('QTCN', 100));
+  const r = await sync.service.pushRate(base('QYRVIA_CONNECT', 100));
   assert.equal(r.ok, true);
   assert.equal(r.real, true);
   assert.equal(r.skipped, false);
@@ -26,7 +26,7 @@ test('QTCN rate push delivers via in-process transport + records sync_state', as
   assert.equal(sync.transports.inproc.deliveries.length, 1);
   assert.equal(sync.transports.inproc.deliveries[0].op, 'pushRateUpdate');
   // sync_state recorded
-  const st = sync.syncStateStore.get('t1', 'QTCN', r.resource_key);
+  const st = sync.syncStateStore.get('t1', 'QYRVIA_CONNECT', r.resource_key);
   assert.equal(st.last_status, 'OK');
   assert.ok(st.last_hash && st.last_sync_at);
 });
@@ -34,29 +34,29 @@ test('QTCN rate push delivers via in-process transport + records sync_state', as
 // ---- delta detection -------------------------------------------------------
 test('delta: unchanged rate is skipped; changed rate delivers again', async () => {
   const sync = buildChannelOutboundSync({ mode: 'memory' });
-  await sync.service.pushRate(base('QTCN', 100));
-  const again = await sync.service.pushRate(base('QTCN', 100));      // same hash
+  await sync.service.pushRate(base('QYRVIA_CONNECT', 100));
+  const again = await sync.service.pushRate(base('QYRVIA_CONNECT', 100));      // same hash
   assert.equal(again.skipped, true);
   assert.equal(again.reason, 'no_delta');
   assert.equal(sync.transports.inproc.deliveries.length, 1);        // no extra delivery
 
-  const changed = await sync.service.pushRate(base('QTCN', 250));    // new amount
+  const changed = await sync.service.pushRate(base('QYRVIA_CONNECT', 250));    // new amount
   assert.equal(changed.skipped, false);
   assert.equal(sync.transports.inproc.deliveries.length, 2);
 });
 
 // ---- availability ----------------------------------------------------------
-test('QTCN availability push delivers + records INVENTORY sync_state', async () => {
+test('QYRVIA_CONNECT availability push delivers + records INVENTORY sync_state', async () => {
   const sync = buildChannelOutboundSync({ mode: 'memory' });
-  const r = await sync.service.pushAvailability({ tenant_id: 't1', channel: 'QTCN', room_type_id: 'rt1', inventory: { available: 5, minLos: 1, maxLos: 7 } });
+  const r = await sync.service.pushAvailability({ tenant_id: 't1', channel: 'QYRVIA_CONNECT', room_type_id: 'rt1', inventory: { available: 5, minLos: 1, maxLos: 7 } });
   assert.equal(r.ok, true);
   assert.equal(sync.transports.inproc.deliveries[0].op, 'pushAvailability');
   assert.ok(r.resource_key.includes('INVENTORY'));
 });
 
 // ---- per-channel gating ----------------------------------------------------
-test('non-real channel (Booking.com) does NOT deliver to QTCN transport; still records state', async () => {
-  const sync = buildChannelOutboundSync({ mode: 'memory', realChannels: new Set(['QTCN']) });
+test('non-real channel (Booking.com) does NOT deliver to QYRVIA_CONNECT transport; still records state', async () => {
+  const sync = buildChannelOutboundSync({ mode: 'memory', realChannels: new Set(['QYRVIA_CONNECT']) });
   const r = await sync.service.pushRate(base('BOOKING_COM', 100));
   assert.equal(r.real, false);
   assert.equal(sync.transports.inproc.deliveries.length, 0); // no real delivery for a non-real channel
@@ -81,7 +81,7 @@ test('HttpTransport refuses to send when disabled (default): no network', async 
 // ---- in-process transport is network-free ----------------------------------
 test('InProcessTransport records deliveries with no network primitives', async () => {
   const t = buildInProcessTransport();
-  const ack = await t.send({ channel: 'QTCN', op: 'pushRateUpdate', payload: { amount: 1 } });
+  const ack = await t.send({ channel: 'QYRVIA_CONNECT', op: 'pushRateUpdate', payload: { amount: 1 } });
   assert.equal(ack.ok, true);
   assert.equal(t.deliveries.length, 1);
   assert.equal((await t.health()).ok, true);
@@ -89,23 +89,23 @@ test('InProcessTransport records deliveries with no network primitives', async (
 
 // ---- adapter compliance + health ------------------------------------------
 test('TransportOTAAdapter satisfies the canonical contract and reports health', async () => {
-  const a = new TransportOTAAdapter({ channel: 'QTCN', transport: buildInProcessTransport() });
+  const a = new TransportOTAAdapter({ channel: 'QYRVIA_CONNECT', transport: buildInProcessTransport() });
   assert.equal(validator.validateInterface(a).ok, true);
   const h = await a.health();
   assert.equal(h.ok, true);
   assert.equal(h.transport, 'in-process');
   const norm = a.normalizeBooking({ id: 'B1', status: 'CONFIRMED' });
   assert.equal(norm.bookingId, 'B1');
-  assert.equal(norm.channel, 'QTCN');
+  assert.equal(norm.channel, 'QYRVIA_CONNECT');
 });
 
 // ---- audit safety ----------------------------------------------------------
 test('sync audit events carry metadata only', async () => {
   const audits = [];
   const sync = buildChannelOutboundSync({ mode: 'memory', onAudit: (e) => audits.push(e) });
-  await sync.service.pushRate(base('QTCN', 100));
+  await sync.service.pushRate(base('QYRVIA_CONNECT', 100));
   assert.equal(audits[0].type, 'channel.rate_pushed');
-  assert.equal(audits[0].channel, 'QTCN');
+  assert.equal(audits[0].channel, 'QYRVIA_CONNECT');
   assert.equal(audits[0].real, true);
   assert.equal(audits[0].status, 'OK');
   // no payload/secret
@@ -114,9 +114,9 @@ test('sync audit events carry metadata only', async () => {
 });
 
 // ---- realChannels resolution from env default -----------------------------
-test('default realChannels resolves to QTCN', () => {
+test('default realChannels resolves to QYRVIA_CONNECT', () => {
   const sync = buildChannelOutboundSync({ mode: 'memory' });
-  assert.equal(sync.realChannels.has('QTCN'), true);
-  assert.equal(sync.service.isReal('QTCN'), true);
+  assert.equal(sync.realChannels.has('QYRVIA_CONNECT'), true);
+  assert.equal(sync.service.isReal('QYRVIA_CONNECT'), true);
   assert.equal(sync.service.isReal('BOOKING_COM'), false);
 });

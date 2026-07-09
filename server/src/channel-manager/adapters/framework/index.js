@@ -22,7 +22,7 @@ const { AirbnbAdapter } = require('../airbnb/AirbnbAdapter');
 
 function buildCanonicalAdapterRegistry() {
   const reg = buildAdapterRegistry();
-  reg.register(bridgeLegacyAdapter(new QTCNAdapter()));       // internal, first-class
+  reg.register(bridgeLegacyAdapter(new QTCNAdapter()));       // QYRVIA Connect — QYRVIA-owned platform, first-class
   reg.register(bridgeLegacyAdapter(new BookingComAdapter())); // working mock
   reg.register(bridgeLegacyAdapter(new AgodaAdapter()));
   reg.register(bridgeLegacyAdapter(new ExpediaAdapter()));

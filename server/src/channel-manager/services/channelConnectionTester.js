@@ -12,7 +12,7 @@
  *   credentials present  -> adapter.auth.isValid()  (PRESENCE ONLY - the secret is
  *                           NEVER resolved, read, logged, or returned; an adapter
  *                           with no auth strategy needs no external secret and is
- *                           treated as satisfied, e.g. internal in-process/QTCN)
+ *                           treated as satisfied, e.g. QYRVIA Connect / in-process adapters)
  *
  * FAIL-CLOSED: a channel connection is tenant-scoped (credentials live per tenant),
  * so a missing tenant context yields { ready:false, reason:'tenant_context_required' }

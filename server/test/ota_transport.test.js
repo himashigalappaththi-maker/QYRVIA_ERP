@@ -137,7 +137,7 @@ test('sync monitor aggregates metrics and escalates health', async () => {
 
 // 11. provider registry
 test('provider registry resolves known channels and rejects unknown', () => {
-  // Phase 50 extended to 7 OTA providers (QTCN is internal, no transport codec).
+  // Phase 50 extended to 7 OTA providers (QYRVIA_CONNECT uses InProcessTransport — no HTTP codec).
   const list = providers.listProviders();
   assert.ok(list.includes('BOOKING_COM'));
   assert.ok(list.includes('EXPEDIA'));
@@ -147,6 +147,6 @@ test('provider registry resolves known channels and rejects unknown', () => {
   assert.ok(list.includes('GOOGLE'));
   assert.ok(list.includes('TRIPADVISOR'));
   assert.ok(list.length >= 7);
-  assert.equal(providers.hasProvider('QTCN'), false);
-  assert.throws(() => providers.getProvider('QTCN'), /no transport provider/);
+  assert.equal(providers.hasProvider('QYRVIA_CONNECT'), false);
+  assert.throws(() => providers.getProvider('QYRVIA_CONNECT'), /no transport provider/);
 });

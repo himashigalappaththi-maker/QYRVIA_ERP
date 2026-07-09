@@ -38,16 +38,16 @@ function fakeCM(map) {
 }
 
 test('ready path: registered in-process adapter => 200 ok with data.ready true, sandbox, readiness_only', async () => {
-  const adapter = new TransportOTAAdapter({ channel: 'QTCN', transport: buildInProcessTransport() });
-  const c = buildController({ channelManager: fakeCM({ QTCN: adapter }) });
+  const adapter = new TransportOTAAdapter({ channel: 'QYRVIA_CONNECT', transport: buildInProcessTransport() });
+  const c = buildController({ channelManager: fakeCM({ QYRVIA_CONNECT: adapter }) });
   const res = fakeRes();
-  await c.testConnection({ ctx: CTX, body: { channel: 'QTCN' } }, res, () => {});
+  await c.testConnection({ ctx: CTX, body: { channel: 'QYRVIA_CONNECT' } }, res, () => {});
   assert.equal(res._status, 200);
   assert.equal(res._json.ok, true);
   assert.equal(res._json.data.ready, true);
   assert.equal(res._json.data.mode, 'sandbox');
   assert.equal(res._json.data.probe, 'readiness_only');
-  assert.equal(res._json.data.channel, 'QTCN');
+  assert.equal(res._json.data.channel, 'QYRVIA_CONNECT');
   assert.equal(res._json.data.reason, undefined, 'no reason when ready');
   assert.equal(res._json.requestId, 'rq');
   // Exactly the non-secret fields, nothing else.
@@ -90,10 +90,10 @@ test('not-ready path: disabled HTTP transport => 200 data.ready false transport_
 });
 
 test('missing tenant context fails closed => 200 data.ready false tenant_context_required', async () => {
-  const adapter = new TransportOTAAdapter({ channel: 'QTCN', transport: buildInProcessTransport() });
-  const c = buildController({ channelManager: fakeCM({ QTCN: adapter }) });
+  const adapter = new TransportOTAAdapter({ channel: 'QYRVIA_CONNECT', transport: buildInProcessTransport() });
+  const c = buildController({ channelManager: fakeCM({ QYRVIA_CONNECT: adapter }) });
   const res = fakeRes();
-  await c.testConnection({ ctx: { requestId: 'rq2' }, body: { channel: 'QTCN' } }, res, () => {}); // no tenantId
+  await c.testConnection({ ctx: { requestId: 'rq2' }, body: { channel: 'QYRVIA_CONNECT' } }, res, () => {}); // no tenantId
   assert.equal(res._status, 200);
   assert.equal(res._json.ok, true);
   assert.equal(res._json.data.ready, false);
@@ -117,8 +117,8 @@ test('no secret leakage: credential-backed adapter never returns the secret valu
 });
 
 test('route is registered with the test-connection path', () => {
-  const adapter = new TransportOTAAdapter({ channel: 'QTCN', transport: buildInProcessTransport() });
-  const router = build({ channelManager: fakeCM({ QTCN: adapter }) });
+  const adapter = new TransportOTAAdapter({ channel: 'QYRVIA_CONNECT', transport: buildInProcessTransport() });
+  const router = build({ channelManager: fakeCM({ QYRVIA_CONNECT: adapter }) });
   const paths = router.stack.filter((l) => l.route).map((l) => l.route.path);
   assert.ok(paths.includes('/test-connection'), 'POST /test-connection must be mounted');
 });

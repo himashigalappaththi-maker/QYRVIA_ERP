@@ -9,7 +9,7 @@ const VALID_STATUSES = new Set(['not_configured', 'configured', 'sandbox', 'live
  *
  * Business rules:
  *   - On first list() for a tenant/property the 8 default channels are seeded.
- *   - QTCN seeds as enabled=true, status='live' (internal, no external certification).
+ *   - QYRVIA_CONNECT seeds as enabled=true, status='live' (QYRVIA-owned B2B OTA/distribution platform).
  *   - All others seed as enabled=false, status='not_configured'.
  *   - 'live' status may only be set via setStatus() — never auto-promoted.
  *   - toggle() flips enabled; if disabling a 'live' channel, status → 'paused'.
@@ -25,8 +25,8 @@ function buildChannelRegistryService({ repo }) {
       property_id:   ctx.propertyId || null,
       channel_code:  ch.code,
       display_name:  ch.name,
-      enabled:       ch.internal,
-      status:        ch.internal ? 'live' : 'not_configured',
+      enabled:       ch.qyrvia_owned,
+      status:        ch.qyrvia_owned ? 'live' : 'not_configured',
       commission_pct: ch.commissionPct,
     })));
   }

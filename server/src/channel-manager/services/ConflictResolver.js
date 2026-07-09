@@ -5,7 +5,7 @@
  * physical slot (property + room type + stay dates) across channels.
  *
  * Policy (deterministic, documented). No OTA has priority over another - all
- * channels are equal; there is no QTCN (or any channel) favoritism here:
+ * channels are equal; there is no QYRVIA_CONNECT (or any channel) favoritism here:
  *   1. Same bookingId  -> not a conflict (idempotent update).
  *   2. CONFIRMED beats PENDING.
  *   3. Tie-break        -> incumbent (first-come) is retained.

@@ -53,11 +53,11 @@ test('activated channel with CHANNEL_HTTP_ENABLED off does NOT hit the network',
 });
 
 // ---- default (no activations) => third-party is mock, no network ----------
-test('default: no activations => Booking.com is a mock, QTCN only real channel', async () => {
+test('default: no activations => Booking.com is a mock, QYRVIA_CONNECT only real channel', async () => {
   const fetchImpl = fakeFetch();
   const sync = buildChannelOutboundSync({ mode: 'memory', fetchImpl });
   assert.deepEqual(sync.httpChannels, []);
-  assert.equal(sync.service.isReal('QTCN'), true);
+  assert.equal(sync.service.isReal('QYRVIA_CONNECT'), true);
   assert.equal(sync.service.isReal('BOOKING_COM'), false);
   await sync.service.pushRate({ tenant_id: 't1', channel: 'BOOKING_COM', room_type_id: 'rt1', rate });
   assert.equal(fetchImpl.calls.length, 0);
@@ -92,11 +92,11 @@ test('without a SecretProvider, activated channel sends no auth headers and reso
   assert.equal(await sync.resolveSecret({ tenantId: 't1', channel: 'BOOKING_COM' }), null);
 });
 
-// ---- QTCN remains in-process (no network) even alongside HTTP channels -----
-test('QTCN stays in-process (no fetch) when third-party HTTP is active', async () => {
+// ---- QYRVIA_CONNECT remains in-process (no network) even alongside HTTP channels -----
+test('QYRVIA_CONNECT stays in-process (no fetch) when third-party HTTP is active', async () => {
   const fetchImpl = fakeFetch();
   const sync = buildChannelOutboundSync({ mode: 'memory', httpEnabled: true, fetchImpl, activations: ACTIVATIONS, secretProvider: fakeProvider });
-  await sync.service.pushRate({ tenant_id: 't1', channel: 'QTCN', room_type_id: 'rt1', rate });
+  await sync.service.pushRate({ tenant_id: 't1', channel: 'QYRVIA_CONNECT', room_type_id: 'rt1', rate });
   assert.equal(sync.transports.inproc.deliveries.length, 1);       // delivered in-process
-  assert.equal(fetchImpl.calls.length, 0);                          // QTCN never uses HTTP
+  assert.equal(fetchImpl.calls.length, 0);                          // QYRVIA_CONNECT never uses HTTP
 });
