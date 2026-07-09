@@ -22,8 +22,10 @@ CREATE TABLE IF NOT EXISTS gate_passes (
 ALTER TABLE gate_passes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE gate_passes FORCE  ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS gate_passes_tenant_isolation ON gate_passes;
 CREATE POLICY gate_passes_tenant_isolation ON gate_passes
-  USING (tenant_id::text = current_setting('app.tenant_id', true));
+  USING (tenant_id = app_current_tenant())
+  WITH CHECK (tenant_id = app_current_tenant());
 
 CREATE INDEX IF NOT EXISTS gate_passes_tenant_idx     ON gate_passes (tenant_id);
 CREATE INDEX IF NOT EXISTS gate_passes_created_by_idx ON gate_passes (created_by_user_id);
