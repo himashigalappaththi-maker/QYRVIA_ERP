@@ -56,6 +56,9 @@ function build(deps = {}) {
   router.post(  '/registry/:channel/sync-error', requirePermission('channel.sync.run'),  c.registryRecordError);
   router.post(  '/registry/:channel/sync-ok',    requirePermission('channel.sync.run'),  c.registryRecordSync);
 
+  // Phase 50 - reconciliation: pure drift report, no OTA call (read permission only).
+  router.post('/reconciliation', requirePermission('channel.sync.read'), c.reconciliation);
+
   // Phase 25 - control-center snapshot (non-secret operational status for the UI).
   router.get( '/control',           requirePermission('channel.mapping.read'), (req, res) => {
     const ctx = req.ctx || {};

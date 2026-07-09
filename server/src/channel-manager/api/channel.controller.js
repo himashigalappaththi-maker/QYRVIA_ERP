@@ -9,6 +9,7 @@
 
 const { errorField } = require('../../middleware/errorEnvelope');
 const { buildChannelConnectionTester } = require('../services/channelConnectionTester');
+const { reconcile } = require('../ota/reconciliation');
 
 function buildController({ channelManager, deadLetter, credentials, mapping, channelRegistry }) {
   // Phase 37 WI-2b: readiness-only connection tester, built once. It is fail-closed
@@ -191,6 +192,16 @@ function buildController({ channelManager, deadLetter, credentials, mapping, cha
         await provider.put(b.credentials_ref, b.payload, {
           tenant_id: ctx.tenantId, channel: b.channel, credential_type: b.credential_type || 'API_KEY'
         });
+        // Phase 50: advance registry status not_configured -> configured (credential evidence).
+        // Never promotes to live; never downgrades live/sandbox/paused.
+        if (channelRegistry) {
+          try {
+            const reg = await channelRegistry.get(b.channel, { tenantId: ctx.tenantId, propertyId: ctx.propertyId || null });
+            if (reg && reg.status === 'not_configured') {
+              await channelRegistry.setStatus(b.channel, 'configured', { tenantId: ctx.tenantId, propertyId: ctx.propertyId || null });
+            }
+          } catch (_) { /* registry bridge failure never blocks credential save */ }
+        }
         // Return only a non-secret acknowledgement.
         res.json({ ok: true, result: { channel: b.channel, credentials_ref: b.credentials_ref, configured: true }, requestId: ctx.requestId });
       } catch (e) { next(e); }
@@ -322,6 +333,24 @@ function buildController({ channelManager, deadLetter, credentials, mapping, cha
         const row = await channelRegistry.recordSync(req.params.channel,
           { tenantId: ctx.tenantId, propertyId: ctx.propertyId });
         res.json({ ok: true, data: row, requestId: ctx.requestId });
+      } catch (e) { next(e); }
+    },
+
+    // Phase 50 - POST /api/channel/reconciliation
+    // Pure drift computation: accepts local + remote snapshots, returns recommendations.
+    // No OTA network call. Uses channel.sync.read permission (read-only computation).
+    async reconciliation(req, res, next) {
+      try {
+        const ctx = ctxOf(req);
+        if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
+        const b = req.body || {};
+        if (!b.channel) return fail(res, req, 'channel_required');
+        const report = reconcile({
+          channel: String(b.channel).toUpperCase(),
+          local:   b.local  || {},
+          remote:  b.remote || {}
+        });
+        res.json({ ok: true, data: report, requestId: ctx.requestId });
       } catch (e) { next(e); }
     }
   };
