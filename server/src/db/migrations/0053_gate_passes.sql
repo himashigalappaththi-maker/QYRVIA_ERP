@@ -27,6 +27,19 @@ CREATE POLICY gate_passes_tenant_isolation ON gate_passes
   USING (tenant_id = app_current_tenant())
   WITH CHECK (tenant_id = app_current_tenant());
 
+-- Idempotent column backfill: gate_passes may already exist from migration 0029
+-- with the legacy schema. Add Phase-46B columns so the indexes below succeed.
+-- Columns are nullable to avoid breaking any existing rows.
+ALTER TABLE gate_passes ADD COLUMN IF NOT EXISTS pass_no            TEXT;
+ALTER TABLE gate_passes ADD COLUMN IF NOT EXISTS type               TEXT;
+ALTER TABLE gate_passes ADD COLUMN IF NOT EXISTS name               TEXT;
+ALTER TABLE gate_passes ADD COLUMN IF NOT EXISTS movement           TEXT DEFAULT 'IN/OUT';
+ALTER TABLE gate_passes ADD COLUMN IF NOT EXISTS reservation_id     TEXT;
+ALTER TABLE gate_passes ADD COLUMN IF NOT EXISTS created_by_user_id UUID;
+ALTER TABLE gate_passes ADD COLUMN IF NOT EXISTS valid_from         TIMESTAMPTZ DEFAULT now();
+ALTER TABLE gate_passes ADD COLUMN IF NOT EXISTS scans              JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE gate_passes ADD COLUMN IF NOT EXISTS created_at         TIMESTAMPTZ DEFAULT now();
+
 CREATE INDEX IF NOT EXISTS gate_passes_tenant_idx     ON gate_passes (tenant_id);
 CREATE INDEX IF NOT EXISTS gate_passes_created_by_idx ON gate_passes (created_by_user_id);
 CREATE INDEX IF NOT EXISTS gate_passes_property_idx   ON gate_passes (property_id) WHERE property_id IS NOT NULL;
