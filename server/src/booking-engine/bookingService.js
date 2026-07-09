@@ -15,13 +15,15 @@ const { buildPricingEngine } = require('./pricingEngine');
 const { buildAvailabilityEngine } = require('./availabilityEngine');
 const { buildBookingValidator } = require('./bookingValidator');
 
-function buildBookingService({ commandBus, availabilityEngine, pricingEngine, validator, bookingStore, rateResolver, commandMap, onEvent } = {}) {
+function buildBookingService({ commandBus, availabilityEngine, pricingEngine, validator, bookingStore, rateResolver, inventoryAdjuster, commandMap, onEvent } = {}) {
   if (!commandBus) throw new Error('bookingService: commandBus required');
   const av = availabilityEngine || buildAvailabilityEngine({});
   const pr = pricingEngine || buildPricingEngine({});
   const val = validator || buildBookingValidator({});
   const cmds = Object.assign({ create: 'pms.reservation.create', update: 'pms.reservation.update', cancel: 'pms.reservation.cancel' }, commandMap || {});
   const resolveRate = rateResolver || ((input) => Number(input.base_rate != null ? input.base_rate : input.rate_amount) || 0);
+  // inventoryAdjuster: no-op default so existing tests see no change
+  const adjuster = inventoryAdjuster || { async adjustSold() {} };
 
   function emit(type, meta) { if (typeof onEvent === 'function') { try { onEvent(Object.assign({ type }, meta)); } catch (_) { /* never throws */ } } }
   function nights(input) {
@@ -54,7 +56,11 @@ function buildBookingService({ commandBus, availabilityEngine, pricingEngine, va
     }
 
     const availability = await av.check(ctx, input);
-    const pricing = pr.quote({ ratePerNight: resolveRate(input), nights: nights(input), discounts: input.discounts || 0, currency: input.currency });
+    // Enrich the rate resolver input with ctx.tenantId / ctx.propertyId so async
+    // resolvers (e.g. ariRateResolver) can scope their store lookup. The flat
+    // synchronous resolver ignores these extra fields — no behavior change.
+    const rateInput = Object.assign({}, input, { tenantId: ctx.tenantId, propertyId: ctx.propertyId || null });
+    const pricing = pr.quote({ ratePerNight: await resolveRate(rateInput), nights: nights(input), discounts: input.discounts || 0, currency: input.currency });
     const v = val.validate(input, { availability, pricing });
     if (!v.ok) { emit('booking.rejected', { tenant_id: ctx.tenantId, channel, external_ref, reason: v.reason, detail: v.detail }); return { ok: false, reason: v.reason, detail: v.detail }; }
 
@@ -70,6 +76,27 @@ function buildBookingService({ commandBus, availabilityEngine, pricingEngine, va
       }));
       if (reservation_id && up.item && !up.item.pms_reservation_id) await Promise.resolve(bookingStore.setPmsReservationId(up.item.id, reservation_id));
     }
+
+    // D3: adjust ARI inventory after successful PMS dispatch (fresh CREATE only, never idempotency/update path)
+    try {
+      const adjResult = await adjuster.adjustSold({
+        tenantId:   ctx.tenantId,
+        propertyId: ctx.propertyId || null,
+        roomTypeId: input.room_type_id,
+        arrival:    input.arrival,
+        departure:  input.departure,
+        delta: +1
+      });
+      if (adjResult === null) {
+        // sold floor guard hit — log but do NOT roll back the PMS reservation
+        const logger = require('../config/logger');
+        logger.warn({ tenantId: ctx.tenantId, roomTypeId: input.room_type_id }, '[bookingService] adjustSold returned null after create (floor guard)');
+      }
+    } catch (adjErr) {
+      // adjustSold failure must never fail the booking
+      try { const logger = require('../config/logger'); logger.error({ err: adjErr, tenantId: ctx.tenantId }, '[bookingService] adjustSold threw after create — booking confirmed anyway'); } catch (_) { /* never */ }
+    }
+
     emit('booking.created', { tenant_id: ctx.tenantId, channel, external_ref, reservation_id, total: pricing.total, currency: pricing.currency });
     return { ok: true, reservation_id, pricing };
   }
@@ -91,6 +118,27 @@ function buildBookingService({ commandBus, availabilityEngine, pricingEngine, va
     input = input || {};
     const res = await dispatch(cmds.cancel, { reservation_id: input.reservation_id || null, external_ref: input.external_ref || null }, ctx);
     if (!res || !res.ok) return { ok: false, reason: 'PMS_DISPATCH_FAILED', error: res && res.error };
+
+    // D3: restore ARI inventory after successful cancel dispatch
+    if (input.room_type_id && input.arrival && input.departure) {
+      try {
+        const adjResult = await adjuster.adjustSold({
+          tenantId:   ctx.tenantId,
+          propertyId: ctx.propertyId || null,
+          roomTypeId: input.room_type_id,
+          arrival:    input.arrival,
+          departure:  input.departure,
+          delta: -1
+        });
+        if (adjResult === null) {
+          const logger = require('../config/logger');
+          logger.warn({ tenantId: ctx.tenantId, roomTypeId: input.room_type_id }, '[bookingService] adjustSold returned null after cancel (floor guard)');
+        }
+      } catch (adjErr) {
+        try { const logger = require('../config/logger'); logger.error({ err: adjErr, tenantId: ctx.tenantId }, '[bookingService] adjustSold threw after cancel — cancel confirmed anyway'); } catch (_) { /* never */ }
+      }
+    }
+
     emit('booking.cancelled', { tenant_id: ctx.tenantId, channel: input.channel || 'DIRECT', external_ref: input.external_ref || null, reservation_id: input.reservation_id || null });
     return { ok: true, action: 'cancel' };
   }

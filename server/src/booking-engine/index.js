@@ -16,12 +16,14 @@ const { buildPmsAvailabilityProvider } = require('./pmsAvailabilityProvider');
 // availabilityProvider nor a pmsRepo is supplied, no provider is wired and the
 // engine refuses bookings (rather than assuming availability). Pass `pmsRepo` to
 // back the guard with real PMS inventory (services/pms/availability).
-function buildBookingEngine({ commandBus, bookingStore, availabilityProvider, pmsRepo, roomTypeExists, rateResolver, onEvent } = {}) {
+// Phase 52: ariService / ariStore / inventoryAdjuster are optional DI slots; all
+// are no-op / absent by default so existing behavior is unchanged.
+function buildBookingEngine({ commandBus, bookingStore, availabilityProvider, pmsRepo, roomTypeExists, rateResolver, inventoryAdjuster, ariService, ariStore, onEvent } = {}) {
   const provider = availabilityProvider || (pmsRepo ? buildPmsAvailabilityProvider({ pmsRepo }) : undefined);
   const pricingEngine = buildPricingEngine({});
   const availabilityEngine = buildAvailabilityEngine({ availabilityProvider: provider });
   const validator = buildBookingValidator({ roomTypeExists });
-  const service = buildBookingService({ commandBus, bookingStore, availabilityEngine, pricingEngine, validator, rateResolver, onEvent });
+  const service = buildBookingService({ commandBus, bookingStore, availabilityEngine, pricingEngine, validator, rateResolver, inventoryAdjuster, onEvent });
   return { service, pricingEngine, availabilityEngine, validator };
 }
 

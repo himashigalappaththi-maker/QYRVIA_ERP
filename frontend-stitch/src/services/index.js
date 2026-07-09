@@ -179,7 +179,20 @@ export function createServices(api) {
     booking: {
       create: (body) => api.post('/booking/create', body || {}),
       update: (id, body) => api.post('/booking/update/' + encodeURIComponent(id), body || {}),
-      cancel: (id, body) => api.post('/booking/cancel/' + encodeURIComponent(id), body || {})
+      cancel: (id, body) => api.post('/booking/cancel/' + encodeURIComponent(id), body || {}),
+      quote: (q) => api.get('/booking/quote', { query: q })
+    },
+
+    // ---- ARI (Availability, Rates, Inventory) - Phase 52 ---------------
+    ari: {
+      roomTypes:   ()     => api.get('/ari/room-types'),
+      ratePlans:   ()     => api.get('/ari/rate-plans'),
+      inventory:   (q)    => api.get('/ari/inventory', { query: q }),
+      putCell:     (body) => api.post('/ari/inventory/cell', body),
+      putRoomType: (body) => api.post('/ari/room-types', body),
+      putRatePlan: (body) => api.post('/ari/rate-plans', body),
+      compute:     (q)    => api.get('/ari/compute', { query: q }),
+      quote:       (q)    => api.get('/ari/quote', { query: q })
     },
 
     // ---- Platform / Admin ----------------------------------------------

@@ -21,11 +21,14 @@
 function buildAvailabilityEngine({ availabilityProvider } = {}) {
   const hasProvider = typeof availabilityProvider === 'function';
   return {
-    async check(ctx, { room_type_id, arrival, departure } = {}) {
+    // Phase 52: pass through the full input object so ARI providers can use
+    // rate_plan_id (and others) without breaking the existing pmsAvailabilityProvider
+    // contract (it destructures only room_type_id, arrival, departure and ignores extra).
+    async check(ctx, input = {}) {
       if (!hasProvider) return { available: false, rooms: 0, reason: 'availability_provider_unwired' };
       let n;
       try {
-        n = Number(await Promise.resolve(availabilityProvider(ctx, { room_type_id, arrival, departure })));
+        n = Number(await Promise.resolve(availabilityProvider(ctx, input)));
       } catch (err) {
         return { available: false, rooms: null, reason: (err && err.reason) || 'availability_unknown' };
       }

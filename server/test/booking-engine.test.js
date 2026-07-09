@@ -230,3 +230,76 @@ test('WI-1: pms provider fails closed when property context is missing', async (
   assert.ok(r.detail.includes('property_context_required'));
   assert.equal(bus.calls.length, 0);
 });
+
+// ---- Phase 52: ARI injection tests (extend existing suite) ----
+
+// 18. ARI resolver injection: buildBookingEngine({ ariService: inMemoryAriService }) uses ARI pricing
+test('Phase 52: buildBookingEngine with in-memory ariService uses ARI rate resolver', async () => {
+  const { buildMemoryAriStore } = require('../src/ari/store/memoryStore');
+  const { buildAriService } = require('../src/ari/ariService');
+  const { buildAriRateResolver } = require('../src/booking-engine/ariRateResolver');
+  const { buildAriAvailabilityProvider } = require('../src/booking-engine/ariAvailabilityProvider');
+
+  const store = buildMemoryAriStore();
+  store.putRoomType({ propertyId: 'p1', roomTypeId: 'rt1', code: 'STD', name: 'Standard', totalUnits: 5 });
+  store.putRatePlan({ propertyId: 'p1', ratePlanId: 'rp1', roomTypeId: 'rt1', code: 'BAR', name: 'BAR', currency: 'USD', baseRate: 200, standardOccupancy: 2, maxOccupancy: 3 });
+  store.putInventoryCell({ propertyId: 'p1', roomTypeId: 'rt1', date: '2026-07-01', physical: 5, sold: 0, blocked: 0 });
+  store.putInventoryCell({ propertyId: 'p1', roomTypeId: 'rt1', date: '2026-07-02', physical: 5, sold: 0, blocked: 0 });
+  const ariSvc = buildAriService({ store });
+
+  const resolver = buildAriRateResolver({ ariService: ariSvc });
+  const provider = buildAriAvailabilityProvider({ ariService: ariSvc });
+
+  const bus = fakeCommandBus();
+  const eng = buildBookingEngine({ commandBus: bus, rateResolver: resolver, availabilityProvider: provider });
+  const r = await eng.service.createBooking({
+    channel: 'DIRECT', room_type_id: 'rt1', rate_plan_id: 'rp1',
+    arrival: '2026-07-01', departure: '2026-07-03', adults: 2, currency: 'USD'
+  }, CTX);
+
+  assert.equal(r.ok, true);
+  // ARI priced: 200/night * 2 nights = 400 base + 15% tax = 460
+  assert.ok(r.pricing.total > 0, 'should have ARI-computed total');
+  assert.equal(bus.calls[0].name, 'pms.reservation.create');
+});
+
+// 19. Full pipeline with in-memory ARI: book a stay, get ARI-computed total
+test('Phase 52: full pipeline with in-memory ARI produces correct total', async () => {
+  const { buildMemoryAriStore } = require('../src/ari/store/memoryStore');
+  const { buildAriService } = require('../src/ari/ariService');
+  const { buildAriRateResolver } = require('../src/booking-engine/ariRateResolver');
+  const { buildAriAvailabilityProvider } = require('../src/booking-engine/ariAvailabilityProvider');
+
+  const store = buildMemoryAriStore();
+  store.putRoomType({ propertyId: 'p1', roomTypeId: 'rt1', code: 'STD', name: 'Standard', totalUnits: 10 });
+  store.putRatePlan({ propertyId: 'p1', ratePlanId: 'rp1', roomTypeId: 'rt1', code: 'BAR', name: 'BAR', currency: 'USD', baseRate: 100, standardOccupancy: 2, maxOccupancy: 3 });
+  store.putInventoryCell({ propertyId: 'p1', roomTypeId: 'rt1', date: '2026-07-01', physical: 10, sold: 0, blocked: 0 });
+  store.putInventoryCell({ propertyId: 'p1', roomTypeId: 'rt1', date: '2026-07-02', physical: 10, sold: 0, blocked: 0 });
+  const ariSvc = buildAriService({ store });
+
+  const resolver = buildAriRateResolver({ ariService: ariSvc });
+  const provider = buildAriAvailabilityProvider({ ariService: ariSvc });
+
+  const bus = fakeCommandBus();
+  const eng = buildBookingEngine({ commandBus: bus, rateResolver: resolver, availabilityProvider: provider });
+  const r = await eng.service.createBooking({
+    channel: 'DIRECT', room_type_id: 'rt1', rate_plan_id: 'rp1',
+    arrival: '2026-07-01', departure: '2026-07-03', adults: 2, currency: 'USD'
+  }, CTX);
+
+  assert.equal(r.ok, true);
+  // 100/night * 2 nights = 200 base + 15% tax (30) = 230 total
+  assert.equal(r.pricing.base_rate, 200);
+  assert.equal(r.pricing.total, 230);
+});
+
+// 20. Backward compat: buildBookingEngine({}) without ariService -> flat rate path unchanged
+test('Phase 52: backward compat - no ariService means flat base_rate path unchanged', async () => {
+  const bus = fakeCommandBus();
+  const eng = buildBookingEngine({ commandBus: bus, availabilityProvider: AVAIL });
+  const r = await eng.service.createBooking(baseInput({ base_rate: 100 }), CTX);
+  assert.equal(r.ok, true);
+  // Original flat rate: 100 * 2 nights = 200 + 15% = 230
+  assert.equal(r.pricing.total, 230);
+  assert.equal(bus.calls.length, 1);
+});

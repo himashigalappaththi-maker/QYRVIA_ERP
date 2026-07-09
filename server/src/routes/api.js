@@ -31,6 +31,7 @@ const aiConfirmationRouterMod = require('../ai-confirmation/api/confirmation.rou
 const gatepasRouterMod        = require('./gatepass');
 const posRouterMod            = require('./pos');
 const patrolRouterMod         = require('./patrol');
+const ariRouterMod            = require('../ari/api/ari.routes'); // Phase 52 D7
 
 function build(deps = {}) {
   const router = express.Router();
@@ -73,6 +74,7 @@ function build(deps = {}) {
   router.use('/gatepass',       ...protectedChain, gatepasRouterMod.build(deps));        // Phase 46B: agent-isolated gate passes
   router.use('/pos',            ...protectedChain, posRouterMod.build(deps));            // Phase 46B: agent-isolated POS orders
   router.use('/patrol',         ...protectedChain, patrolRouterMod.build(deps));         // Phase 48: security patrol points + check-in logs
+  router.use('/ari',            ...protectedChain, ariRouterMod.build({ ariService: deps.ariService, ariStore: deps.ariStore })); // Phase 52: ARI management API
 
   return router;
 }

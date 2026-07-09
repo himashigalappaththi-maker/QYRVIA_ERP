@@ -297,6 +297,21 @@ try {
   logger.info('[boot] channel inbound pipeline ready');
 } catch (e) { logger.warn({ err: e }, '[boot] channel inbound init skipped'); }
 
+// Phase 52 D8 — ARI store + service boot. Wired from the DB pool; graceful on failure.
+// Boot order: DB pool -> ARI store -> ARI service -> inject into booking engine + routes.
+const { buildDbAriStore } = require('./ari/store/dbStore');
+const { buildAriService } = require('./ari/ariService');
+const { buildAriRateResolver } = require('./booking-engine/ariRateResolver');
+const { buildAriAvailabilityProvider } = require('./booking-engine/ariAvailabilityProvider');
+const { buildAriInventoryAdjuster } = require('./booking-engine/ariInventoryAdjuster');
+let ariDbStore = null;
+let ariService = null;
+try {
+  ariDbStore = buildDbAriStore({ db: obsPool });
+  ariService = buildAriService({ store: ariDbStore });
+  logger.info('[boot] ARI store + service ready');
+} catch (e) { logger.warn({ err: e }, '[boot] ARI init skipped'); }
+
 // Phase 27.3 - AI Booking Confirmation. Default OFF. When enabled, builds the
 // confirmation service (deterministic templates, escalation decision tree, retry/DLQ
 // queue, MOCK transport - no external calls) and hands its onEvent hook to the
@@ -316,13 +331,29 @@ if (require('./config/env').AI_CONFIRMATION_ENABLED === 'true') {
 // Booking Engine v1 - unified orchestration gate for ALL reservation creation
 // (Direct / OTA / AI / Front Desk). Pure orchestration via commandBus; reuses
 // booking_store idempotency. DI only; no PMS/OTA/worker/queue/webhook/UI changes.
+// Phase 52 D8: inject ARI rate resolver, availability provider, and inventory adjuster
+// when ariService/ariStore are available; fall back to flat-rate behavior otherwise.
 const { buildBookingEngine } = require('./booking-engine');
 let bookingEngine = null;
 try {
+  let ariRateResolver;
+  let ariAvailabilityProvider;
+  let ariInventoryAdjuster;
+  try {
+    if (ariService) ariRateResolver = buildAriRateResolver({ ariService });
+    if (ariService) ariAvailabilityProvider = buildAriAvailabilityProvider({ ariService });
+    if (ariDbStore) ariInventoryAdjuster = buildAriInventoryAdjuster({ ariStore: ariDbStore });
+  } catch (e) { logger.warn({ err: e }, '[boot] ARI booking-engine adapters init skipped'); }
+
   bookingEngine = buildBookingEngine({
     commandBus,
     bookingStore: channelPersistence && channelPersistence.booking,
     pmsRepo, // Phase 37 WI-1b: back the fail-closed availability guard with real PMS inventory
+    rateResolver:          ariRateResolver          || undefined,
+    availabilityProvider:  ariAvailabilityProvider  || undefined,
+    inventoryAdjuster:     ariInventoryAdjuster     || undefined,
+    ariService,
+    ariStore: ariDbStore,
     onEvent: aiConfirmation && aiConfirmation.onEvent // Phase 27.3: undefined when confirmation is OFF
   });
   logger.info('[boot] booking engine ready');
@@ -507,6 +538,8 @@ const app = createApp({
   aiConfirmation, // Phase 27.3: null when AI_CONFIRMATION_ENABLED=false
   revenue,
   platform,
+  ariService,     // Phase 52: ARI management API + booking engine pricing
+  ariStore: ariDbStore, // Phase 52: ARI inventory grid writes
   makeAuthEvent
 });
 

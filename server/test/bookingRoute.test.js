@@ -70,10 +70,52 @@ test('tenant_required maps to 401', async () => {
   assert.equal(res._status, 401);
 });
 
-test('router is graceful: no bookingEngine => empty router (no routes)', () => {
+test('router is graceful: no bookingEngine => only /quote route (always mounted)', () => {
   const r = build({});
-  assert.equal(r.stack.filter((l) => l.route).length, 0);
+  const paths = r.stack.filter((l) => l.route).map((l) => l.route.path);
+  // /quote is always mounted even without bookingEngine
+  assert.ok(paths.includes('/quote'), '/quote should always be mounted');
+  // create/update/cancel should NOT be mounted without a bookingEngine
+  assert.ok(!paths.includes('/create'), '/create should not be mounted without engine');
+});
+
+test('router with bookingEngine mounts /quote plus create/update/cancel', () => {
   const r2 = build({ bookingEngine: fakeEngine() });
   const paths = r2.stack.filter((l) => l.route).map((l) => l.route.path).sort();
-  assert.deepEqual(paths, ['/cancel/:id', '/create', '/update/:id']);
+  assert.ok(paths.includes('/quote'));
+  assert.ok(paths.includes('/create'));
+  assert.ok(paths.includes('/cancel/:id'));
+  assert.ok(paths.includes('/update/:id'));
+});
+
+// Phase 52 D5 — Quote handler integration via booking.routes build
+
+test('Phase 52: GET /booking/quote graceful when no ariService -> ari_not_configured', async () => {
+  const { buildQuoteHandler } = require('../src/booking-engine/api/bookingHandlers');
+  const handler = buildQuoteHandler(); // no ariService
+  const res = { _status: 200, _json: null, status(s) { this._status = s; return this; }, json(b) { this._json = b; return this; } };
+  const req = { ctx: { tenantId: 't1', propertyId: 'p1' }, query: { room_type_id: 'rt1', arrival: '2026-08-01', departure: '2026-08-03' } };
+  await handler(req, res, () => {});
+  assert.equal(res._status, 200);
+  assert.equal(res._json.ok, true);
+  assert.equal(res._json.data.bookable, false);
+  assert.equal(res._json.data.reason, 'ari_not_configured');
+});
+
+test('Phase 52: GET /booking/quote with mock ariService -> returns bookable result', async () => {
+  const { buildQuoteHandler } = require('../src/booking-engine/api/bookingHandlers');
+  const mockAriService = {
+    async quoteStay() {
+      return { bookable: true, total: 460, los: 2, available: 5, currency: 'USD', nights: [], reasons: [] };
+    }
+  };
+  const handler = buildQuoteHandler({ ariService: mockAriService });
+  const res = { _status: 200, _json: null, status(s) { this._status = s; return this; }, json(b) { this._json = b; return this; } };
+  const req = { ctx: { tenantId: 't1', propertyId: 'p1' }, query: { room_type_id: 'rt1', arrival: '2026-08-01', departure: '2026-08-03', rate_plan_id: 'rp1' } };
+  await handler(req, res, () => {});
+  assert.equal(res._status, 200);
+  assert.equal(res._json.ok, true);
+  assert.equal(res._json.data.bookable, true);
+  assert.equal(res._json.data.total, 460);
+  assert.equal(res._json.data.los, 2);
 });
