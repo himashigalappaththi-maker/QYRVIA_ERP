@@ -27,6 +27,7 @@ function buildBookingService({
   paymentAttemptLog = null,
   holdEngine = null,
   findReservationByIdempotencyKey = null,
+  confirmationDeliveryService = null,
 } = {}) {
   if (!commandBus) throw new Error('bookingService: commandBus required');
   const av = availabilityEngine || buildAvailabilityEngine({});
@@ -393,7 +394,22 @@ function buildBookingService({
 
     emit('booking.created', { tenantId, channel: 'DIRECT', reservationId, action: 'confirmed_with_payment' });
 
-    return { ok: true, result: { reservation_id: reservationId, action: 'confirm', confirmation_number: confirmationNumber } };
+    // 8. Queue confirmation delivery (non-blocking; failure must not abort the booking).
+    let deliveryQueued = false;
+    if (confirmationDeliveryService && ctx && ctx.guestRecipient) {
+      try {
+        const qr = await confirmationDeliveryService.queueDelivery({
+          tenantId, propertyId, reservationId,
+          confirmationNumber: confirmationNumber || null,
+          channel:   ctx.guestChannel   || 'email',
+          recipient: ctx.guestRecipient,
+          context:   { reservation_id: reservationId, confirmation_number: confirmationNumber },
+        }, ctx);
+        deliveryQueued = qr.ok && !qr.deduped;
+      } catch (_) { /* delivery queue failure is non-fatal */ }
+    }
+
+    return { ok: true, result: { reservation_id: reservationId, action: 'confirm', confirmation_number: confirmationNumber, delivery_queued: deliveryQueued } };
   }
 
   return { createBooking, updateBooking, cancelBooking, initiateBooking, confirmBooking };

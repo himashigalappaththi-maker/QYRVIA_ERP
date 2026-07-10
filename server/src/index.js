@@ -373,6 +373,26 @@ try {
     if (ariDbStore) ariInventoryAdjuster = buildAriInventoryAdjuster({ ariStore: ariDbStore });
   } catch (e) { logger.warn({ err: e }, '[boot] ARI booking-engine adapters init skipped'); }
 
+  // Phase 56: confirmation delivery service (persistent outbox).
+  let _confirmationDeliveryService = null;
+  try {
+    const { buildConfirmationDeliveryService } = require('./payment/confirmationDeliveryService');
+    const { confirmationDeliveryRepo } = repos;
+    if (confirmationDeliveryRepo && pmsRepo && pmsRepo.setReservationConfirmationSent) {
+      _confirmationDeliveryService = buildConfirmationDeliveryService({
+        repo: confirmationDeliveryRepo,
+        setReservationConfirmationSent: (tid, id, sentAt) =>
+          pmsRepo.setReservationConfirmationSent(tid, id, sentAt),
+      });
+      // Drive pending delivery worker every 5 minutes (same cadence as hold sweep).
+      setInterval(() => {
+        _confirmationDeliveryService.processPendingDeliveries({ limit: 25 })
+          .catch((err) => logger.error({ err }, '[boot] processPendingDeliveries failed'));
+      }, 5 * 60 * 1000);
+      logger.info('[boot] confirmation delivery service ready');
+    }
+  } catch (e) { logger.warn({ err: e }, '[boot] confirmation delivery service init skipped'); }
+
   bookingEngine = buildBookingEngine({
     commandBus,
     bookingStore: channelPersistence && channelPersistence.booking,
@@ -389,6 +409,7 @@ try {
     findReservationByIdempotencyKey: pmsRepo && pmsRepo.findReservationByIdempotencyKey  // Phase 55
       ? (tid, key) => pmsRepo.findReservationByIdempotencyKey(tid, key)
       : null,
+    confirmationDeliveryService: _confirmationDeliveryService,  // Phase 56
   });
   logger.info('[boot] booking engine ready');
 } catch (e) { logger.warn({ err: e }, '[boot] booking engine init skipped'); }

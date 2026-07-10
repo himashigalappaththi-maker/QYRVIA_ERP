@@ -119,6 +119,25 @@ async function main() {
   if (!tenant) { tenant = await insertTenant({ code: args.tenant_code, name: args.tenant_name }); logger.info({ id: tenant.id }, '[bootstrap] tenant created'); }
   else { logger.info({ id: tenant.id }, '[bootstrap] tenant exists, skipping'); }
 
+  // 1a. Ensure hold-expiry sweep job exists for this tenant (Phase 56 gap closure).
+  //     WHERE NOT EXISTS makes this idempotent: re-running bootstrap never creates
+  //     a duplicate. The uq_scheduled_jobs_active_per_tenant_type index (migration
+  //     0070) provides an additional DB-level uniqueness guard.
+  await db.pool.query(
+    `INSERT INTO scheduled_jobs
+       (tenant_id, property_id, job_type, payload, run_at,
+        recurrence_rule, timezone, next_run_at, max_attempts)
+     SELECT $1, NULL, 'booking.hold.expire_sweep', '{}'::jsonb, now(),
+            '*/5 * * * *', 'UTC', now(), 3
+     WHERE NOT EXISTS (
+       SELECT 1 FROM scheduled_jobs sj
+        WHERE sj.tenant_id = $1
+          AND sj.job_type  = 'booking.hold.expire_sweep'
+     )`,
+    [tenant.id]
+  );
+  logger.info({ tenant_id: tenant.id }, '[bootstrap] hold-expiry sweep job ensured');
+
   // 2. property
   let property = await findPropertyByCode(tenant.id, args.property_code);
   if (!property) {

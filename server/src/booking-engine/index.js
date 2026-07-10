@@ -20,6 +20,8 @@ const { buildPmsAvailabilityProvider } = require('./pmsAvailabilityProvider');
 // are no-op / absent by default so existing behavior is unchanged.
 // Phase 54 D6: holdEngine, paymentProvider, paymentStateStore, paymentAttemptLog
 // are optional DI slots threaded into buildBookingService.
+// Phase 56: confirmationDeliveryService is an optional DI slot; when null,
+// booking confirmation proceeds without queuing a delivery record.
 function buildBookingEngine({
   commandBus, bookingStore, availabilityProvider, pmsRepo, roomTypeExists,
   rateResolver, inventoryAdjuster, ariService, ariStore, onEvent,
@@ -28,6 +30,7 @@ function buildBookingEngine({
   paymentStateStore = null,
   paymentAttemptLog = null,
   findReservationByIdempotencyKey = null,
+  confirmationDeliveryService = null,
 } = {}) {
   const provider = availabilityProvider || (pmsRepo ? buildPmsAvailabilityProvider({ pmsRepo }) : undefined);
   const pricingEngine = buildPricingEngine({});
@@ -38,6 +41,7 @@ function buildBookingEngine({
     rateResolver, inventoryAdjuster, onEvent,
     holdEngine, paymentProvider, paymentStateStore, paymentAttemptLog,
     findReservationByIdempotencyKey,
+    confirmationDeliveryService,
   });
   return { service, pricingEngine, availabilityEngine, validator };
 }

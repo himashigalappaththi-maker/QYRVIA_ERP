@@ -493,6 +493,76 @@ function buildRepos(pool) {
     }
   };
 
+  // ---- confirmationDeliveryRepo (Phase 56) --------------------------------
+  const confirmationDeliveryRepo = {
+    async insertBookingConfirmationDelivery(rec) {
+      const r = await pool.query(
+        `INSERT INTO booking_confirmation_deliveries
+           (tenant_id, property_id, reservation_id, confirmation_number,
+            channel, recipient, notification_type, context, dedup_key,
+            max_attempts)
+         VALUES ($1,$2,$3,$4,$5::notification_channel,$6,$7,$8,$9,$10)
+         RETURNING *`,
+        [rec.tenant_id, rec.property_id || null, rec.reservation_id,
+         rec.confirmation_number || null, rec.channel, rec.recipient,
+         rec.notification_type || 'booking_confirmation',
+         rec.context ? JSON.stringify(rec.context) : '{}',
+         rec.dedup_key, rec.max_attempts || 3]
+      );
+      return r.rows[0];
+    },
+    async claimPendingConfirmationDeliveries({ limit = 25, workerId }) {
+      const r = await pool.query(
+        `WITH due AS (
+           SELECT id FROM booking_confirmation_deliveries
+            WHERE status = 'pending'
+              AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+            ORDER BY created_at
+            LIMIT $1
+            FOR UPDATE SKIP LOCKED
+         )
+         UPDATE booking_confirmation_deliveries d
+            SET status    = 'processing',
+                locked_by = $2,
+                locked_at = now(),
+                updated_at = now()
+           FROM due WHERE d.id = due.id
+         RETURNING d.*`,
+        [limit, workerId || null]
+      );
+      return r.rows;
+    },
+    async markConfirmationDeliveryStatus(id, status, { sentAt, providerRef, attemptCount, lastError, nextAttemptAt } = {}) {
+      // When nextAttemptAt is set and the logical status is retryable_failure, the row
+      // reverts to 'pending' so the worker's next poll picks it up on schedule.
+      const effectiveStatus = (nextAttemptAt && status === 'retryable_failure')
+        ? 'pending' : status;
+      await pool.query(
+        `UPDATE booking_confirmation_deliveries
+            SET status          = $2::booking_confirmation_delivery_status,
+                locked_by       = NULL,
+                locked_at       = NULL,
+                updated_at      = now(),
+                sent_at         = COALESCE($3, sent_at),
+                provider_ref    = COALESCE($4, provider_ref),
+                attempt_count   = COALESCE($5, attempt_count),
+                last_error      = COALESCE($6, last_error),
+                next_attempt_at = $7
+          WHERE id = $1`,
+        [id, effectiveStatus, sentAt || null, providerRef || null,
+         attemptCount != null ? attemptCount : null,
+         lastError || null, nextAttemptAt || null]
+      );
+    },
+    async findConfirmationDeliveryByDedupKey(tenantId, dedupKey) {
+      const r = await pool.query(
+        `SELECT * FROM booking_confirmation_deliveries WHERE tenant_id=$1 AND dedup_key=$2 LIMIT 1`,
+        [tenantId, dedupKey]
+      );
+      return r.rows[0] || null;
+    },
+  };
+
   // ---- webhook repo --------------------------------------------------
   const webhookRepo = {
     async insertWebhookEndpoint(rec) {
@@ -901,6 +971,16 @@ function buildRepos(pool) {
                 updated_at=now()
           WHERE tenant_id=$1 AND id=$2 RETURNING *`,
         [tenantId, id, confirmationNumber || null]
+      );
+      return r.rows[0] || null;
+    },
+    async setReservationConfirmationSent(tenantId, id, sentAt) {
+      const r = await pool.query(
+        `UPDATE reservations
+            SET confirmation_sent_at=COALESCE(confirmation_sent_at, $3),
+                updated_at=now()
+          WHERE tenant_id=$1 AND id=$2 RETURNING *`,
+        [tenantId, id, sentAt || new Date()]
       );
       return r.rows[0] || null;
     },
@@ -1745,7 +1825,8 @@ function buildRepos(pool) {
 
   return {
     identityRepo, tokensRepo,
-    settingsRepo, fileRepo, connectorRepo, schedulerRepo, notificationRepo, webhookRepo,
+    settingsRepo, fileRepo, connectorRepo, schedulerRepo, notificationRepo,
+    confirmationDeliveryRepo, webhookRepo,
     aggregateRepo, pmsRepo,
     folioRepo, housekeepingRepo, nightAuditRepo,
     costCenterRepo, revenueMapRepo, ledgerRepo
