@@ -94,7 +94,7 @@ function makeQueries({ pmsRepo, folioRepo, housekeepingRepo, nightAuditRepo }) {
     async handler(input, ctx) {
       if (!ctx.propertyId) return { ok: false, error: 'property_required' };
       return { ok: true, data: await pmsRepo.listReservations(ctx.tenantId, ctx.propertyId,
-        { status: input.status, dateFrom: input.date_from, dateTo: input.date_to }) };
+        { status: input.status, dateFrom: input.date_from, dateTo: input.date_to, source_channel: input.source_channel }) };
     }
   });
   list.push({

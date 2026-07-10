@@ -312,6 +312,13 @@ const { buildAriService } = require('./ari/ariService');
 const { buildAriRateResolver } = require('./booking-engine/ariRateResolver');
 const { buildAriAvailabilityProvider } = require('./booking-engine/ariAvailabilityProvider');
 const { buildAriInventoryAdjuster } = require('./booking-engine/ariInventoryAdjuster');
+
+// Phase 54 D8 — Payment infrastructure. DB-backed when pool available; memory fallback otherwise.
+const { buildPaymentProvider }         = require('./payment/buildPaymentProvider');
+const { buildPaymentStateStoreMemory } = require('./payment/paymentStateStore');
+const { buildPaymentStateStoreDb }     = require('./payment/paymentStateStoreDb');
+const { buildPaymentAttemptLogMemory } = require('./payment/paymentAttemptLog');
+const { buildPaymentAttemptLogDb }     = require('./payment/paymentAttemptLogDb');
 let ariDbStore = null;
 let ariService = null;
 try {
@@ -341,7 +348,20 @@ if (require('./config/env').AI_CONFIRMATION_ENABLED === 'true') {
 // booking_store idempotency. DI only; no PMS/OTA/worker/queue/webhook/UI changes.
 // Phase 52 D8: inject ARI rate resolver, availability provider, and inventory adjuster
 // when ariService/ariStore are available; fall back to flat-rate behavior otherwise.
+// Phase 54 D8: inject payment provider, payment state store, payment attempt log.
 const { buildBookingEngine } = require('./booking-engine');
+
+// Phase 54: construct payment infrastructure (DB-backed when pool available).
+let paymentProvider    = null;
+let paymentStateStore  = null;
+let paymentAttemptLog  = null;
+try {
+  paymentProvider   = buildPaymentProvider({ config: { provider: env.PAYMENT_PROVIDER || 'mock' } });
+  paymentStateStore = obsPool ? buildPaymentStateStoreDb({ db: obsPool }) : buildPaymentStateStoreMemory();
+  paymentAttemptLog = obsPool ? buildPaymentAttemptLogDb({ db: obsPool }) : buildPaymentAttemptLogMemory();
+  logger.info({ provider: env.PAYMENT_PROVIDER || 'mock' }, '[boot] payment infrastructure ready');
+} catch (e) { logger.warn({ err: e }, '[boot] payment infrastructure init skipped'); }
+
 let bookingEngine = null;
 try {
   let ariRateResolver;
@@ -362,7 +382,10 @@ try {
     inventoryAdjuster:     ariInventoryAdjuster     || undefined,
     ariService,
     ariStore: ariDbStore,
-    onEvent: aiConfirmation && aiConfirmation.onEvent // Phase 27.3: undefined when confirmation is OFF
+    onEvent: aiConfirmation && aiConfirmation.onEvent, // Phase 27.3: undefined when confirmation is OFF
+    paymentProvider,    // Phase 54 D8
+    paymentStateStore,  // Phase 54 D8
+    paymentAttemptLog,  // Phase 54 D8
   });
   logger.info('[boot] booking engine ready');
 } catch (e) { logger.warn({ err: e }, '[boot] booking engine init skipped'); }

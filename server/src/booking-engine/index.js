@@ -18,12 +18,25 @@ const { buildPmsAvailabilityProvider } = require('./pmsAvailabilityProvider');
 // back the guard with real PMS inventory (services/pms/availability).
 // Phase 52: ariService / ariStore / inventoryAdjuster are optional DI slots; all
 // are no-op / absent by default so existing behavior is unchanged.
-function buildBookingEngine({ commandBus, bookingStore, availabilityProvider, pmsRepo, roomTypeExists, rateResolver, inventoryAdjuster, ariService, ariStore, onEvent } = {}) {
+// Phase 54 D6: holdEngine, paymentProvider, paymentStateStore, paymentAttemptLog
+// are optional DI slots threaded into buildBookingService.
+function buildBookingEngine({
+  commandBus, bookingStore, availabilityProvider, pmsRepo, roomTypeExists,
+  rateResolver, inventoryAdjuster, ariService, ariStore, onEvent,
+  holdEngine = null,
+  paymentProvider = null,
+  paymentStateStore = null,
+  paymentAttemptLog = null,
+} = {}) {
   const provider = availabilityProvider || (pmsRepo ? buildPmsAvailabilityProvider({ pmsRepo }) : undefined);
   const pricingEngine = buildPricingEngine({});
   const availabilityEngine = buildAvailabilityEngine({ availabilityProvider: provider });
   const validator = buildBookingValidator({ roomTypeExists });
-  const service = buildBookingService({ commandBus, bookingStore, availabilityEngine, pricingEngine, validator, rateResolver, inventoryAdjuster, onEvent });
+  const service = buildBookingService({
+    commandBus, bookingStore, availabilityEngine, pricingEngine, validator,
+    rateResolver, inventoryAdjuster, onEvent,
+    holdEngine, paymentProvider, paymentStateStore, paymentAttemptLog,
+  });
   return { service, pricingEngine, availabilityEngine, validator };
 }
 

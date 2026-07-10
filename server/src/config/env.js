@@ -98,7 +98,12 @@ const config = Object.freeze({
   AI_CONFIRMATION_TRANSPORT:      getOptional('AI_CONFIRMATION_TRANSPORT', 'mock'),
   // Phase 53 Fix 1: webhook signature enforcement. Default 'true' (safe for live OTA).
   // Set CHANNEL_WEBHOOK_REQUIRE_SIGNATURE=false to skip signature checks in dev/test.
-  CHANNEL_WEBHOOK_REQUIRE_SIGNATURE: getOptional('CHANNEL_WEBHOOK_REQUIRE_SIGNATURE', 'true')
+  CHANNEL_WEBHOOK_REQUIRE_SIGNATURE: getOptional('CHANNEL_WEBHOOK_REQUIRE_SIGNATURE', 'true'),
+  // Phase 54: two-phase booking payment.
+  // PAYMENT_HOLD_TTL_SECONDS: how long (in seconds) a payment hold remains valid. Default 900 (15 min).
+  // PAYMENT_PROVIDER: which payment provider to use. Default 'mock'.
+  PAYMENT_HOLD_TTL_SECONDS: getOptional('PAYMENT_HOLD_TTL_SECONDS', '900'),
+  PAYMENT_PROVIDER:         getOptional('PAYMENT_PROVIDER',          'mock'),
 });
 
 module.exports = config;

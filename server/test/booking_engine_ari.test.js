@@ -305,7 +305,8 @@ test('Full ARI pipeline: in-memory ariService -> bookable quote -> create bookin
   const r = await eng.service.createBooking({
     channel: 'DIRECT', room_type_id: 'rt1', rate_plan_id: 'rp1',
     arrival: '2026-08-01', departure: '2026-08-03',
-    adults: 2, currency: 'USD'
+    adults: 2, currency: 'USD',
+    holder_guest_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
   }, CTX);
 
   assert.equal(r.ok, true, 'booking should succeed with ARI-computed availability + rate');
@@ -326,7 +327,8 @@ test('Backward compat: buildBookingEngine without ariService uses flat base_rate
   const r = await eng.service.createBooking({
     channel: 'DIRECT', room_type_id: 'rt1',
     arrival: '2026-08-01', departure: '2026-08-03',
-    adults: 2, base_rate: 100, currency: 'USD'
+    adults: 2, base_rate: 100, currency: 'USD',
+    holder_guest_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
   }, CTX);
 
   assert.equal(r.ok, true);
@@ -345,7 +347,8 @@ test('Backward compat: no inventoryAdjuster injected -> no-op, booking still suc
   const r = await eng.service.createBooking({
     channel: 'DIRECT', room_type_id: 'rt1',
     arrival: '2026-08-01', departure: '2026-08-03',
-    adults: 2, base_rate: 100, currency: 'USD'
+    adults: 2, base_rate: 100, currency: 'USD',
+    holder_guest_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
   }, CTX);
 
   assert.equal(r.ok, true);

@@ -39,7 +39,24 @@ function buildMemoryAriStore() {
     putRestrictionRule(f) { const o = model.makeRestrictionRule(f); restrictionRules.set(o.id, o); return o; },
     putLosPricing(f) { const o = model.makeLosPricing(f); losPricing.set(o.ratePlanId + '|' + o.los, o); return o; },
     putMapping(f) { const o = model.makeChannelMapping(f); mappings.set(o.channel + '|' + o.roomTypeId + '|' + o.ratePlanId, o); return o; },
-    clear() { for (const m of [roomTypes, ratePlans, cells, rateRules, restrictionRules, losPricing, mappings]) m.clear(); }
+    clear() { for (const m of [roomTypes, ratePlans, cells, rateRules, restrictionRules, losPricing, mappings]) m.clear(); },
+
+    /** Atomic-equivalent delta on sold.
+     *  Phase 54 D7c: ceiling guard prevents sold exceeding physical + overbookingBuffer.
+     *  Floor guard prevents sold going below 0.
+     *  Returns { sold, version } on success; null if either guard fires. */
+    adjustSold({ tenant_id, propertyId, roomTypeId, date, delta }) {
+      const key = (propertyId || '') + '|' + roomTypeId + '|' + date;
+      const record = cells.get(key);
+      if (!record) return null;
+      const newSold = record.sold + delta;
+      if (newSold < 0) return null;
+      const ceiling = record.physical + (record.overbookingBuffer || 0);
+      if (newSold > ceiling) return null;
+      const updated = Object.assign({}, record, { sold: newSold });
+      cells.set(key, updated);
+      return { sold: newSold, version: null };
+    }
   };
 }
 

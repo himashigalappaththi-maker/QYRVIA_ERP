@@ -890,8 +890,9 @@ function buildRepos(pool) {
       const params = [tenantId, propertyId];
       let sql = `SELECT * FROM reservations WHERE tenant_id=$1 AND property_id=$2`;
       if (opts.status) { params.push(opts.status); sql += ` AND status=$${params.length}::reservation_status`; }
-      if (opts.dateFrom) { params.push(opts.dateFrom); sql += ` AND arrival_date >= $${params.length}`; }
-      if (opts.dateTo)   { params.push(opts.dateTo);   sql += ` AND arrival_date <= $${params.length}`; }
+      if (opts.dateFrom)       { params.push(opts.dateFrom);       sql += ` AND arrival_date >= $${params.length}`; }
+      if (opts.dateTo)         { params.push(opts.dateTo);         sql += ` AND arrival_date <= $${params.length}`; }
+      if (opts.source_channel) { params.push(opts.source_channel); sql += ` AND source_channel = $${params.length}`; }
       sql += ` ORDER BY arrival_date DESC LIMIT 500`;
       const r = await pool.query(sql, params);
       return r.rows;

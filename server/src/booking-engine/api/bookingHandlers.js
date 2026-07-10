@@ -7,7 +7,11 @@
  * Extracted from the route so it is unit-testable without HTTP.
  *
  * Phase 52: buildQuoteHandler({ ariService }) — GET /api/booking/quote.
+ * Phase 54 D8a: initiatePayment + confirmPayment handlers; errorField used
+ * consistently across all error responses.
  */
+
+const { errorField } = require('../../middleware/errorEnvelope');
 
 function buildBookingHandlers({ bookingEngine }) {
   if (!bookingEngine || !bookingEngine.service) throw new Error('bookingHandlers: bookingEngine.service required');
@@ -19,23 +23,64 @@ function buildBookingHandlers({ bookingEngine }) {
     }
     const reason = (out && out.reason) || 'booking_failed';
     const status = reason === 'tenant_required' ? 401 : 400;
-    return res.status(status).json({ ok: false, error: reason, detail: out && out.detail, requestId: ctx.requestId });
+    return res.status(status).json({ ok: false, error: errorField(reason), detail: out && out.detail, requestId: ctx.requestId });
   }
 
-  return {
-    async create(req, res, next) {
-      try { const ctx = req.ctx || {}; send(res, ctx, await svc.createBooking(req.body || {}, ctx)); }
-      catch (e) { next(e); }
-    },
-    async update(req, res, next) {
-      try { const ctx = req.ctx || {}; const body = Object.assign({}, req.body || {}, { reservation_id: req.params.id }); send(res, ctx, await svc.updateBooking(body, ctx)); }
-      catch (e) { next(e); }
-    },
-    async cancel(req, res, next) {
-      try { const ctx = req.ctx || {}; const body = Object.assign({}, req.body || {}, { reservation_id: req.params.id }); send(res, ctx, await svc.cancelBooking(body, ctx)); }
-      catch (e) { next(e); }
+  async function create(req, res, next) {
+    try { const ctx = req.ctx || {}; send(res, ctx, await svc.createBooking(req.body || {}, ctx)); }
+    catch (e) { next(e); }
+  }
+
+  async function update(req, res, next) {
+    try { const ctx = req.ctx || {}; const body = Object.assign({}, req.body || {}, { reservation_id: req.params.id }); send(res, ctx, await svc.updateBooking(body, ctx)); }
+    catch (e) { next(e); }
+  }
+
+  async function cancel(req, res, next) {
+    try { const ctx = req.ctx || {}; const body = Object.assign({}, req.body || {}, { reservation_id: req.params.id }); send(res, ctx, await svc.cancelBooking(body, ctx)); }
+    catch (e) { next(e); }
+  }
+
+  async function initiatePayment(req, res) {
+    const ctx = req.ctx || {};
+    const body = req.body || {};
+    let r;
+    try { r = await svc.initiateBooking(body, ctx); }
+    catch (e) { return res.status(500).json({ ok: false, error: errorField('internal_error'), detail: [], requestId: ctx.requestId }); }
+    if (!r.ok) {
+      const status = r.reason === 'AVAILABILITY_FAILED' ? 409 : 400;
+      return res.status(status).json({ ok: false, error: errorField(r.reason), detail: r.detail || [], requestId: ctx.requestId });
     }
-  };
+    return res.status(201).json({ ok: true, result: r.result, requestId: ctx.requestId });
+  }
+
+  async function confirmPayment(req, res) {
+    const ctx = req.ctx || {};
+    const paymentId = req.params.id;
+    const body = req.body || {};
+    let r;
+    try {
+      r = await svc.confirmBooking({
+        reservationId: body.reservation_id,
+        paymentId,
+        roomTypeId: body.room_type_id,
+        arrival:    body.arrival,
+        departure:  body.departure,
+        adults:     body.adults,
+      }, ctx);
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: errorField('internal_error'), detail: [], requestId: ctx.requestId });
+    }
+    if (!r.ok) {
+      const status = r.reason === 'hold_expired' ? 410
+        : r.reason === 'payment_verification_failed' ? 402
+        : 400;
+      return res.status(status).json({ ok: false, error: errorField(r.reason), detail: r.detail || [], requestId: ctx.requestId });
+    }
+    return res.json({ ok: true, result: r.result, requestId: ctx.requestId });
+  }
+
+  return { create, update, cancel, initiatePayment, confirmPayment };
 }
 
 /**
@@ -51,7 +96,7 @@ function buildQuoteHandler({ ariService } = {}) {
 
       // Tenant context required
       if (!ctx.tenantId) {
-        return res.status(401).json({ ok: false, error: 'tenant_required' });
+        return res.status(401).json({ ok: false, error: errorField('tenant_required') });
       }
 
       // ARI not configured — graceful degradation
@@ -71,7 +116,7 @@ function buildQuoteHandler({ ariService } = {}) {
       if (!roomTypeId || !arrival || !departure) {
         return res.status(400).json({
           ok: false,
-          error: 'missing_required_params',
+          error: errorField('missing_required_params'),
           required: ['room_type_id', 'arrival', 'departure']
         });
       }
@@ -105,12 +150,12 @@ function buildQuoteHandler({ ariService } = {}) {
 
       return res.status(400).json({
         ok: false,
-        error: 'not_bookable',
+        error: errorField('not_bookable'),
         reasons: result.reasons || []
       });
     } catch (err) {
       // Don't call next(err) — return 500 envelope per spec
-      return res.status(500).json({ ok: false, error: 'quote_failed', message: err && err.message });
+      return res.status(500).json({ ok: false, error: errorField('quote_failed'), message: err && err.message });
     }
   };
 }

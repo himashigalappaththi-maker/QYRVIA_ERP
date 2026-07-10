@@ -24,7 +24,8 @@ function fakeCommandBus() {
 }
 const baseInput = (over = {}) => Object.assign({
   channel: 'DIRECT', external_ref: 'D1', room_type_id: 'rt1', arrival: '2026-07-01', departure: '2026-07-03',
-  adults: 2, guest_name: 'John', base_rate: 100, currency: 'USD'
+  adults: 2, guest_name: 'John', base_rate: 100, currency: 'USD',
+  holder_guest_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 }, over);
 
 // 1. direct booking -> PMS create dispatched
@@ -254,7 +255,8 @@ test('Phase 52: buildBookingEngine with in-memory ariService uses ARI rate resol
   const eng = buildBookingEngine({ commandBus: bus, rateResolver: resolver, availabilityProvider: provider });
   const r = await eng.service.createBooking({
     channel: 'DIRECT', room_type_id: 'rt1', rate_plan_id: 'rp1',
-    arrival: '2026-07-01', departure: '2026-07-03', adults: 2, currency: 'USD'
+    arrival: '2026-07-01', departure: '2026-07-03', adults: 2, currency: 'USD',
+    holder_guest_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
   }, CTX);
 
   assert.equal(r.ok, true);
@@ -284,7 +286,8 @@ test('Phase 52: full pipeline with in-memory ARI produces correct total', async 
   const eng = buildBookingEngine({ commandBus: bus, rateResolver: resolver, availabilityProvider: provider });
   const r = await eng.service.createBooking({
     channel: 'DIRECT', room_type_id: 'rt1', rate_plan_id: 'rp1',
-    arrival: '2026-07-01', departure: '2026-07-03', adults: 2, currency: 'USD'
+    arrival: '2026-07-01', departure: '2026-07-03', adults: 2, currency: 'USD',
+    holder_guest_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
   }, CTX);
 
   assert.equal(r.ok, true);

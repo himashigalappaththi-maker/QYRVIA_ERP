@@ -104,10 +104,15 @@ function buildDbAriStore({ db } = {}) {
     return r.rows[0] ? { conflict: false, updated: 1, version: r.rows[0].version } : { conflict: true, updated: 0 };
   }
 
-  /** Atomic delta on sold (no read-modify-write race). Returns the new row. */
+  /** Atomic delta on sold (no read-modify-write race). Returns the new row.
+   *  Phase 54 D7c: ceiling guard prevents sold exceeding physical + overbooking_buffer.
+   *  Floor guard (sold >= 0) was already present. Both are enforced in a single atomic UPDATE. */
   async function adjustSold({ tenant_id, propertyId, roomTypeId, date, delta }) {
     const r = await db.query(`UPDATE ari_inventory_grid SET sold = sold + $5, version=version+1, updated_at=now()
-      WHERE tenant_id=$1 AND property_id=$2 AND room_type_id=$3 AND date=$4 AND sold + $5 >= 0 RETURNING sold, version`,
+      WHERE tenant_id=$1 AND property_id=$2 AND room_type_id=$3 AND date=$4
+        AND sold + $5 >= 0
+        AND (sold + $5) <= (physical + COALESCE(overbooking_buffer, 0))
+      RETURNING sold, version`,
       [tenant_id, propertyId, roomTypeId, date, delta]);
     return r.rows[0] || null;
   }
