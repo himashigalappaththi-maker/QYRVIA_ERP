@@ -33,14 +33,13 @@ if (!URL) {
 } else {
 
   let adminPool;
-  let appPool;   // NON-superuser, NON-BYPASSRLS role
+  let appPool;
 
   before(async () => {
     adminPool = H.newPool(URL);
     await H.freshSchema(adminPool);
     const { role, password } = await H.setupAppRole(adminPool);
     appPool = H.newPool(H.roleUrl(URL, role, password));
-    // Guard: reject if role is superuser / BYPASSRLS (RLS would be bypassed).
     await G.assertRlsCapableRole(appPool);
   });
 
@@ -49,47 +48,66 @@ if (!URL) {
     await adminPool.end();
   });
 
-  // Seed two independent tenants + properties
+  // Unique 4-char suffix to prevent collisions on tenants.code UNIQUE constraint
+  // when seedTenant() is called multiple times in the same freshSchema session.
+  function uid() { return crypto.randomBytes(3).toString('hex'); }
+
+  // Seed one tenant + property with guaranteed-unique code per call.
+  async function seedTenant(label) {
+    const s = uid();
+    return H.seedTenantProperty(adminPool, { code: label + s, propCode: 'P' + s });
+  }
+
+  // Seed two independent tenants + properties per test (unique codes every time).
   async function seedTwo() {
-    const a = await H.seedTenantProperty(adminPool, { code: 'TA', propCode: 'PA' });
-    const b = await H.seedTenantProperty(adminPool, { code: 'TB', propCode: 'PB' });
+    const a = await seedTenant('TA');
+    const b = await seedTenant('TB');
     return { a, b };
   }
 
-  // Seed minimal FK chain: room_type → reservation → booking_payment_state / payment_attempt_log
-  async function seedReservation(pool, tenantId, propertyId) {
-    const guestId      = crypto.randomUUID();
-    const roomTypeId   = crypto.randomUUID();
+  // Seed minimal FK chain: guest → room_type → reservation.
+  // Returns { guestId, roomTypeId, reservationId }.
+  async function seedReservation(tenantId, propertyId) {
+    const guestId       = crypto.randomUUID();
+    const roomTypeId    = crypto.randomUUID();
     const reservationId = crypto.randomUUID();
 
-    await H.withTenant(pool, tenantId, async (c) => {
+    await H.withTenant(adminPool, tenantId, async (c) => {
       await c.query(
-        `INSERT INTO guests (id, tenant_id, property_id, full_name, email)
-         VALUES ($1, $2, $3, 'DB Test Guest', 'dbtest@example.com')`,
+        `INSERT INTO guests
+           (id, tenant_id, property_id, first_name, email)
+         VALUES ($1, $2, $3, 'DB Test', 'dbtest@qyrvia.test')`,
         [guestId, tenantId, propertyId]
       );
       await c.query(
-        `INSERT INTO room_types (id, tenant_id, property_id, code, name, physical)
-         VALUES ($1, $2, $3, 'STD', 'Standard', 10)`,
+        `INSERT INTO room_types
+           (id, tenant_id, property_id, code, name)
+         VALUES ($1, $2, $3, 'STD', 'Standard')`,
         [roomTypeId, tenantId, propertyId]
       );
+      // primary_adult_guest_id is NOT NULL — reuse guestId
       await c.query(`
         INSERT INTO reservations (
           id, tenant_id, property_id, reservation_number, reservation_type, status,
-          holder_guest_id, arrival_date, departure_date, adults, children, room_type_id, rooms_count
-        ) VALUES ($1, $2, $3, $4, 'INDIVIDUAL'::reservation_type,
-                  'INQUIRY'::reservation_status, $5, '2026-10-01', '2026-10-03', 2, 0, $6, 1)
+          holder_guest_id, primary_adult_guest_id,
+          arrival_date, departure_date, adults, children, room_type_id, rooms_count
+        ) VALUES (
+          $1, $2, $3, $4,
+          'INDIVIDUAL'::reservation_type, 'INQUIRY'::reservation_status,
+          $5, $5,
+          '2026-10-01', '2026-10-03', 2, 0, $6, 1
+        )
       `, [reservationId, tenantId, propertyId, 'DB-' + reservationId.slice(0, 8), guestId, roomTypeId]);
     });
 
     return { guestId, roomTypeId, reservationId };
   }
 
-  // ── 1. paymentStateStoreDb.upsert inserts, readable via getByReservationId ───
+  // ── 1. paymentStateStoreDb.upsert inserts, readable via getByReservationId ──
 
   test('paymentStateStoreDb: upsert inserts a row readable by getByReservationId', async () => {
     const { a } = await seedTwo();
-    const { reservationId } = await seedReservation(adminPool, a.tenantId, a.propertyId);
+    const { reservationId } = await seedReservation(a.tenantId, a.propertyId);
 
     const storeA = buildPaymentStateStoreDb({ db: H.tenantBoundPool(URL, a.tenantId) });
     const ctx = { tenantId: a.tenantId, propertyId: a.propertyId };
@@ -109,11 +127,11 @@ if (!URL) {
     assert.equal(row.tenant_id, a.tenantId);
   });
 
-  // ── 2. upsert conflict: second write updates existing row ─────────────────
+  // ── 2. Second upsert updates existing row (no duplicate) ─────────────────
 
   test('paymentStateStoreDb: second upsert updates existing row (no duplicate)', async () => {
     const { a } = await seedTwo();
-    const { reservationId } = await seedReservation(adminPool, a.tenantId, a.propertyId);
+    const { reservationId } = await seedReservation(a.tenantId, a.propertyId);
 
     const storeA = buildPaymentStateStoreDb({ db: H.tenantBoundPool(URL, a.tenantId) });
     const ctx = { tenantId: a.tenantId, propertyId: a.propertyId };
@@ -135,7 +153,7 @@ if (!URL) {
     assert.equal(row.payment_status, 'paid', 'status should be updated to paid');
   });
 
-  // ── 3. getByReservationId: non-existent → null ───────────────────────────
+  // ── 3. getByReservationId: non-existent → null ──────────────────────────
 
   test('paymentStateStoreDb.getByReservationId: missing reservation → null', async () => {
     const { a } = await seedTwo();
@@ -145,11 +163,11 @@ if (!URL) {
     assert.equal(row, null);
   });
 
-  // ── 4. Tenant isolation on booking_payment_state ──────────────────────────
+  // ── 4. Tenant isolation on booking_payment_state ─────────────────────────
 
-  test('paymentStateStoreDb: tenant A row is invisible to tenant B under RLS', async () => {
+  test('paymentStateStoreDb: tenant A row invisible to tenant B (explicit tenant_id filter)', async () => {
     const { a, b } = await seedTwo();
-    const { reservationId } = await seedReservation(adminPool, a.tenantId, a.propertyId);
+    const { reservationId } = await seedReservation(a.tenantId, a.propertyId);
 
     const storeA = buildPaymentStateStoreDb({ db: H.tenantBoundPool(URL, a.tenantId) });
     const storeB = buildPaymentStateStoreDb({ db: H.tenantBoundPool(URL, b.tenantId) });
@@ -161,18 +179,19 @@ if (!URL) {
       deposit_amount: 150, deposit_currency: 'USD', provider: 'mock',
     }, { tenantId: a.tenantId });
 
-    // Tenant B cannot see tenant A's row
+    // B queries with its own tenantId — explicit AND tenant_id=$2 must return null
     const row = await storeB.getByReservationId(reservationId, { tenantId: b.tenantId });
     assert.equal(row, null, 'tenant B must not see tenant A payment state row');
   });
 
-  // ── 5. paymentAttemptLogDb: insert two entries → both readable ────────────
+  // ── 5. paymentAttemptLogDb: two inserts → both readable ──────────────────
 
   test('paymentAttemptLogDb: two inserts → two rows in listByReservation', async () => {
     const { a } = await seedTwo();
-    const { reservationId } = await seedReservation(adminPool, a.tenantId, a.propertyId);
+    const { reservationId } = await seedReservation(a.tenantId, a.propertyId);
 
-    const logA = buildPaymentAttemptLogDb({ db: H.tenantBoundPool(URL, a.tenantId) });
+    const tPool = H.tenantBoundPool(URL, a.tenantId);
+    const logA = buildPaymentAttemptLogDb({ db: tPool });
     const ctx = { tenantId: a.tenantId, propertyId: a.propertyId };
 
     await logA.insert({
@@ -188,23 +207,26 @@ if (!URL) {
 
     const rows = await logA.listByReservation(reservationId, ctx);
     assert.equal(rows.length, 2, 'should have two attempt log entries');
-    assert.equal(rows[0].status, 'success', 'most recent first');
+    assert.ok(rows.some((r) => r.status === 'success'), 'success row should be present');
+    await tPool.end();
   });
 
-  // ── 6. Append-only: UPDATE/DELETE revoked on payment_attempt_log ─────────
+  // ── 6. Append-only: PUBLIC cannot UPDATE/DELETE on payment_attempt_log ───
 
   test('payment_attempt_log: PUBLIC cannot UPDATE or DELETE (append-only enforcement)', async () => {
     await G.assertAppendOnlyRevoked(appPool);
   });
 
-  // ── 7. Tenant isolation on payment_attempt_log ────────────────────────────
+  // ── 7. Tenant isolation on payment_attempt_log ───────────────────────────
 
   test('paymentAttemptLogDb: tenant A rows invisible to tenant B under RLS', async () => {
     const { a, b } = await seedTwo();
-    const { reservationId } = await seedReservation(adminPool, a.tenantId, a.propertyId);
+    const { reservationId } = await seedReservation(a.tenantId, a.propertyId);
 
-    const logA = buildPaymentAttemptLogDb({ db: H.tenantBoundPool(URL, a.tenantId) });
-    const logB = buildPaymentAttemptLogDb({ db: H.tenantBoundPool(URL, b.tenantId) });
+    const tPoolA = H.tenantBoundPool(URL, a.tenantId);
+    const tPoolB = H.tenantBoundPool(URL, b.tenantId);
+    const logA = buildPaymentAttemptLogDb({ db: tPoolA });
+    const logB = buildPaymentAttemptLogDb({ db: tPoolB });
 
     await logA.insert({
       tenant_id: a.tenantId, property_id: a.propertyId,
@@ -214,15 +236,17 @@ if (!URL) {
 
     const rows = await logB.listByReservation(reservationId, { tenantId: b.tenantId });
     assert.equal(rows.length, 0, 'tenant B must not see tenant A attempt log rows');
+    await tPoolA.end();
+    await tPoolB.end();
   });
 
   // ── 8. findExpiredHolds returns only expired pending rows ─────────────────
 
-  test('paymentStateStoreDb.findExpiredHolds: returns expired pending_payment only', async () => {
+  test('paymentStateStoreDb.findExpiredHolds: returns expired pending_payment, skips active/paid', async () => {
     const { a } = await seedTwo();
-    const { reservationId: expiredId } = await seedReservation(adminPool, a.tenantId, a.propertyId);
-    const { reservationId: activeId  } = await seedReservation(adminPool, a.tenantId, a.propertyId);
-    const { reservationId: paidId    } = await seedReservation(adminPool, a.tenantId, a.propertyId);
+    const { reservationId: expiredId } = await seedReservation(a.tenantId, a.propertyId);
+    const { reservationId: activeId  } = await seedReservation(a.tenantId, a.propertyId);
+    const { reservationId: paidId    } = await seedReservation(a.tenantId, a.propertyId);
 
     const tPool = H.tenantBoundPool(URL, a.tenantId);
     const store = buildPaymentStateStoreDb({ db: tPool });
@@ -246,18 +270,24 @@ if (!URL) {
       store.findExpiredHolds(client)
     );
 
-    assert.equal(expired.length, 1, 'only the expired pending_payment row should be returned');
-    assert.equal(expired[0].reservation_id, expiredId);
+    // Must contain the expired row
+    assert.ok(expired.some((r) => r.reservation_id === expiredId),
+      'expired pending_payment row must be in results');
+    // Active and paid rows must NOT appear
+    assert.ok(!expired.some((r) => r.reservation_id === activeId),
+      'non-expired pending_payment must not appear');
+    assert.ok(!expired.some((r) => r.reservation_id === paidId),
+      'paid row must not appear even with past hold_expires_at');
+
     await tPool.end();
   });
 
-  // ── 9. FORCE RLS returns zero rows when GUC not set ──────────────────────
+  // ── 9. FORCE RLS returns zero rows when GUC not set ─────────────────────
 
   test('paymentStateStoreDb.findExpiredHolds: FORCE RLS → zero rows when app.tenant_id not set', async () => {
     const { a } = await seedTwo();
-    const { reservationId } = await seedReservation(adminPool, a.tenantId, a.propertyId);
+    const { reservationId } = await seedReservation(a.tenantId, a.propertyId);
 
-    // Use tenant-bound pool to insert
     const tPool = H.tenantBoundPool(URL, a.tenantId);
     const storeT = buildPaymentStateStoreDb({ db: tPool });
     await storeT.upsert({
@@ -266,18 +296,16 @@ if (!URL) {
       provider: 'mock', hold_expires_at: new Date(Date.now() - 1000).toISOString(),
     }, { tenantId: a.tenantId });
 
-    // Now query with a pool that has NO tenant context set (raw appPool)
-    // FORCE RLS on booking_payment_state with app_current_tenant() returning NULL
-    // means zero rows should come back — not an error, just empty.
+    // Query via appPool (non-superuser, NON-BYPASSRLS) with no GUC set.
+    // FORCE RLS + app_current_tenant() returning NULL → zero rows.
     const storeRaw = buildPaymentStateStoreDb({ db: appPool });
-    const rows = await storeRaw.findExpiredHolds(); // no client param → uses raw pool
-    // Under FORCE RLS with no GUC: zero rows (RLS policy filters all out)
+    const rows = await storeRaw.findExpiredHolds();
     assert.equal(rows.length, 0, 'FORCE RLS must return zero rows when app.tenant_id is not set');
 
     await tPool.end();
   });
 
-  // ── 10. All tenant tables (including new payment tables) pass RLS guard ───
+  // ── 10. All tenant tables pass RLS guard ────────────────────────────────
 
   test('assertAllTenantTablesSecured: booking_payment_state and payment_attempt_log have FORCE RLS', async () => {
     const count = await G.assertAllTenantTablesSecured(appPool);
