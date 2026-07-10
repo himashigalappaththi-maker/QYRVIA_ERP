@@ -11,7 +11,7 @@ const { errorField } = require('../../middleware/errorEnvelope');
 const { buildChannelConnectionTester } = require('../services/channelConnectionTester');
 const { reconcile } = require('../ota/reconciliation');
 
-function buildController({ channelManager, deadLetter, credentials, mapping, channelRegistry }) {
+function buildController({ channelManager, deadLetter, credentials, mapping, channelRegistry, syncMonitor = null, syncLockStore = null }) {
   // Phase 37 WI-2b: readiness-only connection tester, built once. It is fail-closed
   // and side-effect-free (no network, no send, no secret resolution).
   const connectionTester = buildChannelConnectionTester({ channelManager });
@@ -99,10 +99,25 @@ function buildController({ channelManager, deadLetter, credentials, mapping, cha
         if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
         const s = channelManager.status() || {};
         const tenantCount = deadLetter ? (await deadLetter.list({ tenant_id: ctx.tenantId })).length : null;
+
+        // H4: Enrich each channel entry with per-channel health if syncMonitor is available
+        let channels = s.channels;
+        if (syncMonitor && channels && typeof channels === 'object') {
+          channels = Object.assign({}, channels);
+          for (const [ch, chData] of Object.entries(channels)) {
+            try {
+              const h = syncMonitor.health(ch);
+              channels[ch] = Object.assign({}, chData, {
+                health: { status: h.status, consecutiveFailures: h.consecutiveFailures, lastOkAt: h.lastOkAt }
+              });
+            } catch (_) { /* never block health response */ }
+          }
+        }
+
         res.json({
           ok: true,
           data: {
-            channels: s.channels,
+            channels,
             queue: s.queue,
             bookings: s.bookings,
             deadLetters: { tenantCount }
@@ -339,19 +354,57 @@ function buildController({ channelManager, deadLetter, credentials, mapping, cha
     // Phase 50 - POST /api/channel/reconciliation
     // Pure drift computation: accepts local + remote snapshots, returns recommendations.
     // No OTA network call. Uses channel.sync.read permission (read-only computation).
+    // Phase 53 Fix 2: acquire channel_sync_lock before reconcile to prevent parallel runs.
     async reconciliation(req, res, next) {
       try {
         const ctx = ctxOf(req);
         if (!ctx.tenantId) return fail(res, req, 'tenant_required', 401);
         const b = req.body || {};
         if (!b.channel) return fail(res, req, 'channel_required');
-        const report = reconcile({
-          channel: String(b.channel).toUpperCase(),
-          local:   b.local  || {},
-          remote:  b.remote || {}
-        });
-        res.json({ ok: true, data: report, requestId: ctx.requestId });
+        const channel = String(b.channel).toUpperCase();
+
+        let lockId = null;
+        if (syncLockStore) {
+          const lock = await syncLockStore.acquire({
+            tenant_id: ctx.tenantId,
+            property_id: ctx.propertyId || null,
+            channel_code: channel,
+            lock_type: 'reconciliation',
+            lock_holder: ctx.userId || ctx.actorId || 'api',
+            ttl_seconds: 300
+          });
+          if (!lock.ok) return res.status(409).json({ ok: false, error: 'reconciliation_in_progress', requestId: ctx.requestId });
+          lockId = lock.lockId;
+        }
+        try {
+          const report = reconcile({
+            channel,
+            local:  b.local  || {},
+            remote: b.remote || {}
+          });
+          res.json({ ok: true, data: report, requestId: ctx.requestId });
+        } finally {
+          if (syncLockStore && lockId) await syncLockStore.release(lockId).catch(() => {});
+        }
       } catch (e) { next(e); }
+    },
+
+    async killChannel(req, res) {
+      const ctx = ctxOf(req);
+      if (!ctx || !ctx.tenantId) return fail(res, req, 'tenant_required', 401);
+      const channel = (req.params.channel || '').toUpperCase();
+      if (!channel) return fail(res, req, 'channel_required', 400);
+      const { reason } = req.body || {};
+      if (!reason || !String(reason).trim()) return fail(res, req, 'kill_switch_reason_required', 400);
+      if (!channelRegistry) return fail(res, req, 'channel_registry_unavailable', 400);
+      try {
+        const row = await channelRegistry.kill(channel, reason, ctx);
+        return res.status(200).json({ ok: true, data: row, requestId: ctx.requestId });
+      } catch (e) {
+        if (e.message === 'channel_not_found') return fail(res, req, 'channel_not_found', 404);
+        if (e.message === 'kill_switch_reason_required') return fail(res, req, 'kill_switch_reason_required', 400);
+        return fail(res, req, e.message || 'internal_error', 500);
+      }
     }
   };
 }

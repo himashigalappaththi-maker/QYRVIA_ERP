@@ -22,7 +22,9 @@ function build(deps = {}) {
     deadLetter: deps.channelPersistence && deps.channelPersistence.deadLetter,
     credentials: deps.channelCredentials,
     mapping: deps.channelMapping,
-    channelRegistry: deps.channelRegistry   // Phase 49
+    channelRegistry: deps.channelRegistry,   // Phase 49
+    syncMonitor: (deps.channelOutboundSync && deps.channelOutboundSync.syncMonitor) || null,  // H4: Phase 53
+    syncLockStore: (deps.channelPersistence && deps.channelPersistence.syncLock) || null  // Fix 2: reconciliation lock
   });
 
   router.post('/sync/rates',        requirePermission('channel.sync.run'),     c.syncRates);
@@ -58,6 +60,9 @@ function build(deps = {}) {
 
   // Phase 50 - reconciliation: pure drift report, no OTA call (read permission only).
   router.post('/reconciliation', requirePermission('channel.sync.read'), c.reconciliation);
+
+  // Phase 53 Fix 4 - emergency kill switch (distinct from toggle; records kill_switch_at/by/reason).
+  router.patch('/registry/:channel/kill', requirePermission('channel.sync.run'), c.killChannel);
 
   // Phase 25 - control-center snapshot (non-secret operational status for the UI).
   router.get( '/control',           requirePermission('channel.mapping.read'), (req, res) => {

@@ -278,7 +278,8 @@ let channelOutboundSync = null;
 try {
   // B8-B5: third-party OTAs use real HttpTransport only when activated (CHANNEL_OTA_ACTIVATIONS)
   // AND CHANNEL_HTTP_ENABLED=true; default off => no external network. Auth via SecretProvider.
-  channelOutboundSync = buildChannelOutboundSync({ db: db.pool, secretProvider: channelCredentials && channelCredentials.provider });
+  // Phase 53 H2: inject channelRegistry for kill-switch enforcement at outbound sync.
+  channelOutboundSync = buildChannelOutboundSync({ db: db.pool, secretProvider: channelCredentials && channelCredentials.provider, channelRegistry });
   logger.info({ mode: channelOutboundSync.mode, realChannels: Array.from(channelOutboundSync.realChannels), http: channelOutboundSync.httpChannels }, '[boot] channel outbound sync');
 } catch (e) { logger.warn({ err: e }, '[boot] channel outbound sync init skipped'); }
 
@@ -287,12 +288,19 @@ try {
 const { buildChannelInbound } = require('./channel-manager/inbound');
 let channelInbound = null;
 try {
+  // Phase 53 H1: inject ariAvailabilityProvider for OTA booking availability gate.
+  // Phase 53 H2: inject channelRegistry for kill-switch enforcement at inbound.
+  let _ariAvailabilityProvider;
+  try { if (ariService) _ariAvailabilityProvider = buildAriAvailabilityProvider({ ariService }); } catch (_) { /* optional */ }
   channelInbound = buildChannelInbound({
-    registry:      channelOutboundSync && channelOutboundSync.registry,
-    bookingStore:  channelPersistence && channelPersistence.booking,
+    registry:             channelOutboundSync && channelOutboundSync.registry,
+    bookingStore:         channelPersistence && channelPersistence.booking,
     commandBus,
-    resolveSecret: channelOutboundSync && channelOutboundSync.resolveSecret, // B8-B5: per-channel signing secret
-    requireSignature: false
+    resolveSecret:        channelOutboundSync && channelOutboundSync.resolveSecret, // B8-B5: per-channel signing secret
+    requireSignature:     env.CHANNEL_WEBHOOK_REQUIRE_SIGNATURE !== 'false',
+    availabilityProvider: _ariAvailabilityProvider || null,  // H1: ARI gate (null = disabled)
+    channelRegistry:      channelRegistry || null,           // H2: kill-switch (null = disabled)
+    importLog:            channelPersistence && channelPersistence.importLog || null  // Fix 3: booking import log
   });
   logger.info('[boot] channel inbound pipeline ready');
 } catch (e) { logger.warn({ err: e }, '[boot] channel inbound init skipped'); }

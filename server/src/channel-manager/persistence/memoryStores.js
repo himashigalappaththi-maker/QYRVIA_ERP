@@ -17,14 +17,14 @@ const matches = (it, filter) => !filter || Object.entries(filter).every(([k, v])
 // ---- booking_store ---------------------------------------------------------
 function buildBookingStoreMemory({ clock = () => Date.now() } = {}) {
   const byId  = new Map();
-  const byRef = new Map(); // tenant::channel::external_ref -> id
+  const byRef = new Map(); // tenant::property::channel::external_ref -> id
   let seq = 0;
   const nid = () => 'bk_' + (++seq);
-  const refKey = (t, c, r) => `${t}::${c}::${r}`;
+  const refKey = (t, p, c, r) => `${t}::${p || ''}::${c}::${r}`;
 
   function upsert(row) {
     if (!row || !row.tenant_id || !row.channel || !row.external_ref) return { accepted: false, reason: 'invalid' };
-    const key = refKey(row.tenant_id, row.channel, row.external_ref);
+    const key = refKey(row.tenant_id, row.property_id, row.channel, row.external_ref);
     const id  = byRef.get(key);
     const now = clock();
     if (id) {
@@ -44,7 +44,24 @@ function buildBookingStoreMemory({ clock = () => Date.now() } = {}) {
     return { accepted: true, created: true, item: clone(item) };
   }
   function getById(id) { return clone(byId.get(id)); }
-  function getByExternalRef(t, c, r) { const id = byRef.get(refKey(t, c, r)); return id ? clone(byId.get(id)) : null; }
+  function getByExternalRef(t, c, r, p) {
+    // Try with property_id first; fall back to null/empty for backward compat
+    const key = refKey(t, p, c, r);
+    let id = byRef.get(key);
+    if (id == null && p != null) {
+      // caller passed property_id but not found — also try the null-property key
+      id = byRef.get(refKey(t, null, c, r));
+    }
+    if (id == null && p == null) {
+      // Backward-compat: no property_id passed — scan for any matching entry across all properties
+      for (const [k, v] of byRef.entries()) {
+        // key format: tenant::property::channel::ref
+        const parts = k.split('::');
+        if (parts[0] === t && parts[2] === c && parts[3] === r) { id = v; break; }
+      }
+    }
+    return id ? clone(byId.get(id)) : null;
+  }
   function setPmsReservationId(id, resId) {
     const it = byId.get(id); if (!it) return null;
     it.pms_reservation_id = resId; it.updated_at = clock(); return clone(it);
@@ -150,10 +167,50 @@ function buildSyncStateStoreMemory({ clock = () => Date.now() } = {}) {
   return { upsert, get, list, clear };
 }
 
+// ---- channel_sync_lock_store (Fix 2) -----------------------------------------
+function buildSyncLockStoreMemory({ clock = () => Date.now() } = {}) {
+  const locks = new Map(); // key: tenant::channel::lock_type -> { lockId, expires }
+  let seq = 0;
+  const lk = (t, ch, lt) => `${t}::${ch}::${lt}`;
+
+  async function acquire({ tenant_id, property_id, channel_code, lock_type, lock_holder, ttl_seconds = 300 }) {
+    const key = lk(tenant_id, channel_code, lock_type);
+    const now = clock();
+    const existing = locks.get(key);
+    if (existing && existing.expires > now) {
+      return { ok: false, error: 'lock_held' };
+    }
+    const lockId = 'lock_' + (++seq);
+    locks.set(key, { lockId, expires: now + (ttl_seconds * 1000) });
+    return { ok: true, lockId };
+  }
+
+  async function release(lockId) {
+    for (const [key, entry] of locks.entries()) {
+      if (entry.lockId === lockId) { locks.delete(key); return; }
+    }
+  }
+
+  return { acquire, release };
+}
+
+// ---- channel_booking_import_log_store (Fix 3) --------------------------------
+function buildImportLogStoreMemory() {
+  const rows = [];
+  return {
+    async insert(row) {
+      rows.push({ ...row, id: 'il_' + rows.length, created_at: new Date().toISOString() });
+    },
+    _rows: rows
+  };
+}
+
 module.exports = {
   buildBookingStoreMemory,
   buildChannelMappingStoreMemory,
   buildSyncQueueStoreMemory: buildChannelSyncQueue, // reuse S3 queue (contract-compatible)
   buildDeadLetterStoreMemory,
-  buildSyncStateStoreMemory
+  buildSyncStateStoreMemory,
+  buildSyncLockStoreMemory,
+  buildImportLogStoreMemory
 };

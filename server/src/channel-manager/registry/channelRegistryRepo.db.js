@@ -70,6 +70,9 @@ function buildChannelRegistryRepoDb({ db }) {
     if (fields.enabled    !== undefined) { vals.push(fields.enabled);    sets.push(`enabled = $${vals.length}`); }
     if (fields.last_sync_at !== undefined) { vals.push(fields.last_sync_at); sets.push(`last_sync_at = $${vals.length}`); }
     if (fields.last_error !== undefined) { vals.push(fields.last_error); sets.push(`last_error = $${vals.length}`); }
+    if (fields.kill_switch_at     !== undefined) { vals.push(fields.kill_switch_at);     sets.push(`kill_switch_at = $${vals.length}`); }
+    if (fields.kill_switch_by     !== undefined) { vals.push(fields.kill_switch_by);     sets.push(`kill_switch_by = $${vals.length}`); }
+    if (fields.kill_switch_reason !== undefined) { vals.push(fields.kill_switch_reason); sets.push(`kill_switch_reason = $${vals.length}`); }
     if (!sets.length) return findByCode(channelCode, { tenantId, propertyId });
     sets.push('updated_at = now()');
     const r = await db.query(

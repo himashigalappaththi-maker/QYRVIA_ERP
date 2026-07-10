@@ -95,7 +95,10 @@ const config = Object.freeze({
   AI_CONFIRMATION_ENABLED:        getOptional('AI_CONFIRMATION_ENABLED', 'false'),
   AI_CONFIRMATION_AUTO_SEND:      getOptional('AI_CONFIRMATION_AUTO_SEND', 'true'),
   AI_CONFIRMATION_MIN_CONFIDENCE: getOptional('AI_CONFIRMATION_MIN_CONFIDENCE', '0.5'),
-  AI_CONFIRMATION_TRANSPORT:      getOptional('AI_CONFIRMATION_TRANSPORT', 'mock')
+  AI_CONFIRMATION_TRANSPORT:      getOptional('AI_CONFIRMATION_TRANSPORT', 'mock'),
+  // Phase 53 Fix 1: webhook signature enforcement. Default 'true' (safe for live OTA).
+  // Set CHANNEL_WEBHOOK_REQUIRE_SIGNATURE=false to skip signature checks in dev/test.
+  CHANNEL_WEBHOOK_REQUIRE_SIGNATURE: getOptional('CHANNEL_WEBHOOK_REQUIRE_SIGNATURE', 'true')
 });
 
 module.exports = config;

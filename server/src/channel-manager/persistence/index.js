@@ -18,7 +18,7 @@ const mem    = require('./memoryStores');
 const dbm    = require('./dbStores');
 const { CONTRACTS } = require('./contracts');
 
-const STORE_KEYS = ['booking', 'mapping', 'queue', 'deadLetter', 'syncState'];
+const STORE_KEYS = ['booking', 'mapping', 'queue', 'deadLetter', 'syncState', 'syncLock', 'importLog'];
 
 function buildMemorySet() {
   return {
@@ -26,7 +26,9 @@ function buildMemorySet() {
     mapping:    mem.buildChannelMappingStoreMemory(),
     queue:      mem.buildSyncQueueStoreMemory(),
     deadLetter: mem.buildDeadLetterStoreMemory(),
-    syncState:  mem.buildSyncStateStoreMemory()
+    syncState:  mem.buildSyncStateStoreMemory(),
+    syncLock:   mem.buildSyncLockStoreMemory(),
+    importLog:  mem.buildImportLogStoreMemory()
   };
 }
 
@@ -36,7 +38,9 @@ function buildDbSet(db) {
     mapping:    dbm.buildChannelMappingStoreDb({ db }),
     queue:      dbm.buildSyncQueueStoreDb({ db }),
     deadLetter: dbm.buildDeadLetterStoreDb({ db }),
-    syncState:  dbm.buildSyncStateStoreDb({ db })
+    syncState:  dbm.buildSyncStateStoreDb({ db }),
+    syncLock:   dbm.buildSyncLockStoreDb({ db }),
+    importLog:  dbm.buildImportLogStoreDb({ db })
   };
 }
 

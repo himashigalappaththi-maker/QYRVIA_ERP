@@ -33,13 +33,38 @@ const RECO = {
   reservation: { missing_remote: 'investigate_local_reservation', missing_local: 'ingest_reservation', value_mismatch: 'resolve_reservation_status' }
 };
 
+// H3: Severity mapping per drift kind + type
+const SEVERITY_MAP = {
+  reservation: { missing_local: 'critical', value_mismatch: 'error', missing_remote: 'warn' },
+  inventory: { missing_remote: 'warn', value_mismatch: 'warn', missing_local: 'warn' },
+  rate: { missing_remote: 'info', value_mismatch: 'info', missing_local: 'info' }
+};
+const SEVERITY_ORDER = ['info', 'warn', 'error', 'critical'];
+
+function severityFor(kind, driftType) {
+  return (SEVERITY_MAP[kind] && SEVERITY_MAP[kind][driftType]) || 'warn';
+}
+
+function maxSeverityOf(recs) {
+  if (!recs || recs.length === 0) return null;
+  let max = -1;
+  for (const r of recs) {
+    const idx = SEVERITY_ORDER.indexOf(r.severity);
+    if (idx > max) max = idx;
+  }
+  return max >= 0 ? SEVERITY_ORDER[max] : null;
+}
+
 function recommendations(channel, kind, drifts) {
-  return drifts.map((d) => ({ channel, kind, key: d.key, drift_type: d.type, action: RECO[kind][d.type], resource_key: d.key }));
+  return drifts.map((d) => {
+    const severity = severityFor(kind, d.type);
+    return { channel, kind, key: d.key, drift_type: d.type, action: RECO[kind][d.type], resource_key: d.key, severity };
+  });
 }
 
 /**
  * snapshots: { inventory:[{key,available,stopSell}], rates:[{key,rate,currency}], reservations:[{id,status}] }
- * Returns { channel, inventoryDrift, rateDrift, reservationDrift, recommendations, hasDrift }.
+ * Returns { channel, inventoryDrift, rateDrift, reservationDrift, recommendations, hasDrift, maxSeverity }.
  */
 function reconcile({ channel = null, local = {}, remote = {} } = {}) {
   const inventoryDrift = driftFor(local.inventory, remote.inventory, 'key', (a, b) => a.available === b.available && !!a.stopSell === !!b.stopSell);
@@ -57,6 +82,7 @@ function reconcile({ channel = null, local = {}, remote = {} } = {}) {
     inventoryDrift, rateDrift, reservationDrift,
     recommendations: recs,
     hasDrift: recs.length > 0,
+    maxSeverity: maxSeverityOf(recs),
     counts: { inventory: inventoryDrift.length, rate: rateDrift.length, reservation: reservationDrift.length }
   };
 }

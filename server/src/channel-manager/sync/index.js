@@ -22,6 +22,7 @@ const { TransportOTAAdapter } = require('../adapters/framework/TransportOTAAdapt
 const { CredentialAuthStrategy } = require('../adapters/framework/AuthStrategy');
 const { buildInProcessTransport, buildHttpTransport } = require('../transport/transport');
 const { buildChannelSyncService } = require('./channelSyncService');
+const { buildSyncMonitor } = require('../ota/monitoring');
 const { CHANNELS } = require('../core/canonical/types');
 
 const { BookingComAdapter } = require('../adapters/bookingcom/BookingComAdapter');
@@ -43,7 +44,7 @@ function parseActivations(activations) {
   try { return JSON.parse(raw); } catch (_) { return {}; }
 }
 
-function buildChannelOutboundSync({ mode, db, realChannels, onAudit, httpEnabled, fetchImpl, activations, secretProvider } = {}) {
+function buildChannelOutboundSync({ mode, db, realChannels, onAudit, httpEnabled, fetchImpl, activations, secretProvider, channelRegistry } = {}) {
   const resolved = mode || env.CHANNEL_PERSISTENCE || 'memory';
   const haveDb = !!(db && typeof db.query === 'function');
   const syncStateStore = (resolved !== 'memory' && haveDb) ? dbStores.buildSyncStateStoreDb({ db }) : memStores.buildSyncStateStoreMemory();
@@ -72,7 +73,8 @@ function buildChannelOutboundSync({ mode, db, realChannels, onAudit, httpEnabled
 
   const envReal = (env.CHANNEL_REALSYNC_CHANNELS || 'QYRVIA_CONNECT').split(',').map((s) => s.trim()).filter(Boolean);
   const real = (realChannels instanceof Set) ? realChannels : new Set([...envReal, ...httpChannels]);
-  const service = buildChannelSyncService({ registry, syncStateStore, realChannels: real, onAudit });
+  const syncMonitor = buildSyncMonitor();
+  const service = buildChannelSyncService({ registry, syncStateStore, realChannels: real, onAudit, channelRegistry: channelRegistry || null });
 
   // Resolve a channel's inbound webhook signing secret via the SecretProvider.
   function resolveSecret({ tenantId, channel } = {}) {
@@ -83,7 +85,7 @@ function buildChannelOutboundSync({ mode, db, realChannels, onAudit, httpEnabled
       .catch(() => null);
   }
 
-  return { service, registry, syncStateStore, transports: { inproc }, realChannels: real, activations: acts, httpChannels, resolveSecret, httpEnabled: httpOn, mode: resolved };
+  return { service, registry, syncStateStore, syncMonitor, transports: { inproc }, realChannels: real, activations: acts, httpChannels, resolveSecret, httpEnabled: httpOn, mode: resolved };
 }
 
 module.exports = { buildChannelOutboundSync };

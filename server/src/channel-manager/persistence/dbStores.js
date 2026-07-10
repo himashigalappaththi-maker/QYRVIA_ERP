@@ -23,20 +23,34 @@ function buildBookingStoreDb({ db }) {
   need(db);
   return {
     async upsert(row) {
-      const r = await db.query(
+      // H5: Use INSERT ... ON CONFLICT DO NOTHING + fallback UPDATE to support the
+      // new partial unique indexes (migration 0060) that include property_id scope.
+      // The service-level rank/dedup check ensures only genuine advances reach here.
+      const params = [row.tenant_id, row.property_id || null, row.channel, row.external_ref, row.status || null,
+         row.guest_name || null, row.arrival || null, row.departure || null, row.room_type_id || null,
+         row.amount != null ? row.amount : null, row.currency || null, row.source_channel || row.channel,
+         row.payload_json || {}];
+      let r = await db.query(
         `INSERT INTO channel_booking_store
            (tenant_id, property_id, channel, external_ref, status, guest_name, arrival, departure,
             room_type_id, amount, currency, source_channel, payload_json)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-         ON CONFLICT (tenant_id, channel, external_ref)
-         DO UPDATE SET status = EXCLUDED.status, payload_json = EXCLUDED.payload_json,
-                       version = channel_booking_store.version + 1, updated_at = now()
+         ON CONFLICT DO NOTHING
          RETURNING *`,
-        [row.tenant_id, row.property_id || null, row.channel, row.external_ref, row.status || null,
-         row.guest_name || null, row.arrival || null, row.departure || null, row.room_type_id || null,
-         row.amount != null ? row.amount : null, row.currency || null, row.source_channel || row.channel,
-         row.payload_json || {}]
+        params
       );
+      if (!r.rows[0]) {
+        // Conflict (existing row) — update status/payload and bump version
+        r = await db.query(
+          `UPDATE channel_booking_store
+           SET status = $5, guest_name = $6, arrival = $7, departure = $8, room_type_id = $9,
+               amount = $10, currency = $11, source_channel = $12, payload_json = $13,
+               version = version + 1, updated_at = now()
+           WHERE tenant_id = $1 AND property_id IS NOT DISTINCT FROM $2 AND channel = $3 AND external_ref = $4
+           RETURNING *`,
+          params
+        );
+      }
       return { accepted: true, item: r.rows[0] };
     },
     async getById(id) { const r = await db.query('SELECT * FROM channel_booking_store WHERE id = $1', [id]); return r.rows[0] || null; },
@@ -203,10 +217,56 @@ function buildSyncStateStoreDb({ db }) {
   };
 }
 
+// ---- channel_sync_lock_store (Fix 2) -----------------------------------------
+function buildSyncLockStoreDb({ db }) {
+  need(db);
+  return {
+    async acquire({ tenant_id, property_id, channel_code, lock_type, lock_holder, ttl_seconds = 300 }) {
+      try {
+        const r = await db.query(
+          `INSERT INTO channel_sync_lock
+             (tenant_id, property_id, channel_code, lock_type, lock_holder, status, expires_at)
+           VALUES ($1, $2, $3, $4, $5, 'running', now() + ($6 || ' seconds')::interval)
+           RETURNING id`,
+          [tenant_id, property_id || null, channel_code, lock_type, lock_holder || 'api', ttl_seconds]
+        );
+        return { ok: true, lockId: r.rows[0].id };
+      } catch (e) {
+        if (e.code === '23505') return { ok: false, error: 'lock_held' };
+        throw e;
+      }
+    },
+    async release(lockId) {
+      await db.query(
+        `UPDATE channel_sync_lock SET status = 'completed', updated_at = now() WHERE id = $1`,
+        [lockId]
+      );
+    }
+  };
+}
+
+// ---- channel_booking_import_log_store (Fix 3) --------------------------------
+function buildImportLogStoreDb({ db }) {
+  need(db);
+  return {
+    async insert(row) {
+      await db.query(
+        `INSERT INTO channel_booking_import_log
+           (tenant_id, property_id, channel_code, external_booking_id, outcome, error_message)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [row.tenant_id, row.property_id || null, row.channel_code,
+         row.external_booking_id || null, row.outcome, row.error_message || null]
+      );
+    }
+  };
+}
+
 module.exports = {
   buildBookingStoreDb,
   buildChannelMappingStoreDb,
   buildSyncQueueStoreDb,
   buildDeadLetterStoreDb,
-  buildSyncStateStoreDb
+  buildSyncStateStoreDb,
+  buildSyncLockStoreDb,
+  buildImportLogStoreDb
 };

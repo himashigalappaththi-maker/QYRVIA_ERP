@@ -16,15 +16,24 @@ function hashInv(i) {
   return [String(i && i.available), (i && i.stopSell) ? 1 : 0, String(i && i.minLos), String(i && i.maxLos)].join('|');
 }
 
-function buildChannelSyncService({ registry, syncStateStore, realChannels = new Set(['QYRVIA_CONNECT']), clock = () => Date.now(), onAudit } = {}) {
+function buildChannelSyncService({ registry, syncStateStore, realChannels = new Set(['QYRVIA_CONNECT']), clock = () => Date.now(), onAudit, channelRegistry = null } = {}) {
   if (!registry) throw new Error('channelSyncService: registry required');
   if (!syncStateStore) throw new Error('channelSyncService: syncStateStore required');
 
   function emitAudit(type, meta) { if (typeof onAudit === 'function') { try { onAudit(Object.assign({ type }, meta)); } catch (_) { /* never throws */ } } }
   function isReal(channel) { return realChannels.has(channel); }
 
-  async function _push(kind, { tenant_id, property_id = null, channel, room_type_id, resource, hash, pushFn }) {
+  async function _push(kind, { tenant_id, property_id = null, channel, room_type_id, resource, hash, pushFn, ctx = {} }) {
     if (!tenant_id || !channel || !room_type_id) return { ok: false, error: 'tenant_channel_room_type_required' };
+
+    // H2: Kill-switch — check channel registry before pushing
+    if (channelRegistry) {
+      const reg = await channelRegistry.get(channel, { tenantId: tenant_id, propertyId: property_id, ...ctx }).catch(() => null);
+      if (reg && !reg.enabled) {
+        return { ok: false, error: 'channel_disabled', skipped: true };
+      }
+    }
+
     const resource_key = `${channel}|${kind}|${room_type_id}|${(resource && resource.date) || ''}`;
 
     const existing = await Promise.resolve(syncStateStore.get(tenant_id, channel, resource_key));

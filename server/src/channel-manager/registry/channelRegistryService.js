@@ -95,7 +95,23 @@ function buildChannelRegistryService({ repo }) {
       { last_sync_at: new Date().toISOString(), last_error: null }, ctx);
   }
 
-  return { list, get, add, setStatus, toggle, recordError, recordSync };
+  // Phase 53 Fix 4: emergency kill switch — sets enabled=false, status=paused,
+  // and records kill_switch_at/by/reason. Distinct from toggle(); reason is required.
+  async function kill(channelCode, reason, ctx) {
+    if (!reason || !String(reason).trim()) throw new Error('kill_switch_reason_required');
+    await _ensureSeeded(ctx);
+    const row = await repo.updateFields(channelCode.toUpperCase(), {
+      enabled: false,
+      status: 'paused',
+      kill_switch_at: new Date().toISOString(),
+      kill_switch_by: ctx.userId || ctx.actorId || null,
+      kill_switch_reason: String(reason).trim().slice(0, 1000),
+    }, ctx);
+    if (!row) throw new Error('channel_not_found');
+    return row;
+  }
+
+  return { list, get, add, setStatus, toggle, recordError, recordSync, kill };
 }
 
 module.exports = { buildChannelRegistryService };

@@ -39,9 +39,9 @@ function buildOtaDbStore({ db } = {}) {
       let inserted = 0;
       for (const d of rows) {
         await db.query(
-          `INSERT INTO ota_drift (tenant_id, property_id, channel, drift_kind, mismatch_type, resource_key, local_value, remote_value, recommendation)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-          [d.tenant_id, d.property_id || null, d.channel, d.drift_kind, d.mismatch_type, d.resource_key, d.local_value || null, d.remote_value || null, d.recommendation || null]);
+          `INSERT INTO ota_drift (tenant_id, property_id, channel, drift_kind, mismatch_type, resource_key, local_value, remote_value, recommendation, severity)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [d.tenant_id, d.property_id || null, d.channel, d.drift_kind, d.mismatch_type, d.resource_key, d.local_value || null, d.remote_value || null, d.recommendation || null, d.severity || 'warn']);
         inserted += 1;
       }
       return { inserted };

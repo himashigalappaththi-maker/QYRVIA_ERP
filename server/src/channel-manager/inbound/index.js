@@ -9,8 +9,8 @@
 const { buildChannelInboundService } = require('./channelInboundService');
 const { buildWebhookIngress } = require('./webhookIngress');
 
-function buildChannelInbound({ registry, bookingStore, commandBus, resolveSecret, requireSignature, onAudit, commandMap, toReservationInput } = {}) {
-  const service = buildChannelInboundService({ bookingStore, commandBus, onAudit, commandMap, toReservationInput });
+function buildChannelInbound({ registry, bookingStore, commandBus, resolveSecret, requireSignature, onAudit, commandMap, toReservationInput, availabilityProvider, channelRegistry, importLog } = {}) {
+  const service = buildChannelInboundService({ bookingStore, commandBus, onAudit, commandMap, toReservationInput, availabilityProvider, channelRegistry, importLog });
   const ingress = buildWebhookIngress({ registry, inboundService: service, resolveSecret, requireSignature });
   return { service, ingress };
 }
