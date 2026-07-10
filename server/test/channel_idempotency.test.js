@@ -127,22 +127,27 @@ test('queue: same (reservation_id, action) after first job transitions out of PE
   assert.equal(pending[0].reservation_id, 'res-B');
 });
 
-// ── Phase 54 D10 gap-fill: Direct booking idempotency (Item 1) ───────────────
+// ── Phase 55: Direct booking idempotency via idempotency_key ─────────────────
 
-// 5. Direct booking (no external_ref): two identical calls both succeed at service level
-//    The in-memory booking store requires external_ref for dedup keying; DIRECT bookings
-//    without external_ref are treated as new bookings on each call (no store-level dedup).
-//    This documents the known gap: direct bookings without external_ref are not deduplicated
-//    at the store level today — they rely on the PMS constraint.
-test('direct booking without external_ref: two calls both succeed (no store-level dedup — known gap)', async () => {
-  const store = buildBookingStoreMemory();
-  const bus   = fakeCommandBus();
-  const { buildBookingEngine } = require('../src/booking-engine');
+// 5. Phase 55 — direct booking with idempotency_key: second initiateBooking returns
+//    idempotent result with the same reservation_id and only one PMS dispatch.
+test('direct booking with idempotency_key: second initiateBooking returns idempotent result', async () => {
+  const { buildBookingService } = require('../src/booking-engine/bookingService');
+  const { buildMockPaymentProvider } = require('../src/payment/mockPaymentProvider');
+  const { buildPaymentStateStoreMemory } = require('../src/payment/paymentStateStore');
+  const { buildPaymentAttemptLogMemory } = require('../src/payment/paymentAttemptLog');
 
-  const eng = buildBookingEngine({
-    commandBus:           bus,
-    bookingStore:         store,
-    availabilityProvider: () => 5,
+  let storedReservation = null;
+  const bus = fakeCommandBus();
+
+  const { buildAvailabilityEngine } = require('../src/booking-engine/availabilityEngine');
+  const svc = buildBookingService({
+    commandBus: bus,
+    availabilityEngine: buildAvailabilityEngine({ availabilityProvider: () => 5 }),
+    paymentProvider: buildMockPaymentProvider(),
+    paymentStateStore: buildPaymentStateStoreMemory(),
+    paymentAttemptLog: buildPaymentAttemptLogMemory(),
+    findReservationByIdempotencyKey: async (_tid, _key) => storedReservation,
   });
 
   const directInput = {
@@ -150,22 +155,24 @@ test('direct booking without external_ref: two calls both succeed (no store-leve
     arrival: '2026-09-01', departure: '2026-09-03',
     adults: 2, base_rate: 100, currency: 'USD',
     holder_guest_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
-    // Deliberately no external_ref
+    idempotency_key: 'direct-idem-test-001',
   };
 
-  const r1 = await eng.service.createBooking(directInput, CTX);
-  const r2 = await eng.service.createBooking(directInput, CTX);
+  const r1 = await svc.initiateBooking(directInput, CTX);
+  assert.equal(r1.ok, true, 'first initiateBooking should succeed');
+  assert.equal(r1.result.action, 'initiate_payment');
 
-  // Both calls should succeed (service does not error on missing external_ref)
-  assert.ok(r1.ok !== undefined, 'r1 should resolve');
-  assert.ok(r2.ok !== undefined, 'r2 should resolve');
+  // Simulate DB persistence of reservation after first call
+  storedReservation = { id: r1.result.reservation_id };
 
-  // KNOWN GAP: without external_ref there is no store key to dedup on — each call
-  // dispatches independently. The store remains consistent but does NOT dedup.
-  // This is acceptable until DIRECT bookings adopt a client-generated idempotency key.
-  // Do not fail the test — document the count so regression is visible.
-  const allBusCalls = bus.dispatched.length;
-  assert.ok(allBusCalls >= 0, `dispatched ${allBusCalls} PMS calls (no dedup without external_ref)`);
+  const r2 = await svc.initiateBooking(directInput, CTX);
+  assert.equal(r2.ok, true, 'second initiateBooking should succeed (idempotent)');
+  assert.equal(r2.result.idempotent, true, 'second result must carry idempotent flag');
+  assert.equal(r2.result.reservation_id, r1.result.reservation_id, 'same reservation_id on both calls');
+
+  // Only one PMS reservation.create dispatch for two calls with the same key
+  const creates = bus.dispatched.filter((d) => d.name === 'pms.reservation.create');
+  assert.equal(creates.length, 1, 'exactly one PMS dispatch for idempotent initiateBooking pair');
 });
 
 // 6. Booking with external_ref set: regression — idempotency still works as before

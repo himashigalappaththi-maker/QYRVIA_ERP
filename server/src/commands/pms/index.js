@@ -20,6 +20,7 @@
 const { makeEvent } = require('../../core/event');
 const { classifyParty } = require('../../services/pms/childPolicy');
 const { nextReservationNumber } = require('../../services/pms/reservationNumber');
+const { generateConfirmationNumber } = require('../../services/pms/confirmationNumber');
 
 function _strReq(v, name, max) { if (!v || typeof v !== 'string') throw new Error(name + ' required'); if (max && v.length > max) throw new Error(name + ' too long'); return v.trim(); }
 function _intMin(v, name, min) { if (!Number.isInteger(v) || v < min) throw new Error(name + ' must be integer >= ' + min); return v; }
@@ -409,7 +410,8 @@ function makeCommands({ pmsRepo }) {
           created_by: ctx.actorId,
           allocation_id: input.allocation_id || null,
           contract_id: input.contract_id || null,
-          group_id: input.group_id || null
+          group_id: input.group_id || null,
+          idempotency_key: input.idempotency_key || null,
         });
 
         return { ok: true, result: { id: row.id, reservation_number: number, sequence, year }, events: [
@@ -453,7 +455,40 @@ function makeCommands({ pmsRepo }) {
     };
   }
 
-  list.push(transitionCmd('pms.reservation.confirm', 'reservation.confirmed', 'CONFIRMED', { requireFrom: ['INQUIRY','OPTION'] }));
+  // pms.reservation.confirm is extracted from transitionCmd so it can generate
+  // and persist a confirmation_number at transition time.
+  list.push({
+    name: 'pms.reservation.confirm',
+    aggregateType: 'reservation',
+    permission: 'pms.reservation.write',
+    async handler(input, ctx) {
+      _need('tenantId', ctx);
+      if (!input.reservation_id) return { ok: false, error: 'reservation_id_required' };
+      const before = await pmsRepo.findReservationById(ctx.tenantId, input.reservation_id);
+      if (!before) return { ok: false, error: 'reservation_not_found' };
+      const fromStatus = before.status;
+      if (!['INQUIRY', 'OPTION'].includes(fromStatus)) {
+        return { ok: false, error: 'invalid_transition', detail: 'from ' + fromStatus };
+      }
+      const updated = await pmsRepo.setReservationStatus(ctx.tenantId, input.reservation_id, 'CONFIRMED', {});
+      // Generate confirmation_number if not already set (first confirm wins).
+      const confirmationNumber = before.confirmation_number || generateConfirmationNumber(before.id);
+      if (confirmationNumber && pmsRepo.setReservationConfirmation) {
+        try {
+          await pmsRepo.setReservationConfirmation(ctx.tenantId, input.reservation_id, { confirmationNumber });
+        } catch (cnErr) {
+          try { require('../../config/logger').warn({ err: cnErr }, '[pms.confirm] setReservationConfirmation failed — non-blocking'); } catch (_) {}
+        }
+      }
+      return { ok: true, result: { id: updated.id, status: updated.status, confirmation_number: confirmationNumber }, events: [
+        makeEvent({ type: 'reservation.confirmed', aggregateType: 'reservation', aggregateId: updated.id,
+          payload: { reservation_number: updated.reservation_number,
+                     from: fromStatus, to: updated.status,
+                     confirmation_number: confirmationNumber,
+                     group_id: updated.group_id || null }, ctx })
+      ]};
+    }
+  });
   list.push(transitionCmd('pms.reservation.cancel',  'reservation.cancelled', 'CANCELLED', { requireFrom: ['INQUIRY','OPTION','CONFIRMED'] }));
   list.push(transitionCmd('pms.reservation.noShow',  'reservation.no_show',   'NO_SHOW',   { requireFrom: ['CONFIRMED'] }));
 

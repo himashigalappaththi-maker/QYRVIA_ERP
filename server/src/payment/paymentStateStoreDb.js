@@ -40,6 +40,17 @@ function buildPaymentStateStoreDb({ db }) {
   }
 
   async function getByReservationId(reservationId, ctx = {}) {
+    const tenantId = (ctx && ctx.tenantId) || null;
+    if (tenantId) {
+      // Explicit tenant filter satisfies the Continue.txt tightening requirement:
+      // every request-path and sweep-path call must prove tenant scope rather than
+      // relying solely on RLS. FORCE RLS is a second layer, not the primary guard.
+      const result = await db.query(
+        'SELECT * FROM booking_payment_state WHERE reservation_id = $1 AND tenant_id = $2 LIMIT 1',
+        [reservationId, tenantId]
+      );
+      return result.rows[0] || null;
+    }
     const result = await db.query(
       'SELECT * FROM booking_payment_state WHERE reservation_id = $1 LIMIT 1',
       [reservationId]
@@ -47,8 +58,13 @@ function buildPaymentStateStoreDb({ db }) {
     return result.rows[0] || null;
   }
 
-  async function findExpiredHolds(ctx = {}) {
-    const result = await db.query(
+  // client param: when provided (e.g. from withTenant() in the sweep handler), the
+  // query runs inside that transaction's RLS context so FORCE RLS returns the correct
+  // tenant's rows. When omitted (e.g. in unit tests using the memory store fallback),
+  // the raw pool is used — under FORCE RLS this returns zero rows, which is safe.
+  async function findExpiredHolds(client) {
+    const executor = client || db;
+    const result = await executor.query(
       `SELECT * FROM booking_payment_state
        WHERE payment_status = 'pending_payment' AND hold_expires_at < now()`,
       []

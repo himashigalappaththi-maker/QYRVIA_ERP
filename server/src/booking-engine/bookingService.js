@@ -26,6 +26,7 @@ function buildBookingService({
   paymentStateStore = null,
   paymentAttemptLog = null,
   holdEngine = null,
+  findReservationByIdempotencyKey = null,
 } = {}) {
   if (!commandBus) throw new Error('bookingService: commandBus required');
   const av = availabilityEngine || buildAvailabilityEngine({});
@@ -47,7 +48,8 @@ function buildBookingService({
       arrival_date: input.arrival, departure_date: input.departure, adults: input.adults, children: input.children || 0,
       holder_guest_id: input.holder_guest_id || null,
       guest_name: input.guest_name || null, amount: pricing ? pricing.total : null,
-      currency: (pricing && pricing.currency) || input.currency || 'USD', source_channel: input.channel || 'DIRECT'
+      currency: (pricing && pricing.currency) || input.currency || 'USD', source_channel: input.channel || 'DIRECT',
+      idempotency_key: input.idempotency_key || null,
     };
   }
   async function dispatch(name, payload, ctx) {
@@ -161,6 +163,47 @@ function buildBookingService({
     const tenantId = ctx && ctx.tenantId;
     const propertyId = (ctx && ctx.propertyId) || (input && input.propertyId) || null;
     input = input || {};
+
+    // Phase 55: idempotency pre-check using caller-supplied key.
+    // pending_payment => return existing result (idempotent)
+    // paid            => reject: booking already confirmed
+    // failed          => reject: payment already failed (client must use a new key)
+    const idempotencyKey = input.idempotency_key || null;
+    if (idempotencyKey && typeof findReservationByIdempotencyKey === 'function') {
+      try {
+        const existing = await findReservationByIdempotencyKey(tenantId, idempotencyKey);
+        if (existing) {
+          const paymentState = paymentStateStore
+            ? await paymentStateStore.getByReservationId(existing.id, ctx)
+            : null;
+          const ps = paymentState && paymentState.payment_status;
+          if (ps === 'paid') {
+            return { ok: false, reason: 'booking_already_confirmed' };
+          }
+          if (ps === 'failed') {
+            return { ok: false, reason: 'payment_already_failed' };
+          }
+          return {
+            ok: true,
+            result: {
+              reservation_id:  existing.id,
+              payment_id:      (paymentState && paymentState.provider_ref) || null,
+              client_secret:   null,
+              total:           (paymentState && paymentState.deposit_amount) || null,
+              currency:        (paymentState && paymentState.deposit_currency) || null,
+              hold_expires_at: (paymentState && paymentState.hold_expires_at) || null,
+              action:          'initiate_payment',
+              idempotent:      true,
+            },
+          };
+        }
+      } catch (idemErr) {
+        try {
+          const logger = require('../config/logger');
+          logger.warn({ err: idemErr, tenantId }, '[bookingService] idempotency pre-check failed — proceeding without dedup');
+        } catch (_) {}
+      }
+    }
 
     // 1. Availability check
     const availability = await av.check(ctx, input);
@@ -329,6 +372,8 @@ function buildBookingService({
       return { ok: false, reason: (pmsConfirm && pmsConfirm.error) || 'pms_confirm_failed' };
     }
 
+    const confirmationNumber = (pmsConfirm.result && pmsConfirm.result.confirmation_number) || null;
+
     // 6. ARI inventory adjustment (ceiling-guarded in adjuster)
     if (adjuster && roomTypeId && arrival && departure) {
       try {
@@ -348,7 +393,7 @@ function buildBookingService({
 
     emit('booking.created', { tenantId, channel: 'DIRECT', reservationId, action: 'confirmed_with_payment' });
 
-    return { ok: true, result: { reservation_id: reservationId, action: 'confirm' } };
+    return { ok: true, result: { reservation_id: reservationId, action: 'confirm', confirmation_number: confirmationNumber } };
   }
 
   return { createBooking, updateBooking, cancelBooking, initiateBooking, confirmBooking };

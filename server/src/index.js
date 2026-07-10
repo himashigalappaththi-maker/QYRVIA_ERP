@@ -386,9 +386,36 @@ try {
     paymentProvider,    // Phase 54 D8
     paymentStateStore,  // Phase 54 D8
     paymentAttemptLog,  // Phase 54 D8
+    findReservationByIdempotencyKey: pmsRepo && pmsRepo.findReservationByIdempotencyKey  // Phase 55
+      ? (tid, key) => pmsRepo.findReservationByIdempotencyKey(tid, key)
+      : null,
   });
   logger.info('[boot] booking engine ready');
 } catch (e) { logger.warn({ err: e }, '[boot] booking engine init skipped'); }
+
+// Phase 55 — Hold expiry sweep: cancel reservations whose payment hold has
+// expired without a completed payment. Registered after bookingEngine so that
+// paymentStateStore and commandBus are already initialised.
+try {
+  const { buildHoldExpirySweep } = require('./payment/holdExpirySweep');
+  const { withTenant: _withTenantForSweep } = require('./db/client');
+  const holdExpirySweep = buildHoldExpirySweep({
+    paymentStateStore,
+    commandBus,
+    withTenantFn: obsPool ? _withTenantForSweep : null,
+  });
+  scheduler.registerHandler('booking.hold.expire_sweep', async (_payload, ctx) => {
+    return holdExpirySweep.sweep(ctx);
+  });
+  // Auto-drive the scheduler every 5 minutes so hold expiry runs without an
+  // external cron caller. executeDueJobs uses FOR UPDATE SKIP LOCKED — safe to
+  // call concurrently from multiple process instances.
+  setInterval(() => {
+    scheduler.executeDueJobs({ limit: 50 })
+      .catch((err) => logger.error({ err }, '[boot] executeDueJobs failed'));
+  }, 5 * 60 * 1000);
+  logger.info('[boot] hold expiry sweep registered (every 5 min)');
+} catch (e) { logger.warn({ err: e }, '[boot] hold expiry sweep init skipped'); }
 
 // Phase 27 - AI WhatsApp Booking Agent (foundation, MOCK provider). Consumes the
 // Booking Engine only; no direct PMS/OTA writes, no real AI/WhatsApp. Default OFF.

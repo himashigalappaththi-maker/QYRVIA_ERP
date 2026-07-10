@@ -27,6 +27,7 @@ function buildBookingEngine({
   paymentProvider = null,
   paymentStateStore = null,
   paymentAttemptLog = null,
+  findReservationByIdempotencyKey = null,
 } = {}) {
   const provider = availabilityProvider || (pmsRepo ? buildPmsAvailabilityProvider({ pmsRepo }) : undefined);
   const pricingEngine = buildPricingEngine({});
@@ -36,6 +37,7 @@ function buildBookingEngine({
     commandBus, bookingStore, availabilityEngine, pricingEngine, validator,
     rateResolver, inventoryAdjuster, onEvent,
     holdEngine, paymentProvider, paymentStateStore, paymentAttemptLog,
+    findReservationByIdempotencyKey,
   });
   return { service, pricingEngine, availabilityEngine, validator };
 }

@@ -855,16 +855,24 @@ function buildRepos(pool) {
         `INSERT INTO reservations (tenant_id, property_id, reservation_number, reservation_type,
               status, holder_guest_id, primary_adult_guest_id, arrival_date, departure_date,
               adults, children, room_type_id, rate_plan_id, rooms_count, notes,
-              business_date, created_by)
-         VALUES ($1,$2,$3,$4::reservation_type,$5::reservation_status,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+              business_date, created_by, idempotency_key)
+         VALUES ($1,$2,$3,$4::reservation_type,$5::reservation_status,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
          RETURNING *`,
         [rec.tenant_id, rec.property_id, rec.reservation_number, rec.reservation_type,
          rec.status || 'INQUIRY', rec.holder_guest_id, rec.primary_adult_guest_id,
          rec.arrival_date, rec.departure_date, rec.adults, rec.children,
          rec.room_type_id, rec.rate_plan_id || null, rec.rooms_count || 1, rec.notes || null,
-         rec.business_date || null, rec.created_by || null]
+         rec.business_date || null, rec.created_by || null, rec.idempotency_key || null]
       );
       return r.rows[0];
+    },
+    async findReservationByIdempotencyKey(tenantId, idempotencyKey) {
+      if (!idempotencyKey) return null;
+      const r = await pool.query(
+        `SELECT * FROM reservations WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1`,
+        [tenantId, idempotencyKey]
+      );
+      return r.rows[0] || null;
     },
     async findReservationById(tenantId, id) {
       const r = await pool.query(`SELECT * FROM reservations WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
@@ -883,6 +891,16 @@ function buildRepos(pool) {
                 updated_at=now()
           WHERE tenant_id=$1 AND id=$2 RETURNING *`,
         [tenantId, id, newStatus, cancellationReason || null]
+      );
+      return r.rows[0] || null;
+    },
+    async setReservationConfirmation(tenantId, id, { confirmationNumber }) {
+      const r = await pool.query(
+        `UPDATE reservations
+            SET confirmation_number=$3,
+                updated_at=now()
+          WHERE tenant_id=$1 AND id=$2 RETURNING *`,
+        [tenantId, id, confirmationNumber || null]
       );
       return r.rows[0] || null;
     },
