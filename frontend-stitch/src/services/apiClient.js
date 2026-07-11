@@ -53,9 +53,10 @@ export function createApiClient({ baseUrl = '/api', fetchImpl, session, onUnauth
 
   return {
     request,
-    get: (p, opts) => request('GET', p, opts),
-    post: (p, body, opts) => request('POST', p, Object.assign({ body }, opts)),
-    put: (p, body, opts) => request('PUT', p, Object.assign({ body }, opts)),
-    del: (p, opts) => request('DELETE', p, opts)
+    get:   (p, opts)      => request('GET',    p, opts),
+    post:  (p, body, opts) => request('POST',   p, Object.assign({ body }, opts)),
+    put:   (p, body, opts) => request('PUT',    p, Object.assign({ body }, opts)),
+    patch: (p, body, opts) => request('PATCH',  p, Object.assign({ body }, opts)),
+    del:   (p, opts)       => request('DELETE', p, opts)
   };
 }

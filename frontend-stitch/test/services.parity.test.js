@@ -9,7 +9,7 @@ import { createServices } from '../src/services/index.js';
 function recorder() {
   const calls = [];
   const rec = (m) => (p) => { calls.push({ m, p }); return Promise.resolve({ ok: true }); };
-  return { calls, get: rec('GET'), post: rec('POST'), put: rec('PUT'), del: rec('DELETE') };
+  return { calls, get: rec('GET'), post: rec('POST'), put: rec('PUT'), patch: rec('PATCH'), del: rec('DELETE') };
 }
 
 test('Phase 36 new methods map to correct method + path', async () => {
@@ -45,6 +45,28 @@ test('Phase 36 new methods map to correct method + path', async () => {
     'GET /webhooks', 'POST /webhooks', 'DELETE /webhooks/w1', 'POST /webhooks/deliveries/run',
     'GET /files/x1', 'GET /files/x1/token', 'DELETE /files/x1',
     'GET /connectors', 'GET /connectors/stripe/config', 'PUT /connectors/stripe/config', 'POST /connectors/stripe/probe', 'POST /connectors/stripe/health'
+  ]) assert.ok(paths.includes(expected), 'missing/incorrect: ' + expected);
+});
+
+test('Phase 57 new auth + platform methods map to correct method + path', async () => {
+  const api = recorder();
+  const s = createServices(api);
+  await Promise.all([
+    s.auth.requestPasswordReset('bob@example.com'),
+    s.auth.completePasswordReset('tok123', 'NewPass1!'),
+    s.auth.acceptInvitation('inv-tok', 'Bob Smith', 'NewPass1!'),
+    s.platform.provisionTenant({}),
+    s.platform.createInvitation('tenant-uuid', {}),
+    s.platform.revokeInvitation('inv-uuid')
+  ]);
+  const paths = api.calls.map((c) => `${c.m} ${c.p}`);
+  for (const expected of [
+    'POST /auth/password-reset/request',
+    'POST /auth/password-reset/complete',
+    'POST /auth/invitations/accept',
+    'POST /platform/tenants',
+    'POST /platform/tenants/tenant-uuid/invitations',
+    'PATCH /platform/invitations/inv-uuid/revoke'
   ]) assert.ok(paths.includes(expected), 'missing/incorrect: ' + expected);
 });
 

@@ -4,7 +4,12 @@
 // exists in the backend permission catalog (migrations 0021 / 0030).
 
 export const ROUTES = [
-  { path: '/login',        id: 'login',        label: 'Login',          public: true, hidden: true },
+  { path: '/login',                   id: 'login',                   label: 'Login',            public: true, hidden: true },
+  // Phase 57: post-login auth screens (public so the router never bounces them to /login)
+  { path: '/select-property',         id: 'select-property',         label: 'Select Property',  public: true, hidden: true },
+  { path: '/complete-password-reset', id: 'complete-password-reset', label: 'Set New Password', public: true, hidden: true },
+  { path: '/accept-invitation',       id: 'accept-invitation',       label: 'Accept Invitation',public: true, hidden: true },
+  { path: '/reset-password',          id: 'reset-password',          label: 'Reset Password',   public: true, hidden: true },
 
   { path: '/dashboard',    id: 'dashboard',    label: 'Dashboard',      icon: 'dashboard',           section: 'Overview',       permission: null },
 

@@ -12,7 +12,7 @@
  * or has BYPASSRLS, that is a hard failure — not a skip.
  */
 
-const APPEND_ONLY_TABLES = ['audit_events', 'event_store', 'ledger_entries', 'payment_attempt_log', 'booking_confirmation_deliveries'];
+const APPEND_ONLY_TABLES = ['audit_events', 'event_store', 'ledger_entries', 'payment_attempt_log', 'booking_confirmation_deliveries', 'user_invitations', 'password_reset_tokens'];
 const RLS_FORCED_TABLES = ['tenants', 'properties', 'audit_events'];
 
 /** Role attributes of the *current* connection. */

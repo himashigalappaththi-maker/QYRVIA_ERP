@@ -73,10 +73,14 @@ async function findUserByUsername(tenantId, username) {
   return r.rows[0] || null;
 }
 async function insertUserSuper(rec) {
+  // Phase 57: email is NOT NULL after migration 0071. Callers should supply
+  // admin_email; we generate a placeholder if omitted so bootstrap stays idempotent
+  // on databases that already have the constraint.
+  const email = rec.email || ('bootstrap-' + rec.username + '@qyrvia.internal');
   const r = await db.pool.query(
-    `INSERT INTO users (tenant_id, username, password_hash, full_name, primary_property_id, status)
-     VALUES ($1,$2,$3,$4,$5,'ACTIVE'::user_status) RETURNING *`,
-    [rec.tenant_id, rec.username, rec.password_hash, rec.full_name, rec.primary_property_id || null]
+    `INSERT INTO users (tenant_id, username, email, password_hash, full_name, primary_property_id, status)
+     VALUES ($1,$2,$3,$4,$5,$6,'ACTIVE'::user_status) RETURNING *`,
+    [rec.tenant_id, rec.username, email, rec.password_hash, rec.full_name, rec.primary_property_id || null]
   );
   return r.rows[0];
 }
@@ -154,6 +158,7 @@ async function main() {
     const password_hash = await identity.hashPassword(args.admin_password);
     user = await insertUserSuper({
       tenant_id: tenant.id, username: args.admin_username,
+      email: args.admin_email || null,
       password_hash, full_name: args.admin_fullname,
       primary_property_id: property.id
     });

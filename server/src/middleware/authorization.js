@@ -16,6 +16,33 @@ const logger = require('../config/logger');
  * requirePermission to work.
  */
 
+/**
+ * Explicit platform-level role guard.
+ *
+ * Fails closed: only callers with super_admin or platform_admin in their JWT
+ * role_codes proceed. Every other role — including corporate_admin, property_admin,
+ * company_admin, and all operational roles — receives 403.
+ *
+ * Must run AFTER authentication middleware (req.user must exist).
+ * Note: authentication middleware already returns 401 for missing/invalid tokens,
+ * so by the time requirePlatformRole runs the caller is always authenticated.
+ */
+function requirePlatformRole() {
+  return function (req, res, next) {
+    const userRoles = (req.user && req.user.role_codes) || [];
+    const allowed = userRoles.includes('super_admin') || userRoles.includes('platform_admin');
+    if (!allowed) {
+      _auditDeny(req, 'role', ['super_admin', 'platform_admin']);
+      return res.status(403).json({
+        error: 'platform_role_required',
+        required: ['super_admin', 'platform_admin'],
+        requestId: req.requestId
+      });
+    }
+    next();
+  };
+}
+
 function requireRole(...codes) {
   if (!codes.length) throw new Error('requireRole: at least one role code required');
   return function (req, res, next) {
@@ -60,4 +87,4 @@ function _auditDeny(req, kind, required) {
   }, '[authz] denied');
 }
 
-module.exports = { requireRole, requirePermission };
+module.exports = { requirePlatformRole, requireRole, requirePermission };

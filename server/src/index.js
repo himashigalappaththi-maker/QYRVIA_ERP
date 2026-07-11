@@ -72,7 +72,8 @@ const {
   settingsRepo, fileRepo, connectorRepo, schedulerRepo, notificationRepo, webhookRepo,
   aggregateRepo, pmsRepo,
   folioRepo, housekeepingRepo, nightAuditRepo,
-  costCenterRepo, revenueMapRepo, ledgerRepo
+  costCenterRepo, revenueMapRepo, ledgerRepo,
+  invitationRepo, passwordResetRepo
 } = buildRepos(obsPool);
 
 // Phase 8 - Ledger service. The single authority for balanced ledger
@@ -414,6 +415,41 @@ try {
   logger.info('[boot] booking engine ready');
 } catch (e) { logger.warn({ err: e }, '[boot] booking engine init skipped'); }
 
+// Phase 57 — Commercial SaaS Identity: invitation, password-reset, and tenant provisioning.
+let invitationService = null;
+let passwordResetService = null;
+let tenantProvisioningService = null;
+try {
+  const { buildInvitationService }        = require('./services/invitation');
+  const { buildPasswordResetService }     = require('./services/passwordReset');
+  const { buildTenantProvisioningService } = require('./services/tenantProvisioning');
+
+  // Invitation service repo: merge invitation-specific methods + identity helpers
+  const invRepo = Object.assign({}, invitationRepo, {
+    findUserByEmailGlobal:    (...a) => identityRepo.findUserByEmailGlobal(...a),
+    insertUser:               (...a) => identityRepo.insertUser(...a),
+    insertUserRoleByCode:     (...a) => identityRepo.insertUserRoleByCode(...a),
+    revokeAllRefreshTokensForUser: (...a) => tokensRepo.revokeAllRefreshTokensForUser(...a)
+  });
+  invitationService = buildInvitationService({ repo: invRepo });
+
+  // Password-reset service repo: merge reset methods + identity/token helpers
+  const resetRepo = Object.assign({}, passwordResetRepo, {
+    findUserByEmailGlobal:                  (...a) => identityRepo.findUserByEmailGlobal(...a),
+    revokeAllRefreshTokensForUser:          (...a) => tokensRepo.revokeAllRefreshTokensForUser(...a)
+  });
+  passwordResetService = buildPasswordResetService({ repo: resetRepo });
+
+  // Tenant provisioning: transactional via obsPool, invitation via invitationService
+  if (obsPool) {
+    tenantProvisioningService = buildTenantProvisioningService({
+      pool: obsPool, invitationService
+    });
+  }
+
+  logger.info('[boot] Phase 57 identity services ready');
+} catch (e) { logger.warn({ err: e }, '[boot] Phase 57 identity services init skipped'); }
+
 // Phase 55 — Hold expiry sweep: cancel reservations whose payment hold has
 // expired without a completed payment. Registered after bookingEngine so that
 // paymentStateStore and commandBus are already initialised.
@@ -619,7 +655,11 @@ const app = createApp({
   platform,
   ariService,     // Phase 52: ARI management API + booking engine pricing
   ariStore: ariDbStore, // Phase 52: ARI inventory grid writes
-  makeAuthEvent
+  makeAuthEvent,
+  // Phase 57: commercial SaaS identity
+  invitationService,
+  passwordResetService,
+  tenantProvisioningService
 });
 
 const server = app.listen(env.PORT, () => {

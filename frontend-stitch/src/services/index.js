@@ -19,7 +19,11 @@ export function createServices(api) {
       me: () => api.get('/auth/me'),
       properties: () => api.get('/auth/properties'),
       switchProperty: (propertyId) => api.post('/auth/switch-property', { property_id: propertyId }),
-      register: (body) => api.post('/auth/register', body)
+      register: (body) => api.post('/auth/register', body),
+      // Phase 57: email-first identity flows
+      requestPasswordReset: (email) => api.post('/auth/password-reset/request', { email }),
+      completePasswordReset: (token, newPassword) => api.post('/auth/password-reset/complete', { token, new_password: newPassword }),
+      acceptInvitation: (token, fullName, password) => api.post('/auth/invitations/accept', { token, full_name: fullName, password })
     },
 
     // ---- Reservations + Front Desk (pms) --------------------------------
@@ -203,7 +207,11 @@ export function createServices(api) {
       integrations: () => api.get('/platform/integrations/status'),
       properties: () => api.get('/platform/enterprise/properties'),
       analytics: () => api.get('/platform/enterprise/analytics'),
-      config: () => api.get('/platform/enterprise/config')
+      config: () => api.get('/platform/enterprise/config'),
+      // Phase 57: tenant provisioning (platform_admin only)
+      provisionTenant: (body) => api.post('/platform/tenants', body),
+      createInvitation: (tenantId, body) => api.post('/platform/tenants/' + encodeURIComponent(tenantId) + '/invitations', body),
+      revokeInvitation: (id) => api.patch('/platform/invitations/' + encodeURIComponent(id) + '/revoke', {})
     },
 
     // ---- IAM (users + roles) - Phase 36 --------------------------------

@@ -70,6 +70,21 @@ module.exports = {
 
     // ----- role grants -----------------------------------------------
     const codes = Array.isArray(role_codes) && role_codes.length ? role_codes : ['staff'];
+
+    // Role ceiling guard: SYSTEM-scoped roles may only be granted by a super_admin.
+    // Prevents a corporate_admin (who holds auth.user.create) from escalating a new
+    // user to super_admin or platform_admin. Update SYSTEM_ROLES when new system roles
+    // are added via migration so the guard stays current.
+    const SYSTEM_ROLES = new Set(['super_admin', 'platform_admin']);
+    const callerIsSuperAdmin = Array.isArray(ctx.roleCodes) && ctx.roleCodes.includes('super_admin');
+    if (!callerIsSuperAdmin) {
+      const blocked = codes.filter((c) => SYSTEM_ROLES.has(c));
+      if (blocked.length) {
+        return { ok: false, error: 'role_escalation_denied',
+                 detail: `Only super_admin may grant system-scoped roles: ${blocked.join(', ')}` };
+      }
+    }
+
     for (const code of codes) {
       await repo.insertUserRoleByCode({
         user_id:    row.id,

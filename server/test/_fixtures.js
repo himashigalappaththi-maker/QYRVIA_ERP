@@ -87,6 +87,15 @@ function _makeFakeReposCore(overrides = {}) {
     },
 
     // Phase 6 / C3: in-memory property-code login resolver.
+    // Phase 57: global email lookup (bypasses per-tenant scope, same as production app pool)
+    async findUserByEmailGlobal(email) {
+      const normalized = String(email).trim().toLowerCase();
+      for (const u of users.values()) {
+        if (!u.soft_deleted_at && u.email && u.email.toLowerCase() === normalized) return u;
+      }
+      return null;
+    },
+
     async findUserByPropertyCodeUsername(propertyCode, username) {
       for (const u of users.values()) {
         // The test seeder sets `accessible_property_codes` on the user row.
@@ -146,6 +155,12 @@ function _makeFakeReposCore(overrides = {}) {
     async revokeRefreshToken(id, ts) {
       for (const r of refreshTokens.values()) if (r.id === id) r.revoked_at = ts;
     },
+    async revokeAllRefreshTokensForUser(userId) {
+      const now = new Date().toISOString();
+      for (const r of refreshTokens.values()) {
+        if (r.user_id === userId && !r.revoked_at) r.revoked_at = now;
+      }
+    },
     async revokeChainFrom(id, ts) {
       for (const r of refreshTokens.values()) if (r.id === id) r.revoked_at = ts;
     },
@@ -155,11 +170,92 @@ function _makeFakeReposCore(overrides = {}) {
     _refreshTokens: refreshTokens
   }, overrides.tokensRepo || {});
 
+  // ---------- Phase 57 in-memory repos ----------
+  const invitations = new Map();
+  let _invSeq = 0;
+  const invitationRepo = Object.assign({
+    async insertInvitation(rec) {
+      for (const inv of invitations.values()) {
+        if (inv.status === 'pending' &&
+            inv.tenant_id === rec.tenant_id &&
+            inv.email.toLowerCase() === rec.email.toLowerCase()) {
+          const err = new Error('duplicate invitation'); err.code = '23505'; throw err;
+        }
+      }
+      const id = 'inv_' + (++_invSeq);
+      const row = Object.assign({ id, status: 'pending', created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, rec);
+      invitations.set(id, row);
+      return row;
+    },
+    async findInvitationByTokenHash(hash) {
+      for (const inv of invitations.values()) if (inv.token_hash === hash) return inv;
+      return null;
+    },
+    async findInvitationById(id) { return invitations.get(id) || null; },
+    async markInvitationAccepted(id, acceptedBy) {
+      const inv = invitations.get(id);
+      if (inv) { inv.status = 'accepted'; inv.accepted_by = acceptedBy; inv.accepted_at = new Date().toISOString(); }
+    },
+    async markInvitationRevoked(id, revokedBy) {
+      const inv = invitations.get(id);
+      if (inv) { inv.status = 'revoked'; inv.revoked_by = revokedBy; inv.revoked_at = new Date().toISOString(); }
+    },
+    async listInvitations(tenantId, status) {
+      return Array.from(invitations.values()).filter(i =>
+        i.tenant_id === tenantId && (!status || i.status === status));
+    },
+    async expireStaleInvitations() {
+      const now = new Date();
+      for (const inv of invitations.values()) {
+        if (inv.status === 'pending' && new Date(inv.expires_at) < now) inv.status = 'expired';
+      }
+    },
+    // Forwarded from identityRepo — wired by index.js in production
+    async findUserByEmailGlobal(email) { return identityRepo.findUserByEmailGlobal(email); },
+    async insertUser(rec) { return identityRepo.insertUser(rec); },
+    async insertUserRoleByCode(rec) { return identityRepo.insertUserRoleByCode(rec); },
+    async revokeAllRefreshTokensForUser(userId) { return tokensRepo.revokeAllRefreshTokensForUser(userId); },
+    _invitations: invitations
+  }, overrides.invitationRepo || {});
+
+  const resetTokens = new Map();
+  let _resetSeq = 0;
+  const passwordResetRepo = Object.assign({
+    async insertPasswordResetToken(rec) {
+      const id = 'rst_' + (++_resetSeq);
+      const row = Object.assign({ id, status: 'pending', created_at: new Date().toISOString() }, rec);
+      resetTokens.set(id, row);
+      return row;
+    },
+    async findPasswordResetToken(tokenHash) {
+      for (const t of resetTokens.values()) if (t.token_hash === tokenHash) return t;
+      return null;
+    },
+    async markPasswordResetTokenUsed(id) {
+      const t = resetTokens.get(id);
+      if (t) { t.status = 'used'; t.used_at = new Date().toISOString(); }
+    },
+    async revokeActivePasswordResetTokensForUser(userId) {
+      for (const t of resetTokens.values()) {
+        if (t.user_id === userId && t.status === 'pending') t.status = 'revoked';
+      }
+    },
+    async updateUserPassword(userId, passwordHash) {
+      const u = users.get(userId);
+      if (u) { u.password_hash = passwordHash; u.status = 'ACTIVE'; }
+    },
+    // Forwarded from identityRepo / tokensRepo
+    async findUserByEmailGlobal(email) { return identityRepo.findUserByEmailGlobal(email); },
+    async revokeAllRefreshTokensForUser(userId) { return tokensRepo.revokeAllRefreshTokensForUser(userId); },
+    _resetTokens: resetTokens
+  }, overrides.passwordResetRepo || {});
+
   // ---------- Phase 3 in-memory repos ----------
   const _phase3 = _makePhase3Repos();
 
   return Object.assign(
-    { identityRepo, tokensRepo, _store: { users, userRoles, userPerms, refreshTokens } },
+    { identityRepo, tokensRepo, invitationRepo, passwordResetRepo,
+      _store: { users, userRoles, userPerms, refreshTokens } },
     _phase3
   );
 }

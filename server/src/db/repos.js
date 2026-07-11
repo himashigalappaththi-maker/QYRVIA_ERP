@@ -194,6 +194,22 @@ function buildRepos(pool) {
         [propertyId]
       );
       return r.rows[0] || null;
+    },
+
+    // Phase 57: global email lookup for SaaS email-based login.
+    // Tenant is unknown at login time when only email+password are supplied;
+    // this intentionally bypasses the per-tenant RLS filter by running on the
+    // unrestricted app pool (same pattern as findUserByTenantUsername above).
+    async findUserByEmailGlobal(email) {
+      const sql = `
+        SELECT u.*, t.status AS tenant_status
+          FROM users u
+          JOIN tenants t ON t.id = u.tenant_id
+         WHERE lower(u.email) = lower($1)
+           AND u.soft_deleted_at IS NULL
+         LIMIT 1`;
+      const r = await pool.query(sql, [String(email).trim()]);
+      return r.rows[0] || null;
     }
   };
 
@@ -246,6 +262,15 @@ function buildRepos(pool) {
 
     async linkRotation(oldId, newId) {
       await pool.query(`UPDATE refresh_tokens SET rotated_to = $2 WHERE id = $1`, [oldId, newId]);
+    },
+
+    // Phase 57: revoke all active refresh tokens for a user (e.g. after password reset).
+    async revokeAllRefreshTokensForUser(userId) {
+      await pool.query(
+        `UPDATE refresh_tokens SET revoked_at = now()
+          WHERE user_id = $1 AND revoked_at IS NULL`,
+        [userId]
+      );
     }
   };
 
@@ -1823,13 +1848,120 @@ function buildRepos(pool) {
     }
   };
 
+  // ---- invitation repo (Phase 57) ------------------------------------
+  const invitationRepo = {
+    async insertInvitation(rec) {
+      const r = await pool.query(
+        `INSERT INTO user_invitations
+           (tenant_id, email, token_hash, invited_by, role_codes, property_ids, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING *`,
+        [rec.tenant_id, rec.email, rec.token_hash, rec.invited_by || null,
+         rec.role_codes || [], rec.property_ids || [], rec.expires_at]
+      );
+      return r.rows[0];
+    },
+    async findInvitationByTokenHash(hash) {
+      // Runs on unrestricted pool — token is opaque, no tenant context at acceptance time.
+      const r = await pool.query(
+        `SELECT * FROM user_invitations WHERE token_hash = $1 LIMIT 1`, [hash]
+      );
+      return r.rows[0] || null;
+    },
+    async findInvitationById(id) {
+      const r = await pool.query(
+        `SELECT * FROM user_invitations WHERE id = $1 LIMIT 1`, [id]
+      );
+      return r.rows[0] || null;
+    },
+    async markInvitationAccepted(id, acceptedBy) {
+      const r = await pool.query(
+        `UPDATE user_invitations
+            SET status = 'accepted', accepted_at = now(), accepted_by = $2, updated_at = now()
+          WHERE id = $1 AND status = 'pending'
+          RETURNING *`,
+        [id, acceptedBy || null]
+      );
+      return r.rows[0] || null;
+    },
+    async markInvitationRevoked(id, revokedBy) {
+      const r = await pool.query(
+        `UPDATE user_invitations
+            SET status = 'revoked', revoked_at = now(), revoked_by = $2, updated_at = now()
+          WHERE id = $1 AND status = 'pending'
+          RETURNING *`,
+        [id, revokedBy || null]
+      );
+      return r.rows[0] || null;
+    },
+    async listInvitations(tenantId, status) {
+      const sql = status
+        ? `SELECT * FROM user_invitations WHERE tenant_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT 200`
+        : `SELECT * FROM user_invitations WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 200`;
+      const r = await pool.query(sql, status ? [tenantId, status] : [tenantId]);
+      return r.rows;
+    },
+    async expireStaleInvitations() {
+      const r = await pool.query(
+        `UPDATE user_invitations SET status = 'expired', updated_at = now()
+          WHERE status = 'pending' AND expires_at < now()`
+      );
+      return r.rowCount;
+    }
+  };
+
+  // ---- password-reset repo (Phase 57) --------------------------------
+  const passwordResetRepo = {
+    async insertPasswordResetToken(rec) {
+      const r = await pool.query(
+        `INSERT INTO password_reset_tokens (user_id, tenant_id, token_hash, expires_at)
+         VALUES ($1, $2, $3, $4)
+         RETURNING *`,
+        [rec.user_id, rec.tenant_id, rec.token_hash, rec.expires_at]
+      );
+      return r.rows[0];
+    },
+    // Runs on unrestricted pool — token is opaque, tenant not known at reset time.
+    async findPasswordResetToken(hash) {
+      const r = await pool.query(
+        `SELECT * FROM password_reset_tokens WHERE token_hash = $1 LIMIT 1`, [hash]
+      );
+      return r.rows[0] || null;
+    },
+    async markPasswordResetTokenUsed(id) {
+      await pool.query(
+        `UPDATE password_reset_tokens SET status = 'used', used_at = now() WHERE id = $1`, [id]
+      );
+    },
+    async revokeActivePasswordResetTokensForUser(userId) {
+      await pool.query(
+        `UPDATE password_reset_tokens SET status = 'revoked'
+          WHERE user_id = $1 AND status = 'pending'`,
+        [userId]
+      );
+    },
+    async updateUserPassword(userId, passwordHash) {
+      await pool.query(
+        `UPDATE users
+            SET password_hash = $2,
+                status = CASE WHEN status = 'PENDING_PASSWORD_RESET' THEN 'ACTIVE'::user_status ELSE status END,
+                failed_login_count = 0,
+                locked_until = NULL,
+                updated_at = now()
+          WHERE id = $1`,
+        [userId, passwordHash]
+      );
+    }
+  };
+
   return {
     identityRepo, tokensRepo,
     settingsRepo, fileRepo, connectorRepo, schedulerRepo, notificationRepo,
     confirmationDeliveryRepo, webhookRepo,
     aggregateRepo, pmsRepo,
     folioRepo, housekeepingRepo, nightAuditRepo,
-    costCenterRepo, revenueMapRepo, ledgerRepo
+    costCenterRepo, revenueMapRepo, ledgerRepo,
+    invitationRepo, passwordResetRepo
   };
 }
 

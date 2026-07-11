@@ -43,13 +43,57 @@ async function verifyPassword(plain, hash) {
  *   { ok:true, user, roles, permissions }
  *   { ok:false, reason: 'unknown_user' | 'bad_password' | 'disabled' | 'locked' | 'terminated' | 'tenant_inactive' }
  *
+ * Phase 57: accepts email as an alternative to username+tenantCode.
+ * When email is supplied without username/tenantCode/propertyCode, the email
+ * path is used and the tenant is resolved server-side from the email.
+ *
  * Caller (the auth route) is responsible for audit-logging the outcome.
  */
-async function attemptLogin(repo, { tenantCode, propertyCode, username, password }) {
-  if (!username || !password) {
-    return { ok: false, reason: 'unknown_user' };
+async function attemptLogin(repo, { tenantCode, propertyCode, username, email, password }) {
+  if (!password) return { ok: false, reason: 'unknown_user' };
+
+  // Phase 57 — email login path (no tenant/property hint required)
+  const useEmailPath = email && !username && !tenantCode && !propertyCode;
+  if (useEmailPath) {
+    if (!repo.findUserByEmailGlobal) return { ok: false, reason: 'unknown_user' };
+    const row = await repo.findUserByEmailGlobal(email);
+    if (!row) return { ok: false, reason: 'unknown_user' };
+    if (row.tenant_status && row.tenant_status !== 'active') return { ok: false, reason: 'tenant_inactive' };
+    if (row.status === USER_STATUS.DISABLED)   return { ok: false, reason: 'disabled' };
+    if (row.status === USER_STATUS.TERMINATED) return { ok: false, reason: 'terminated' };
+    if (row.status === USER_STATUS.LOCKED || (row.locked_until && new Date(row.locked_until) > new Date())) {
+      return { ok: false, reason: 'locked' };
+    }
+    const ok = await verifyPassword(password, row.password_hash);
+    if (!ok) {
+      if (repo.updateUserOnFailedLogin) await repo.updateUserOnFailedLogin(row.id);
+      return { ok: false, reason: 'bad_password' };
+    }
+    if (repo.updateUserOnSuccessfulLogin) await repo.updateUserOnSuccessfulLogin(row.id);
+    const roles       = await repo.findRolesForUser(row.id);
+    const permissions = await repo.findPermissionsForUser(row.id);
+    const props = typeof repo.listAccessibleProperties === 'function'
+      ? await repo.listAccessibleProperties(row.id) : [];
+    // PENDING_PASSWORD_RESET: login succeeds but client must complete a password change.
+    // The route layer issues a one-time reset token and includes requires_password_change:true.
+    const requiresPasswordChange = row.status === USER_STATUS.PENDING_PASSWORD_RESET;
+    return {
+      ok: true,
+      login_via: 'email',
+      user: {
+        id: row.id, tenant_id: row.tenant_id, username: row.username, email: row.email,
+        full_name: row.full_name, primary_property_id: row.primary_property_id, status: row.status
+      },
+      roles,
+      permissions,
+      authorised_properties: props,
+      requires_property_selection: props.length > 1,
+      requires_password_change: requiresPasswordChange
+    };
   }
-  // Phase 6 / C3: exactly one identifier must be supplied.
+
+  // Existing username+tenantCode or username+propertyCode path (Phase 6 / C3)
+  if (!username) return { ok: false, reason: 'unknown_user' };
   if ((tenantCode && propertyCode) || (!tenantCode && !propertyCode)) {
     return { ok: false, reason: 'invalid_login_identifiers' };
   }

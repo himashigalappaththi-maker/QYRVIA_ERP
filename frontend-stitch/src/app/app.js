@@ -8,7 +8,11 @@ import { renderShell } from '../components/Layout.js';
 import { openPropertySwitcher } from '../components/PropertySwitcher.js';
 import { toast } from '../components/Toast.js';
 
-import { LoginView } from '../modules/auth/Login.view.js';
+import { LoginView }                  from '../modules/auth/Login.view.js';
+import { PropertySelectorView }        from '../modules/auth/PropertySelector.view.js';
+import { CompletePasswordResetView }   from '../modules/auth/CompletePasswordReset.view.js';
+import { AcceptInvitationView }        from '../modules/auth/AcceptInvitation.view.js';
+import { RequestPasswordResetView }    from '../modules/auth/RequestPasswordReset.view.js';
 import { DashboardView } from '../modules/dashboard/Dashboard.view.js';
 import { BookingView } from '../modules/booking/Booking.view.js';
 import { ReservationsView } from '../modules/reservations/Reservations.view.js';
@@ -38,7 +42,13 @@ import { ConnectorsView } from '../modules/connectors/Connectors.view.js';
 
 const appEl = document.getElementById('app');
 const VIEWS = {
-  login: LoginView, dashboard: DashboardView, booking: BookingView,
+  login: LoginView,
+  // Phase 57: auth flow screens
+  'select-property':         PropertySelectorView,
+  'complete-password-reset': CompletePasswordResetView,
+  'accept-invitation':       AcceptInvitationView,
+  'reset-password':          RequestPasswordResetView,
+  dashboard: DashboardView, booking: BookingView,
   reservations: ReservationsView, frontdesk: FrontDeskView, guests: GuestsView,
   rooms: RoomsView, availability: AvailabilityView, rateplans: RatePlansView,
   revenue: RevenueView, billing: BillingView,
