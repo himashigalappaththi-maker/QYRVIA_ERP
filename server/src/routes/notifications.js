@@ -2,6 +2,7 @@
 
 const express = require('express');
 const { requirePermission } = require('../middleware/authorization');
+const { withTenant } = require('../db/client');
 
 function build({ notificationService }) {
   const router = express.Router();
@@ -9,7 +10,9 @@ function build({ notificationService }) {
 
   router.post('/', requirePermission('notifications.send'), async (req, res, next) => {
     try {
-      const r = await notificationService.requestNotification(req.body || {}, req.ctx);
+      const r = await withTenant(req.ctx.tenantId, (client) =>
+        notificationService.requestNotification(req.body || {}, req.ctx, client)
+      );
       res.status(r.ok ? 201 : 400).json(Object.assign({ requestId: req.ctx.requestId }, r));
     } catch (err) { next(err); }
   });
@@ -32,7 +35,9 @@ function build({ notificationService }) {
   router.post('/send/run', requirePermission('notifications.send'), async (req, res, next) => {
     try {
       const limit = parseInt((req.body && req.body.limit) || 25, 10);
-      const r = await notificationService.sendPending({ limit });
+      const r = await withTenant(req.ctx.tenantId, (client) =>
+        notificationService.sendPending({ limit, client })
+      );
       res.json(Object.assign({ ok: true, requestId: req.ctx.requestId }, r));
     } catch (err) { next(err); }
   });

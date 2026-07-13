@@ -20,15 +20,33 @@
  * Uses in-memory fixtures only. No real DB required.
  */
 
+process.env.QYRVIA_NOTIFICATION_ENCRYPTION_KEY =
+  Buffer.alloc(32, 0x42).toString('base64');
+process.env.APP_BASE_URL = 'http://localhost:3001';
+
 const fx       = require('./_fixtures');
 const { test } = require('node:test');
 const assert   = require('node:assert/strict');
 
-const identity                      = require('../src/services/identity');
-const { bootstrapPlatformAdmin }    = require('../src/services/platformBootstrap');
-const { buildPasswordResetService } = require('../src/services/passwordReset');
-const { buildInvitationService }    = require('../src/services/invitation');
-const { createApp }                 = require('../src/app');
+const identity                             = require('../src/services/identity');
+const { bootstrapPlatformAdmin }           = require('../src/services/platformBootstrap');
+const { buildPasswordResetService }        = require('../src/services/passwordReset');
+const { buildInvitationService }           = require('../src/services/invitation');
+const { buildIdentityNotificationOutbox }  = require('../src/services/identityNotificationOutbox');
+const { createApp }                        = require('../src/app');
+
+// Minimal transaction harness for invitation tests that don't need rollback.
+function makeSimpleWithTenant(invitationRepo, notificationRepo) {
+  return async function withTenantFn(tenantId, cb) {
+    const client = { tenantId, query: async () => ({ rows: [] }) };
+    try {
+      return await cb(client);
+    } catch (err) {
+      // No real rollback needed in unit tests — re-throw for assertion.
+      throw err;
+    }
+  };
+}
 
 const TENANT_PLATFORM = 'ffffffff-ffff-1fff-ffff-ffffffffffff';
 const ADMIN_EMAIL     = 'platform-admin@qyrvia.test';
@@ -51,6 +69,27 @@ function makeBootstrapRepo(repos, { auditLog } = {}) {
       if (auditLog) auditLog.push(ev);
     }
   };
+}
+
+// ── Helpers for Phase 58 tests that require the new passwordResetService deps ─────────────
+
+function makeCapturingOutbox() {
+  let _capturedToken = null;
+  return {
+    enqueuePasswordResetNotification: async (data, _client) => {
+      _capturedToken = data.rawToken;
+      return { row: { id: 1 }, created: true };
+    },
+    getCapturedToken: () => _capturedToken
+  };
+}
+
+function makeMockWithTenant() {
+  async function withTenantFn(_tenantId, cb) {
+    const fakeClient = { query: async () => ({ rows: [] }) };
+    return cb(fakeClient);
+  }
+  return withTenantFn;
 }
 
 // ── Test 1: Creates user with PENDING_PASSWORD_RESET ─────────────────────────────────────
@@ -138,13 +177,18 @@ test('identity.attemptLogin: PENDING_PASSWORD_RESET email login returns requires
 
 // ── Test 7: Login response includes password_reset_token via HTTP route ───────────────────
 
-test('POST /api/auth/login with PENDING_PASSWORD_RESET → 200 + requires_password_change + token', async () => {
+test('POST /api/auth/login with PENDING_PASSWORD_RESET → 200 + requires_password_change (token enqueued via outbox)', async () => {
   const repos        = fx.makeFakeRepos();
   const repo         = makeBootstrapRepo(repos);
   await bootstrapPlatformAdmin({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD, tenantId: TENANT_PLATFORM }, repo);
   repos.identityRepo._seedAccessibleProperty({ id: fx.PROP_ID, code: 'P1', name: 'Test', tenant_id: TENANT_PLATFORM, active: true });
 
-  const passwordResetService = buildPasswordResetService({ repo: repos.passwordResetRepo });
+  const capturingOutbox = makeCapturingOutbox();
+  const passwordResetService = buildPasswordResetService({
+    repo: repos.passwordResetRepo,
+    identityNotificationOutbox: capturingOutbox,
+    withTenantFn: makeMockWithTenant()
+  });
 
   const { createApp: _createApp } = require('../src/app');
   const app = _createApp({
@@ -163,8 +207,9 @@ test('POST /api/auth/login with PENDING_PASSWORD_RESET → 200 + requires_passwo
     });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.requires_password_change, true, 'requires_password_change must be true');
-    assert.ok(typeof r.body.password_reset_token === 'string' && r.body.password_reset_token.length > 0,
-      'password_reset_token must be present');
+    // Raw token is now delivered via encrypted notification outbox, not in the HTTP response.
+    assert.equal(r.body.password_reset_token, undefined, 'password_reset_token must not be in HTTP response');
+    assert.ok(capturingOutbox.getCapturedToken(), 'outbox must have captured the raw token');
   } finally { srv.close(); }
 });
 
@@ -175,12 +220,20 @@ test('after completeReset, bootstrap password returns bad_password', async () =>
   const repo         = makeBootstrapRepo(repos);
   await bootstrapPlatformAdmin({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD, tenantId: TENANT_PLATFORM }, repo);
 
-  const svc = buildPasswordResetService({ repo: repos.passwordResetRepo });
+  const capturingOutbox = makeCapturingOutbox();
+  const svc = buildPasswordResetService({
+    repo: repos.passwordResetRepo,
+    identityNotificationOutbox: capturingOutbox,
+    withTenantFn: makeMockWithTenant()
+  });
   // Request a reset token
   const req = await svc.requestReset({ email: ADMIN_EMAIL });
-  assert.equal(req.queued, true, 'reset must be queued');
+  assert.equal(req.ok, true, 'requestReset must return { ok: true }');
+  // Raw token is now captured from the outbox (not returned in the service result)
+  const rawToken = capturingOutbox.getCapturedToken();
+  assert.ok(rawToken, 'outbox must have captured the raw token');
   // Complete reset with a new password
-  const completed = await svc.completeReset({ token: req.rawToken, newPassword: 'NewPermanent1!' });
+  const completed = await svc.completeReset({ token: rawToken, newPassword: 'NewPermanent1!' });
   assert.equal(completed.ok, true, 'completeReset must succeed');
 
   // Old password must fail now
@@ -199,7 +252,12 @@ test('after completeReset, bootstrap password returns bad_password', async () =>
 
 test('invitation.createInvitation: non-super_admin caller cannot invite with super_admin role', async () => {
   const repos  = fx.makeFakeRepos();
-  const svc    = buildInvitationService({ repo: repos.invitationRepo });
+  const outbox = buildIdentityNotificationOutbox({ notificationRepo: repos.notificationRepo });
+  const svc    = buildInvitationService({
+    repo: repos.invitationRepo,
+    identityNotificationOutbox: outbox,
+    withTenantFn: makeSimpleWithTenant(repos.invitationRepo, repos.notificationRepo)
+  });
 
   const result = await svc.createInvitation({
     tenantId:       fx.TENANT_A,
@@ -216,7 +274,12 @@ test('invitation.createInvitation: non-super_admin caller cannot invite with sup
 
 test('invitation.createInvitation: non-super_admin caller cannot invite with platform_admin role', async () => {
   const repos  = fx.makeFakeRepos();
-  const svc    = buildInvitationService({ repo: repos.invitationRepo });
+  const outbox = buildIdentityNotificationOutbox({ notificationRepo: repos.notificationRepo });
+  const svc    = buildInvitationService({
+    repo: repos.invitationRepo,
+    identityNotificationOutbox: outbox,
+    withTenantFn: makeSimpleWithTenant(repos.invitationRepo, repos.notificationRepo)
+  });
 
   const result = await svc.createInvitation({
     tenantId:       fx.TENANT_A,
@@ -235,7 +298,12 @@ test('invitation.createInvitation: non-super_admin caller cannot invite with pla
 
 test('invitation.createInvitation: super_admin actor can invite with super_admin role', async () => {
   const repos  = fx.makeFakeRepos();
-  const svc    = buildInvitationService({ repo: repos.invitationRepo });
+  const outbox = buildIdentityNotificationOutbox({ notificationRepo: repos.notificationRepo });
+  const svc    = buildInvitationService({
+    repo: repos.invitationRepo,
+    identityNotificationOutbox: outbox,
+    withTenantFn: makeSimpleWithTenant(repos.invitationRepo, repos.notificationRepo)
+  });
 
   const result = await svc.createInvitation({
     tenantId:       TENANT_PLATFORM,
@@ -248,6 +316,7 @@ test('invitation.createInvitation: super_admin actor can invite with super_admin
 
   assert.equal(result.ok, true, 'super_admin must be able to invite another super_admin');
   assert.ok(result.invitationId, 'invitationId must be returned');
+  assert.equal(result.rawToken, undefined, 'rawToken must not be returned by service');
 });
 
 // ── Test 11: Platform-role provisioning is audited ────────────────────────────────────────

@@ -1,29 +1,85 @@
 'use strict';
 
 /**
- * Phase 57 — Invitation service unit tests.
+ * Phase 57/58 — Invitation service unit tests.
  *
  * Uses in-memory stubs from _fixtures.js. No real DB required.
+ * Tokens are never returned by the service — captured via outbox spy.
  */
+
+process.env.QYRVIA_NOTIFICATION_ENCRYPTION_KEY =
+  Buffer.alloc(32, 0x42).toString('base64');
+process.env.APP_BASE_URL = 'http://localhost:3001';
 
 const fx       = require('./_fixtures');
 const { test } = require('node:test');
 const assert   = require('node:assert/strict');
 
-const { buildInvitationService } = require('../src/services/invitation');
+const { buildInvitationService }           = require('../src/services/invitation');
+const { buildIdentityNotificationOutbox }  = require('../src/services/identityNotificationOutbox');
+const { decryptNotificationPayload }       = require('../src/security/notificationPayloadCrypto');
 
 const TENANT_ID = fx.TENANT_A;
 
+// ── Transaction harness ────────────────────────────────────────────────────────
+
+function makeTransactionHarness(invitationRepo, notificationRepo) {
+  let _lastClient = null;
+
+  async function withTenantFn(tenantId, cb) {
+    const invSnapshot = new Map(
+      Array.from(invitationRepo._invitations.entries())
+        .map(([k, v]) => [k, Object.assign({}, v)])
+    );
+    const notifSnapshot = notificationRepo._notifications.slice();
+
+    _lastClient = {
+      tenantId,
+      _id:   'tx-' + Math.random().toString(36).slice(2),
+      query: async () => ({ rows: [] })
+    };
+
+    try {
+      const result = await cb(_lastClient);
+      return result;
+    } catch (err) {
+      invitationRepo._invitations.clear();
+      for (const [k, v] of invSnapshot) invitationRepo._invitations.set(k, v);
+      notificationRepo._notifications.length = 0;
+      for (const n of notifSnapshot) notificationRepo._notifications.push(n);
+      throw err;
+    }
+  }
+
+  withTenantFn.getLastClient = () => _lastClient;
+  return withTenantFn;
+}
+
 function makeService(overrides = {}) {
-  const repos = fx.makeFakeRepos(overrides);
-  const svc   = buildInvitationService({ repo: repos.invitationRepo });
-  return { svc, repos };
+  const repos  = fx.makeFakeRepos(overrides);
+  const withTenantFn = makeTransactionHarness(repos.invitationRepo, repos.notificationRepo);
+  const identityNotificationOutbox = buildIdentityNotificationOutbox({
+    notificationRepo: repos.notificationRepo
+  });
+  const svc = buildInvitationService({
+    repo: repos.invitationRepo,
+    identityNotificationOutbox,
+    withTenantFn
+  });
+  return { svc, repos, withTenantFn };
+}
+
+// Helper: decrypt the latest notification to read the raw invitation token.
+function captureTokenFromOutbox(repos) {
+  const notif = repos.notificationRepo._notifications.at(-1);
+  assert.ok(notif, 'expected a notification in outbox');
+  return decryptNotificationPayload(notif).token;
 }
 
 // ── createInvitation ─────────────────────────────────────────────────────────
 
-test('createInvitation: valid email returns ok:true with rawToken', async () => {
-  const { svc } = makeService();
+test('createInvitation: valid email returns ok:true with invitationId (no rawToken in response)', async () => {
+  const { svc, repos } = makeService();
   const result = await svc.createInvitation({
     tenantId: TENANT_ID,
     email: 'bob@example.com',
@@ -34,9 +90,12 @@ test('createInvitation: valid email returns ok:true with rawToken', async () => 
   });
   assert.equal(result.ok, true);
   assert.ok(result.invitationId, 'invitationId missing');
-  assert.ok(typeof result.rawToken === 'string' && result.rawToken.length === 64, 'rawToken must be 64-char hex');
   assert.equal(result.email, 'bob@example.com');
-  assert.ok(result.expiresAt instanceof Date || typeof result.expiresAt === 'string' || result.expiresAt instanceof Object);
+  assert.ok(result.expiresAt, 'expiresAt missing');
+  assert.equal(result.rawToken, undefined, 'rawToken must not be returned by service');
+  // Token is accessible only from the encrypted outbox
+  const token = captureTokenFromOutbox(repos);
+  assert.ok(typeof token === 'string' && token.length === 64, 'outbox token must be 64-char hex');
 });
 
 test('createInvitation: invalid email returns invalid_email', async () => {
@@ -98,7 +157,8 @@ test('acceptInvitation: valid token creates user and marks invitation accepted',
   const created = await svc.createInvitation({ tenantId: TENANT_ID, email: 'carol@example.com', roleCodes: ['staff'], actorRoleCodes: [] });
   assert.equal(created.ok, true);
 
-  const accepted = await svc.acceptInvitation({ token: created.rawToken, fullName: 'Carol Brown', password: 'Secur3Pass!' });
+  const token = captureTokenFromOutbox(repos);
+  const accepted = await svc.acceptInvitation({ token, fullName: 'Carol Brown', password: 'Secur3Pass!' });
   assert.equal(accepted.ok, true);
   assert.ok(accepted.userId, 'userId missing');
   assert.equal(accepted.email, 'carol@example.com');
@@ -115,10 +175,11 @@ test('acceptInvitation: invalid token returns invitation_not_found', async () =>
 });
 
 test('acceptInvitation: already-accepted token returns invitation_already_used', async () => {
-  const { svc } = makeService();
+  const { svc, repos } = makeService();
   const created = await svc.createInvitation({ tenantId: TENANT_ID, email: 'double@example.com', roleCodes: ['staff'], actorRoleCodes: [] });
-  await svc.acceptInvitation({ token: created.rawToken, fullName: 'Double', password: 'Secur3Pass!' });
-  const again = await svc.acceptInvitation({ token: created.rawToken, fullName: 'Double', password: 'Secur3Pass!' });
+  const token = captureTokenFromOutbox(repos);
+  await svc.acceptInvitation({ token, fullName: 'Double', password: 'Secur3Pass!' });
+  const again = await svc.acceptInvitation({ token, fullName: 'Double', password: 'Secur3Pass!' });
   assert.equal(again.ok, false);
   assert.equal(again.error, 'invitation_already_used');
 });
@@ -130,15 +191,17 @@ test('acceptInvitation: expired invitation returns invitation_expired', async ()
   const inv = repos.invitationRepo._invitations.get(created.invitationId);
   inv.expires_at = new Date(Date.now() - 1000).toISOString();
 
-  const result = await svc.acceptInvitation({ token: created.rawToken, fullName: 'Expired', password: 'Secur3Pass!' });
+  const token = captureTokenFromOutbox(repos);
+  const result = await svc.acceptInvitation({ token, fullName: 'Expired', password: 'Secur3Pass!' });
   assert.equal(result.ok, false);
   assert.equal(result.error, 'invitation_expired');
 });
 
 test('acceptInvitation: password too short returns password_too_short', async () => {
-  const { svc } = makeService();
+  const { svc, repos } = makeService();
   const created = await svc.createInvitation({ tenantId: TENANT_ID, email: 'shortpw@example.com', roleCodes: ['staff'], actorRoleCodes: [] });
-  const result = await svc.acceptInvitation({ token: created.rawToken, fullName: 'Short', password: 'abc' });
+  const token = captureTokenFromOutbox(repos);
+  const result = await svc.acceptInvitation({ token, fullName: 'Short', password: 'abc' });
   assert.equal(result.ok, false);
   assert.equal(result.error, 'password_too_short');
 });
@@ -152,7 +215,9 @@ test('acceptInvitation: missing fields returns missing_fields', async () => {
 
 test('acceptInvitation: email_already_registered when email is taken globally', async () => {
   const repos = fx.makeFakeRepos();
-  const svc   = buildInvitationService({ repo: repos.invitationRepo });
+  const withTenantFn = makeTransactionHarness(repos.invitationRepo, repos.notificationRepo);
+  const outbox = buildIdentityNotificationOutbox({ notificationRepo: repos.notificationRepo });
+  const svc    = buildInvitationService({ repo: repos.invitationRepo, identityNotificationOutbox: outbox, withTenantFn });
 
   // Seed an existing user with that email
   repos.identityRepo._seedUser(
@@ -161,7 +226,8 @@ test('acceptInvitation: email_already_registered when email is taken globally', 
   );
 
   const created = await svc.createInvitation({ tenantId: TENANT_ID, email: 'dave@example.com', roleCodes: ['staff'], actorRoleCodes: [] });
-  const result  = await svc.acceptInvitation({ token: created.rawToken, fullName: 'Dave', password: 'Secur3Pass!' });
+  const token   = captureTokenFromOutbox(repos);
+  const result  = await svc.acceptInvitation({ token, fullName: 'Dave', password: 'Secur3Pass!' });
   assert.equal(result.ok, false);
   assert.equal(result.error, 'email_already_registered');
 });
@@ -185,9 +251,10 @@ test('revokeInvitation: unknown id returns not_found', async () => {
 });
 
 test('revokeInvitation: already-accepted invitation returns not_revocable', async () => {
-  const { svc } = makeService();
+  const { svc, repos } = makeService();
   const created = await svc.createInvitation({ tenantId: TENANT_ID, email: 'acc@example.com', roleCodes: ['staff'], actorRoleCodes: [] });
-  await svc.acceptInvitation({ token: created.rawToken, fullName: 'Acc', password: 'Secur3Pass!' });
+  const token = captureTokenFromOutbox(repos);
+  await svc.acceptInvitation({ token, fullName: 'Acc', password: 'Secur3Pass!' });
   const result = await svc.revokeInvitation({ invitationId: created.invitationId, revokedBy: null });
   assert.equal(result.ok, false);
   assert.equal(result.error, 'not_revocable');

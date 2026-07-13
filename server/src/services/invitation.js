@@ -13,20 +13,36 @@ function generateInvitationToken() {
 }
 
 /**
- * buildInvitationService({ repo })
+ * buildInvitationService({ repo, identityNotificationOutbox, withTenantFn })
  *
  * repo contract:
+ *   insertInvitation(rec, client) => row
  *   findInvitationByTokenHash(hash) => row | null
  *   findInvitationById(id) => row | null
- *   insertInvitation({ tenant_id, email, token_hash, invited_by, role_codes, property_ids, expires_at }) => row
  *   markInvitationAccepted(id, acceptedBy) => void
  *   markInvitationRevoked(id, revokedBy) => void
  *   listInvitations(tenantId, status?) => row[]
  *   findUserByEmailGlobal(email) => row | null
  *   insertUser(rec) => row
  *   insertUserRoleByCode({ user_id, role_code, tenant_id, property_id, granted_by }) => void
+ *
+ * identityNotificationOutbox.enqueueIdentityInvitationNotification(data, client)
+ * withTenantFn: tenant-scoped transaction helper (BEGIN/COMMIT/ROLLBACK)
  */
-function buildInvitationService({ repo }) {
+function buildInvitationService({ repo, identityNotificationOutbox, withTenantFn }) {
+  if (
+    !identityNotificationOutbox ||
+    typeof identityNotificationOutbox.enqueueIdentityInvitationNotification !== 'function'
+  ) {
+    const err = new Error('identityNotificationOutbox with enqueueIdentityInvitationNotification required');
+    err.code = 'OUTBOX_REQUIRED';
+    throw err;
+  }
+  if (typeof withTenantFn !== 'function') {
+    const err = new Error('withTenantFn required');
+    err.code = 'WITH_TENANT_REQUIRED';
+    throw err;
+  }
 
   async function createInvitation({ tenantId, email, roleCodes, propertyIds, invitedBy, actorRoleCodes }) {
     if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(email).trim())) {
@@ -44,21 +60,38 @@ function buildInvitationService({ repo }) {
       }
     }
 
+    const expiresAt = new Date(Date.now() + INVITATION_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+    const { raw, hash } = generateInvitationToken();
+
+    let row;
     try {
-      const expiresAt = new Date(Date.now() + INVITATION_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
-      const { raw, hash } = generateInvitationToken();
+      await withTenantFn(tenantId, async (client) => {
+        row = await repo.insertInvitation({
+          tenant_id:    tenantId,
+          email:        normalizedEmail,
+          token_hash:   hash,
+          invited_by:   invitedBy || null,
+          role_codes:   codes,
+          property_ids: Array.isArray(propertyIds) ? propertyIds : [],
+          expires_at:   expiresAt
+        }, client);
 
-      const row = await repo.insertInvitation({
-        tenant_id:    tenantId,
-        email:        normalizedEmail,
-        token_hash:   hash,
-        invited_by:   invitedBy || null,
-        role_codes:   codes,
-        property_ids: Array.isArray(propertyIds) ? propertyIds : [],
-        expires_at:   expiresAt
+        if (!row || !row.id) {
+          const err = new Error('Invitation record creation failed');
+          err.code = 'INVITATION_RECORD_MISSING';
+          throw err;
+        }
+
+        await identityNotificationOutbox.enqueueIdentityInvitationNotification({
+          tenantId,
+          identityId:         String(row.id),
+          invitationRecordId: String(row.id),
+          email:              normalizedEmail,
+          rawToken:           raw,
+          expiresAt:          row.expires_at || expiresAt,
+          inviterId:          invitedBy || null
+        }, client);
       });
-
-      return { ok: true, invitationId: row.id, rawToken: raw, email: normalizedEmail, expiresAt };
     } catch (err) {
       if (err.code === '23505') {
         return { ok: false, error: 'invitation_already_pending',
@@ -66,6 +99,8 @@ function buildInvitationService({ repo }) {
       }
       throw err;
     }
+
+    return { ok: true, invitationId: row.id, email: normalizedEmail, expiresAt };
   }
 
   async function acceptInvitation({ token, fullName, password }) {

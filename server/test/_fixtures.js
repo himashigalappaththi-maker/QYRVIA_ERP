@@ -174,7 +174,13 @@ function _makeFakeReposCore(overrides = {}) {
   const invitations = new Map();
   let _invSeq = 0;
   const invitationRepo = Object.assign({
-    async insertInvitation(rec) {
+    async insertInvitation(rec, client) {
+      if (!client || typeof client.query !== 'function') {
+        const err = new Error('Invitation client required');
+        err.code = 'INVITATION_CLIENT_REQUIRED';
+        throw err;
+      }
+      this._lastInsertClient = client;
       for (const inv of invitations.values()) {
         if (inv.status === 'pending' &&
             inv.tenant_id === rec.tenant_id &&
@@ -221,7 +227,13 @@ function _makeFakeReposCore(overrides = {}) {
   const resetTokens = new Map();
   let _resetSeq = 0;
   const passwordResetRepo = Object.assign({
-    async insertPasswordResetToken(rec) {
+    async insertPasswordResetToken(rec, client) {
+      if (!client || typeof client.query !== 'function') {
+        const err = new Error('Password reset client required');
+        err.code = 'PASSWORD_RESET_CLIENT_REQUIRED';
+        throw err;
+      }
+      this._lastInsertClient = client;
       const id = 'rst_' + (++_resetSeq);
       const row = Object.assign({ id, status: 'pending', created_at: new Date().toISOString() }, rec);
       resetTokens.set(id, row);
@@ -235,7 +247,13 @@ function _makeFakeReposCore(overrides = {}) {
       const t = resetTokens.get(id);
       if (t) { t.status = 'used'; t.used_at = new Date().toISOString(); }
     },
-    async revokeActivePasswordResetTokensForUser(userId) {
+    async revokeActivePasswordResetTokensForUser(userId, client) {
+      if (!client || typeof client.query !== 'function') {
+        const err = new Error('Password reset client required');
+        err.code = 'PASSWORD_RESET_CLIENT_REQUIRED';
+        throw err;
+      }
+      this._lastRevokeClient = client;
       for (const t of resetTokens.values()) {
         if (t.user_id === userId && t.status === 'pending') t.status = 'revoked';
       }
@@ -396,10 +414,27 @@ function _makePhase3Repos() {
     async findActiveTemplate(tenantId, code, channel) {
       return templates.find(t => t.tenant_id === tenantId && t.code === code && t.channel === channel && t.is_active !== false) || null;
     },
-    async insertNotification(rec) {
-      const row = Object.assign({ id: 'notif_' + (notifications.length + 1), requested_at: new Date().toISOString() }, rec);
+    // Returns { row, created } — mirrors the real repos.js atomic ON CONFLICT pattern.
+    // When source_idempotency_key is set, deduplication is applied per tenant.
+    async insertNotification(rec, client) {
+      this._requireClient(client);
+      if (rec.source_idempotency_key) {
+        const existing = notifications.find(
+          n => n.tenant_id === rec.tenant_id && n.source_idempotency_key === rec.source_idempotency_key
+        );
+        if (existing) return { row: existing, created: false };
+      }
+      const row = Object.assign({
+        id: 'notif_' + (notifications.length + 1), requested_at: new Date().toISOString(),
+        attempt_count: 0, max_attempts: 3,
+        next_attempt_at: null, locked_by: null, locked_at: null,
+        provider_message_id: null, provider_idempotency_key: null,
+        encrypted_payload: null, encryption_iv: null, encryption_tag: null,
+        encryption_payload_version: null, encryption_key_version: null,
+        source_idempotency_key: null
+      }, rec);
       notifications.push(row);
-      return row;
+      return { row, created: true };
     },
     async findNotificationById(tenantId, id) {
       const n = notifications.find(x => x.tenant_id === tenantId && x.id === id);
@@ -409,11 +444,104 @@ function _makePhase3Repos() {
     async listNotifications(tenantId, status, limit) {
       return notifications.filter(n => n.tenant_id === tenantId && (!status || n.status === status)).slice(0, limit || 100);
     },
-    async claimPendingNotifications({ limit }) {
-      const claimed = notifications.filter(n => n.status === 'pending').slice(0, limit);
-      claimed.forEach(n => { n.status = 'sending'; });
+    _requireClient(client) {
+      if (!client) throw Object.assign(
+        new Error('notificationRepo: tenant-scoped DB client required'),
+        { code: 'NOTIFICATION_CLIENT_REQUIRED' }
+      );
+    },
+    // Phase 58: atomic claim with stale-lease recovery. Does NOT increment attempt_count.
+    async claimPendingNotifications({ workerId, limit = 25, leaseMinutes = 10 }, client) {
+      this._requireClient(client);
+      if (!workerId) throw Object.assign(new Error('claimPendingNotifications: workerId required'), { code: 'INVALID_INPUT' });
+      const safeLimit  = Math.max(1, Math.min(100, Number(limit)       || 25));
+      const safeLease  = Math.max(1, Math.min(1440, Number(leaseMinutes) || 10));
+      const staleThresh = new Date(Date.now() - safeLease * 60 * 1000);
+      const claimed = [];
+      for (const n of notifications) {
+        if (claimed.length >= safeLimit) break;
+        const isPendingDue = n.status === 'pending'
+          && n.attempt_count < n.max_attempts
+          && (n.next_attempt_at == null || new Date(n.next_attempt_at) <= new Date());
+        const isStaleSending = n.status === 'sending'
+          && n.attempt_count < n.max_attempts
+          && n.locked_at != null && new Date(n.locked_at) < staleThresh;
+        if (isPendingDue || isStaleSending) {
+          n.status    = 'sending';
+          n.locked_by = workerId;
+          n.locked_at = new Date().toISOString();
+          claimed.push(n);
+        }
+      }
       return claimed;
     },
+    // Increments attempt_count exactly once immediately before a real send.
+    // Returns null when ownership/ceiling/idempotency guards fail.
+    async beginNotificationAttempt(id, workerId, providerIdempotencyKey, client) {
+      this._requireClient(client);
+      const n = notifications.find(x =>
+        x.id === id && x.status === 'sending' && x.locked_by === workerId && x.attempt_count < x.max_attempts
+      );
+      if (!n) return null;
+      if (n.provider_idempotency_key !== null && n.provider_idempotency_key !== providerIdempotencyKey) return null;
+      n.attempt_count += 1;
+      if (n.provider_idempotency_key === null) n.provider_idempotency_key = providerIdempotencyKey || null;
+      return Object.assign({}, n);
+    },
+    async markNotificationDelivered(id, workerId, expectedAttemptCount, providerMessageId, client) {
+      this._requireClient(client);
+      const n = notifications.find(x =>
+        x.id === id && x.status === 'sending' && x.locked_by === workerId && x.attempt_count === expectedAttemptCount
+      );
+      if (!n) return null;
+      n.status                    = 'delivered';
+      n.completed_at              = new Date().toISOString();
+      n.provider_message_id       = providerMessageId || null;
+      n.next_attempt_at           = null;
+      n.locked_by                 = null;
+      n.locked_at                 = null;
+      n.encrypted_payload         = null;
+      n.encryption_iv             = null;
+      n.encryption_tag            = null;
+      n.encryption_key_version    = null;
+      n.encryption_payload_version = null;
+      return Object.assign({}, n);
+    },
+    async markNotificationRetry(id, workerId, expectedAttemptCount, nextAttemptAt, client) {
+      this._requireClient(client);
+      const n = notifications.find(x =>
+        x.id === id && x.status === 'sending' && x.locked_by === workerId
+        && x.attempt_count === expectedAttemptCount && x.attempt_count < x.max_attempts
+      );
+      if (!n) return null;
+      n.status          = 'pending';
+      n.next_attempt_at = nextAttemptAt || null;
+      n.completed_at    = null;
+      n.locked_by       = null;
+      n.locked_at       = null;
+      return Object.assign({}, n);
+    },
+    async markNotificationFailed(id, workerId, expectedAttemptCount, failureClass, client) {
+      this._requireClient(client);
+      const n = notifications.find(x =>
+        x.id === id && x.status === 'sending' && x.locked_by === workerId && x.attempt_count === expectedAttemptCount
+      );
+      if (!n) return null;
+      if (n.attempt_count < n.max_attempts && failureClass !== 'permanent') return null;
+      n.status                    = 'failed';
+      n.completed_at              = new Date().toISOString();
+      n.next_attempt_at           = null;
+      n.locked_by                 = null;
+      n.locked_at                 = null;
+      n.encrypted_payload         = null;
+      n.encryption_iv             = null;
+      n.encryption_tag            = null;
+      n.encryption_key_version    = null;
+      n.encryption_payload_version = null;
+      return Object.assign({}, n);
+    },
+    // Legacy: used by non-retry flows (not_configured path, existing callers predating Phase 58).
+    // NOT permitted for use by the Phase 58 retry worker.
     async markNotificationStatus(id, status) {
       const n = notifications.find(x => x.id === id);
       if (n) { n.status = status; if (['delivered','failed','not_configured','cancelled'].includes(status)) n.completed_at = new Date().toISOString(); }
@@ -483,9 +611,78 @@ function _makePhase3Repos() {
   const cc    = _makeCostCenterMemoryRepo();
   const rm    = _makeRevenueMapMemoryRepo();
   const led   = _makeLedgerMemoryRepo();
+
+  // ---- OTA inbound event dedup repo (Phase 58 in-memory fixture) --------
+  // Simulates the atomic upsert and tenant-scoped RLS of the real DB repo.
+  // client parameter accepted but ignored (no real DB connection in tests).
+  const otaDedupStore = [];
+  const SENTINEL = '00000000-0000-0000-0000-000000000000';
+  const otaInboundEventDedupRepo = {
+    _requireClient(client) {
+      if (!client) throw Object.assign(
+        new Error('otaDedup: tenant-scoped transaction client required'),
+        { code: 'OTA_DEDUP_CLIENT_REQUIRED' }
+      );
+    },
+    async upsert({ tenantId, propertyId, channelCode, eventType, dedupKey }, client) {
+      this._requireClient(client);
+      if (!tenantId)    throw Object.assign(new Error('otaDedup.upsert: tenantId required'),    { code: 'INVALID_INPUT' });
+      if (!channelCode) throw Object.assign(new Error('otaDedup.upsert: channelCode required'), { code: 'INVALID_INPUT' });
+      if (!eventType)   throw Object.assign(new Error('otaDedup.upsert: eventType required'),   { code: 'INVALID_INPUT' });
+      if (!dedupKey)    throw Object.assign(new Error('otaDedup.upsert: dedupKey required'),    { code: 'INVALID_INPUT' });
+      const propKey = propertyId || SENTINEL;
+      const existing = otaDedupStore.find(r =>
+        r.tenant_id     === tenantId &&
+        (r.property_id || SENTINEL) === propKey &&
+        r.channel_code  === channelCode &&
+        r.event_type    === eventType &&
+        r.dedup_key     === dedupKey
+      );
+      if (existing) {
+        existing.last_received_at = new Date().toISOString();
+        existing.delivery_count  += 1;
+        existing.updated_at       = new Date().toISOString();
+        return { row: Object.assign({}, existing, { is_duplicate: true }), isDuplicate: true };
+      }
+      const row = {
+        id: 'ota_' + (otaDedupStore.length + 1),
+        tenant_id: tenantId, property_id: propertyId || null,
+        channel_code: channelCode, event_type: eventType, dedup_key: dedupKey,
+        processing_status: 'received',
+        first_received_at: new Date().toISOString(),
+        last_received_at:  new Date().toISOString(),
+        delivery_count: 1, processed_at: null, result_ref: null,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+      };
+      otaDedupStore.push(row);
+      return { row: Object.assign({}, row, { is_duplicate: false }), isDuplicate: false };
+    },
+    async markProcessed(id, resultRef, client) {
+      this._requireClient(client);
+      const r = otaDedupStore.find(x => x.id === id && x.processing_status === 'received');
+      if (r) {
+        r.processing_status = 'processed';
+        r.processed_at = new Date().toISOString();
+        r.result_ref   = resultRef ? String(resultRef).slice(0, 200) : null;
+        r.updated_at   = new Date().toISOString();
+      }
+    },
+    async markRejected(id, reason, client) {
+      this._requireClient(client);
+      const r = otaDedupStore.find(x => x.id === id && !['processed','rejected'].includes(x.processing_status));
+      if (r) {
+        r.processing_status = 'rejected';
+        r.result_ref = reason ? String(reason).slice(0, 200) : null;
+        r.updated_at = new Date().toISOString();
+      }
+    },
+    _store: otaDedupStore
+  };
+
   return { settingsRepo, fileRepo, connectorRepo, schedulerRepo, notificationRepo, webhookRepo,
            pmsRepo: pms, folioRepo: folio, housekeepingRepo: hk, nightAuditRepo: na,
-           costCenterRepo: cc, revenueMapRepo: rm, ledgerRepo: led };
+           costCenterRepo: cc, revenueMapRepo: rm, ledgerRepo: led,
+           otaInboundEventDedupRepo };
 }
 
 function _makePmsMemoryRepo() {

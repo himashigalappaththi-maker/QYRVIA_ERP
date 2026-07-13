@@ -459,13 +459,39 @@ function buildRepos(pool) {
       );
       return r.rows[0] || null;
     },
-    async insertNotification(rec) {
-      const r = await pool.query(
-        `INSERT INTO notifications (tenant_id, property_id, channel, template_code, recipient, subject, body, context, status, requested_by)
-         VALUES ($1,$2,$3::notification_channel,$4,$5,$6,$7,$8,$9::notification_status,$10) RETURNING *`,
-        [rec.tenant_id, rec.property_id, rec.channel, rec.template_code, rec.recipient, rec.subject, rec.body, rec.context, rec.status, rec.requested_by]
+    // Client required on all paths. Returns { row, created }.
+    // When source_idempotency_key is set the insert is atomic: ON CONFLICT
+    // against the partial unique index does nothing and the existing row is
+    // fetched with the same client.  When source_idempotency_key is NULL the
+    // ON CONFLICT clause never fires (partial index does not cover NULL rows).
+    async insertNotification(rec, client) {
+      this._requireClient(client);
+      const r = await client.query(
+        `INSERT INTO notifications
+           (tenant_id, property_id, channel, template_code, recipient, subject, body,
+            context, status, requested_by,
+            encrypted_payload, encryption_iv, encryption_tag,
+            encryption_payload_version, encryption_key_version, source_idempotency_key)
+         VALUES ($1,$2,$3::notification_channel,$4,$5,$6,$7,$8,$9::notification_status,$10,
+                 $11,$12,$13,$14,$15,$16)
+         ON CONFLICT (tenant_id, source_idempotency_key)
+           WHERE source_idempotency_key IS NOT NULL
+           DO NOTHING
+         RETURNING *`,
+        [rec.tenant_id, rec.property_id || null, rec.channel, rec.template_code || null,
+         rec.recipient, rec.subject, rec.body, rec.context || {},
+         rec.status || 'pending', rec.requested_by || null,
+         rec.encrypted_payload || null, rec.encryption_iv || null, rec.encryption_tag || null,
+         rec.encryption_payload_version || null, rec.encryption_key_version || null,
+         rec.source_idempotency_key || null]
       );
-      return r.rows[0];
+      if (r.rows[0]) return { row: r.rows[0], created: true };
+      // Conflict — return the existing row using the same tenant-scoped client.
+      const existing = await client.query(
+        `SELECT * FROM notifications WHERE tenant_id=$1 AND source_idempotency_key=$2 LIMIT 1`,
+        [rec.tenant_id, rec.source_idempotency_key]
+      );
+      return { row: existing.rows[0], created: false };
     },
     async findNotificationById(tenantId, id) {
       const r = await pool.query(`SELECT * FROM notifications WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
@@ -481,32 +507,158 @@ function buildRepos(pool) {
       const r = await pool.query(sql, params);
       return r.rows;
     },
-    async claimPendingNotifications({ limit }) {
-      const r = await pool.query(
+    _requireClient(client) {
+      if (!client) throw Object.assign(
+        new Error('notificationRepo: tenant-scoped DB client required'),
+        { code: 'NOTIFICATION_CLIENT_REQUIRED' }
+      );
+    },
+    // Phase 58: atomic claim with stale-lease recovery and attempt ceiling.
+    // Only claim rows where attempt_count < max_attempts (avoids re-queuing
+    // permanently failed notifications whose attempt ceiling was already raised
+    // externally). Does NOT increment attempt_count — that is done in
+    // beginNotificationAttempt immediately before the real provider send.
+    async claimPendingNotifications({ workerId, limit = 25, leaseMinutes = 10 }, client) {
+      this._requireClient(client);
+      if (!workerId) throw Object.assign(
+        new Error('claimPendingNotifications: workerId required'), { code: 'INVALID_INPUT' }
+      );
+      const safeLimit = Math.max(1, Math.min(100, Number(limit)      || 25));
+      const safeLease = Math.max(1, Math.min(1440, Number(leaseMinutes) || 10));
+      const r = await client.query(
         `WITH due AS (
            SELECT id FROM notifications
-            WHERE status='pending'
+            WHERE (status = 'pending'
+                   AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+                   AND attempt_count < max_attempts)
+               OR (status = 'sending'
+                   AND locked_at < now() - ($3::text || ' minutes')::interval
+                   AND attempt_count < max_attempts)
             ORDER BY requested_at
-            LIMIT $1
+            LIMIT $2
             FOR UPDATE SKIP LOCKED
          )
-         UPDATE notifications n SET status='sending'::notification_status
-           FROM due WHERE n.id = due.id RETURNING n.*`,
-        [limit]
+         UPDATE notifications n
+            SET status    = 'sending'::notification_status,
+                locked_by = $1,
+                locked_at = now()
+           FROM due WHERE n.id = due.id
+         RETURNING n.*`,
+        [workerId, safeLimit, safeLease]
       );
       return r.rows;
     },
+    // Increment attempt_count exactly once immediately before a real provider send.
+    // Persists the idempotency key only when the column is currently NULL.
+    // Returns null (no-op) when a different key already exists — prevents
+    // double-increment on replay. Also guards status, ownership, and ceiling.
+    async beginNotificationAttempt(id, workerId, providerIdempotencyKey, client) {
+      this._requireClient(client);
+      const r = await client.query(
+        `UPDATE notifications
+            SET attempt_count            = attempt_count + 1,
+                provider_idempotency_key = COALESCE(provider_idempotency_key, $3)
+          WHERE id           = $1
+            AND status       = 'sending'
+            AND locked_by    = $2
+            AND attempt_count < max_attempts
+            AND (provider_idempotency_key IS NULL OR provider_idempotency_key = $3)
+          RETURNING *`,
+        [id, workerId, providerIdempotencyKey || null]
+      );
+      return r.rows[0] || null;
+    },
+    // Atomically transition to 'delivered'. Ownership + attempt count both checked
+    // to prevent a stale worker overwriting a row reclaimed by another.
+    // Clears all encrypted-payload columns atomically — no residue after delivery.
+    async markNotificationDelivered(id, workerId, expectedAttemptCount, providerMessageId, client) {
+      this._requireClient(client);
+      const r = await client.query(
+        `UPDATE notifications
+            SET status                    = 'delivered'::notification_status,
+                completed_at              = now(),
+                provider_message_id       = $4,
+                next_attempt_at           = NULL,
+                locked_by                 = NULL,
+                locked_at                 = NULL,
+                encrypted_payload         = NULL,
+                encryption_iv             = NULL,
+                encryption_tag            = NULL,
+                encryption_key_version    = NULL,
+                encryption_payload_version = NULL
+          WHERE id            = $1
+            AND status        = 'sending'
+            AND locked_by     = $2
+            AND attempt_count = $3
+          RETURNING *`,
+        [id, workerId, expectedAttemptCount, providerMessageId || null]
+      );
+      return r.rows[0] || null;
+    },
+    // Return to pending with a backoff schedule. Attempt count is NOT changed here.
+    // Will only match rows still owned by this worker at this attempt count,
+    // and only when retries remain (attempt_count < max_attempts).
+    async markNotificationRetry(id, workerId, expectedAttemptCount, nextAttemptAt, client) {
+      this._requireClient(client);
+      const r = await client.query(
+        `UPDATE notifications
+            SET status          = 'pending'::notification_status,
+                next_attempt_at = $4::timestamptz,
+                completed_at    = NULL,
+                locked_by       = NULL,
+                locked_at       = NULL
+          WHERE id            = $1
+            AND status        = 'sending'
+            AND locked_by     = $2
+            AND attempt_count = $3
+            AND attempt_count < max_attempts
+          RETURNING *`,
+        [id, workerId, expectedAttemptCount, nextAttemptAt]
+      );
+      return r.rows[0] || null;
+    },
+    // Terminal failure. Only permitted when attempt_count >= max_attempts OR
+    // failureClass='permanent' (e.g. invalid recipient, undeliverable).
+    // Attempt count is intentionally not altered — it is already at the ceiling.
+    // Clears all encrypted-payload columns atomically — no residue after terminal failure.
+    async markNotificationFailed(id, workerId, expectedAttemptCount, failureClass, client) {
+      this._requireClient(client);
+      const r = await client.query(
+        `UPDATE notifications
+            SET status                    = 'failed'::notification_status,
+                completed_at              = now(),
+                next_attempt_at           = NULL,
+                locked_by                 = NULL,
+                locked_at                 = NULL,
+                encrypted_payload         = NULL,
+                encryption_iv             = NULL,
+                encryption_tag            = NULL,
+                encryption_key_version    = NULL,
+                encryption_payload_version = NULL
+          WHERE id            = $1
+            AND status        = 'sending'
+            AND locked_by     = $2
+            AND attempt_count = $3
+            AND (attempt_count >= max_attempts OR $4 = 'permanent')
+          RETURNING *`,
+        [id, workerId, expectedAttemptCount, failureClass || 'exhausted']
+      );
+      return r.rows[0] || null;
+    },
+    // Legacy: used by non-retry flows (no-provider / not_configured path) and
+    // existing callers predating Phase 58.  NOT permitted for use by the Phase 58
+    // retry worker — use the explicit transition methods above instead.
     async markNotificationStatus(id, status) {
       await pool.query(
         `UPDATE notifications SET status=$2::notification_status, completed_at=CASE WHEN $2 IN ('delivered','failed','not_configured','cancelled') THEN now() ELSE NULL END WHERE id=$1`,
         [id, status]
       );
     },
-    async insertDeliveryLog({ notification_id, tenant_id, attempt_no, status, provider, provider_ref, error }) {
+    async insertDeliveryLog({ notification_id, tenant_id, attempt_no, status, provider, provider_ref, error, error_code }) {
       await pool.query(
         `INSERT INTO notification_delivery_log (notification_id, tenant_id, attempt_no, status, provider, provider_ref, error)
          VALUES ($1,$2,$3,$4::notification_status,$5,$6,$7)`,
-        [notification_id, tenant_id, attempt_no, status, provider, provider_ref, error]
+        [notification_id, tenant_id, attempt_no, status, provider, provider_ref, error_code || error || null]
       );
     },
     async nextAttemptNo(notificationId) {
@@ -1850,8 +2002,13 @@ function buildRepos(pool) {
 
   // ---- invitation repo (Phase 57) ------------------------------------
   const invitationRepo = {
-    async insertInvitation(rec) {
-      const r = await pool.query(
+    async insertInvitation(rec, client) {
+      if (!client || typeof client.query !== 'function') {
+        const err = new Error('Invitation client required');
+        err.code = 'INVITATION_CLIENT_REQUIRED';
+        throw err;
+      }
+      const r = await client.query(
         `INSERT INTO user_invitations
            (tenant_id, email, token_hash, invited_by, role_codes, property_ids, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -1912,8 +2069,13 @@ function buildRepos(pool) {
 
   // ---- password-reset repo (Phase 57) --------------------------------
   const passwordResetRepo = {
-    async insertPasswordResetToken(rec) {
-      const r = await pool.query(
+    async insertPasswordResetToken(rec, client) {
+      if (!client || typeof client.query !== 'function') {
+        const err = new Error('Password reset client required');
+        err.code = 'PASSWORD_RESET_CLIENT_REQUIRED';
+        throw err;
+      }
+      const r = await client.query(
         `INSERT INTO password_reset_tokens (user_id, tenant_id, token_hash, expires_at)
          VALUES ($1, $2, $3, $4)
          RETURNING *`,
@@ -1933,8 +2095,13 @@ function buildRepos(pool) {
         `UPDATE password_reset_tokens SET status = 'used', used_at = now() WHERE id = $1`, [id]
       );
     },
-    async revokeActivePasswordResetTokensForUser(userId) {
-      await pool.query(
+    async revokeActivePasswordResetTokensForUser(userId, client) {
+      if (!client || typeof client.query !== 'function') {
+        const err = new Error('Password reset client required');
+        err.code = 'PASSWORD_RESET_CLIENT_REQUIRED';
+        throw err;
+      }
+      await client.query(
         `UPDATE password_reset_tokens SET status = 'revoked'
           WHERE user_id = $1 AND status = 'pending'`,
         [userId]
@@ -1950,6 +2117,72 @@ function buildRepos(pool) {
                 updated_at = now()
           WHERE id = $1`,
         [userId, passwordHash]
+      );
+    }
+  };
+
+  // ---- OTA inbound event deduplication repo (Phase 58) -----------------
+  // All methods REQUIRE an explicit tenant-scoped transaction client so that
+  // RLS (migration 0075) fires. Executing through the unrestricted shared pool
+  // is forbidden; a bounded internal error is thrown when client is absent.
+  const otaInboundEventDedupRepo = {
+    _requireClient(client) {
+      if (!client) throw Object.assign(
+        new Error('otaDedup: tenant-scoped transaction client required'),
+        { code: 'OTA_DEDUP_CLIENT_REQUIRED' }
+      );
+    },
+    async upsert({ tenantId, propertyId, channelCode, eventType, dedupKey }, client) {
+      this._requireClient(client);
+      if (!tenantId)    throw Object.assign(new Error('otaDedup.upsert: tenantId required'),    { code: 'INVALID_INPUT' });
+      if (!channelCode) throw Object.assign(new Error('otaDedup.upsert: channelCode required'), { code: 'INVALID_INPUT' });
+      if (!eventType)   throw Object.assign(new Error('otaDedup.upsert: eventType required'),   { code: 'INVALID_INPUT' });
+      if (!dedupKey)    throw Object.assign(new Error('otaDedup.upsert: dedupKey required'),    { code: 'INVALID_INPUT' });
+      const r = await client.query(
+        `INSERT INTO ota_inbound_event_dedup
+           (tenant_id, property_id, channel_code, event_type, dedup_key)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (
+           tenant_id,
+           COALESCE(property_id, '00000000-0000-0000-0000-000000000000'::uuid),
+           channel_code,
+           event_type,
+           dedup_key
+         )
+         DO UPDATE SET
+           last_received_at = now(),
+           delivery_count   = ota_inbound_event_dedup.delivery_count + 1,
+           updated_at       = now()
+         RETURNING *, (delivery_count > 1) AS is_duplicate`,
+        [tenantId, propertyId || null, channelCode, eventType, dedupKey]
+      );
+      const row = r.rows[0];
+      return { row, isDuplicate: Boolean(row.is_duplicate) };
+    },
+    // Only transitions from 'received' — preserves already-processed results on duplicate delivery.
+    async markProcessed(id, resultRef, client) {
+      this._requireClient(client);
+      await client.query(
+        `UPDATE ota_inbound_event_dedup
+            SET processing_status = 'processed',
+                processed_at      = now(),
+                result_ref        = $2,
+                updated_at        = now()
+          WHERE id = $1
+            AND processing_status = 'received'`,
+        [id, resultRef ? String(resultRef).slice(0, 200) : null]
+      );
+    },
+    async markRejected(id, reason, client) {
+      this._requireClient(client);
+      await client.query(
+        `UPDATE ota_inbound_event_dedup
+            SET processing_status = 'rejected',
+                result_ref        = $2,
+                updated_at        = now()
+          WHERE id = $1
+            AND processing_status NOT IN ('processed','rejected')`,
+        [id, reason ? String(reason).slice(0, 200) : null]
       );
     }
   };
@@ -2259,6 +2492,7 @@ function buildRepos(pool) {
     folioRepo, housekeepingRepo, nightAuditRepo,
     costCenterRepo, revenueMapRepo, ledgerRepo,
     invitationRepo, passwordResetRepo,
+    otaInboundEventDedupRepo,
     gatepasRepo, posOrderRepo, patrolRepo
   };
 }

@@ -424,9 +424,13 @@ let invitationService = null;
 let passwordResetService = null;
 let tenantProvisioningService = null;
 try {
-  const { buildInvitationService }        = require('./services/invitation');
-  const { buildPasswordResetService }     = require('./services/passwordReset');
-  const { buildTenantProvisioningService } = require('./services/tenantProvisioning');
+  const { buildInvitationService }            = require('./services/invitation');
+  const { buildPasswordResetService }         = require('./services/passwordReset');
+  const { buildIdentityNotificationOutbox }   = require('./services/identityNotificationOutbox');
+  const { buildTenantProvisioningService }    = require('./services/tenantProvisioning');
+
+  // Shared outbox — used by both invitation and password-reset services.
+  const identityNotificationOutbox = buildIdentityNotificationOutbox({ notificationRepo });
 
   // Invitation service repo: merge invitation-specific methods + identity helpers
   const invRepo = Object.assign({}, invitationRepo, {
@@ -435,14 +439,22 @@ try {
     insertUserRoleByCode:     (...a) => identityRepo.insertUserRoleByCode(...a),
     revokeAllRefreshTokensForUser: (...a) => tokensRepo.revokeAllRefreshTokensForUser(...a)
   });
-  invitationService = buildInvitationService({ repo: invRepo });
+  invitationService = buildInvitationService({
+    repo: invRepo,
+    identityNotificationOutbox,
+    withTenantFn: db.withTenant
+  });
 
   // Password-reset service repo: merge reset methods + identity/token helpers
   const resetRepo = Object.assign({}, passwordResetRepo, {
-    findUserByEmailGlobal:                  (...a) => identityRepo.findUserByEmailGlobal(...a),
-    revokeAllRefreshTokensForUser:          (...a) => tokensRepo.revokeAllRefreshTokensForUser(...a)
+    findUserByEmailGlobal:         (...a) => identityRepo.findUserByEmailGlobal(...a),
+    revokeAllRefreshTokensForUser: (...a) => tokensRepo.revokeAllRefreshTokensForUser(...a)
   });
-  passwordResetService = buildPasswordResetService({ repo: resetRepo });
+  passwordResetService = buildPasswordResetService({
+    repo: resetRepo,
+    identityNotificationOutbox,
+    withTenantFn: db.withTenant
+  });
 
   // Tenant provisioning: transactional via obsPool, invitation via invitationService
   if (obsPool) {

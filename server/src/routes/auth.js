@@ -321,16 +321,7 @@ function build(deps) {
         return res.status(501).json({ error: 'not_implemented', requestId: req.requestId });
       }
       const { email } = req.body || {};
-      const result = await passwordResetService.requestReset({ email });
-      // result.rawToken is available here for delivery — in a later phase this
-      // triggers a notification. For now we log that a reset was queued (no token logged).
-      if (result.queued && eventBus && makeAuthEvent) {
-        try {
-          await eventBus.publish(makeAuthEvent('auth.password_reset_requested', {
-            user_id: result.userId
-          }, req, { id: result.userId, tenant_id: null, primary_property_id: null }));
-        } catch (_) {}
-      }
+      await passwordResetService.requestReset({ email });
       res.status(200).json({ ok: true, requestId: req.requestId });
     } catch (err) { next(err); }
   });

@@ -104,6 +104,23 @@ const config = Object.freeze({
   // PAYMENT_PROVIDER: which payment provider to use. Default 'mock'.
   PAYMENT_HOLD_TTL_SECONDS: getOptional('PAYMENT_HOLD_TTL_SECONDS', '900'),
   PAYMENT_PROVIDER:         getOptional('PAYMENT_PROVIDER',          'mock'),
+  // Phase 58: transactional email delivery. SMTP and Resend are mutually exclusive;
+  // SMTP takes precedence when SMTP_HOST is set. Leave all empty to disable email
+  // (invitations and password resets still work — tokens are returned in API responses
+  // for CLI/admin use; the email send just becomes a no-op).
+  // APP_BASE_URL is the public SPA base URL embedded in email deep-links.
+  // QYRVIA_NOTIFICATION_ENCRYPTION_KEY: base64-encoded 32-byte AES-256-GCM key.
+  // Missing or wrong-length key fails closed in production.
+  QYRVIA_NOTIFICATION_ENCRYPTION_KEY: getOptional('QYRVIA_NOTIFICATION_ENCRYPTION_KEY', ''),
+  SMTP_HOST:      getOptional('SMTP_HOST',      ''),
+  SMTP_PORT:      parseInt(getOptional('SMTP_PORT', '587'), 10),
+  SMTP_SECURE:    getOptional('SMTP_SECURE',    'false'),
+  SMTP_USER:      getOptional('SMTP_USER',      ''),
+  SMTP_PASS:      getOptional('SMTP_PASS',      ''),
+  SMTP_FROM:      getOptional('SMTP_FROM',      ''),
+  RESEND_API_KEY: getOptional('RESEND_API_KEY', ''),
+  RESEND_FROM:    getOptional('RESEND_FROM',    ''),
+  APP_BASE_URL:   getOptional('APP_BASE_URL',   'http://localhost:3001'),
 });
 
 module.exports = config;

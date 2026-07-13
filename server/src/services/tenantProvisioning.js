@@ -125,7 +125,6 @@ function buildTenantProvisioningService({ pool, invitationService }) {
       propertyId,
       invitation: inviteResult.ok ? {
         invitationId: inviteResult.invitationId,
-        rawToken:     inviteResult.rawToken,
         email:        inviteResult.email,
         expiresAt:    inviteResult.expiresAt
       } : null,

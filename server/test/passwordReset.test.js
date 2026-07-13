@@ -1,21 +1,54 @@
 'use strict';
 
 /**
- * Phase 57 — Password reset service unit tests.
+ * Phase 57 / 58 — Password reset service unit tests.
  *
  * Uses in-memory stubs from _fixtures.js. No real DB required.
- * requestReset is enumeration-safe (always returns ok:true).
+ * requestReset is enumeration-safe (always returns { ok: true }).
  */
+
+// Must be set before any require that transitively loads config/env.js
+process.env.QYRVIA_NOTIFICATION_ENCRYPTION_KEY =
+  Buffer.alloc(32, 0x55).toString('base64');
+process.env.APP_BASE_URL = 'http://localhost:3001';
 
 const fx       = require('./_fixtures');
 const { test } = require('node:test');
 const assert   = require('node:assert/strict');
+const crypto   = require('node:crypto');
 
 const identity                      = require('../src/services/identity');
 const { buildPasswordResetService } = require('../src/services/passwordReset');
+const { buildIdentityNotificationOutbox } = require('../src/services/identityNotificationOutbox');
+
+// Minimal mock transaction helper that satisfies withTenantFn contract.
+// Executes the callback with a fake client that records itself for assertions.
+function makeMockWithTenant() {
+  let _lastClient = null;
+  async function withTenantFn(_tenantId, cb) {
+    _lastClient = { _id: 'mock-client', query: async () => ({ rows: [] }) };
+    return cb(_lastClient);
+  }
+  withTenantFn.getLastClient = () => _lastClient;
+  return withTenantFn;
+}
+
+// Builds a token-capturing outbox backed by the fixture notificationRepo.
+function makeOutbox(notificationRepo) {
+  let _capturedRawToken = null;
+  const outbox = buildIdentityNotificationOutbox({ notificationRepo });
+  const capturingOutbox = {
+    enqueuePasswordResetNotification: async (data, client) => {
+      _capturedRawToken = data.rawToken;
+      return outbox.enqueuePasswordResetNotification(data, client);
+    }
+  };
+  capturingOutbox.getCapturedToken = () => _capturedRawToken;
+  return capturingOutbox;
+}
 
 async function makeServiceWithUser({ status = 'ACTIVE' } = {}) {
-  const repos       = fx.makeFakeRepos();
+  const repos        = fx.makeFakeRepos();
   const passwordHash = await identity.hashPassword('OldPass1!');
   repos.identityRepo._seedUser(
     {
@@ -25,95 +58,104 @@ async function makeServiceWithUser({ status = 'ACTIVE' } = {}) {
     },
     [], []
   );
-  const svc = buildPasswordResetService({ repo: repos.passwordResetRepo });
-  return { svc, repos };
+
+  const withTenantFn  = makeMockWithTenant();
+  const capturingOutbox = makeOutbox(repos.notificationRepo);
+  const svc = buildPasswordResetService({
+    repo: repos.passwordResetRepo,
+    identityNotificationOutbox: capturingOutbox,
+    withTenantFn
+  });
+  return { svc, repos, withTenantFn, outbox: capturingOutbox };
 }
 
 // ── requestReset ──────────────────────────────────────────────────────────────
 
-test('requestReset: found active user returns ok:true, queued:true, rawToken', async () => {
+test('requestReset: found active user returns exactly { ok: true }', async () => {
   const { svc } = await makeServiceWithUser();
   const result = await svc.requestReset({ email: 'bob@example.com' });
-  assert.equal(result.ok, true);
-  assert.equal(result.queued, true);
-  assert.ok(typeof result.rawToken === 'string' && result.rawToken.length === 64);
-  assert.ok(result.userId);
+  assert.deepEqual(result, { ok: true });
 });
 
-test('requestReset: unknown email returns ok:true, queued:false (enumeration-safe)', async () => {
+test('requestReset: result contains no rawToken, queued, userId, email, or expiresAt', async () => {
+  const { svc } = await makeServiceWithUser();
+  const result = await svc.requestReset({ email: 'bob@example.com' });
+  assert.equal(result.rawToken,    undefined);
+  assert.equal(result.queued,      undefined);
+  assert.equal(result.userId,      undefined);
+  assert.equal(result.email,       undefined);
+  assert.equal(result.expiresAt,   undefined);
+});
+
+test('requestReset: unknown email returns exactly { ok: true }', async () => {
   const { svc } = await makeServiceWithUser();
   const result = await svc.requestReset({ email: 'ghost@example.com' });
-  assert.equal(result.ok, true);
-  assert.equal(result.queued, false);
-  assert.equal(result.rawToken, undefined);
+  assert.deepEqual(result, { ok: true });
 });
 
-test('requestReset: invalid email format returns ok:true, queued:false', async () => {
+test('requestReset: invalid email format returns exactly { ok: true }', async () => {
   const { svc } = await makeServiceWithUser();
   const result = await svc.requestReset({ email: 'not-an-email' });
-  assert.equal(result.ok, true);
-  assert.equal(result.queued, false);
+  assert.deepEqual(result, { ok: true });
 });
 
-test('requestReset: empty email returns ok:true, queued:false', async () => {
+test('requestReset: empty email returns exactly { ok: true }', async () => {
   const { svc } = await makeServiceWithUser();
   const result = await svc.requestReset({ email: '' });
-  assert.equal(result.ok, true);
-  assert.equal(result.queued, false);
+  assert.deepEqual(result, { ok: true });
 });
 
-test('requestReset: DISABLED user returns ok:true, queued:false (enumeration-safe)', async () => {
+test('requestReset: DISABLED user returns exactly { ok: true }', async () => {
   const { svc } = await makeServiceWithUser({ status: 'DISABLED' });
   const result = await svc.requestReset({ email: 'bob@example.com' });
-  assert.equal(result.ok, true);
-  assert.equal(result.queued, false);
+  assert.deepEqual(result, { ok: true });
 });
 
-test('requestReset: TERMINATED user returns ok:true, queued:false', async () => {
+test('requestReset: TERMINATED user returns exactly { ok: true }', async () => {
   const { svc } = await makeServiceWithUser({ status: 'TERMINATED' });
   const result = await svc.requestReset({ email: 'bob@example.com' });
-  assert.equal(result.ok, true);
-  assert.equal(result.queued, false);
+  assert.deepEqual(result, { ok: true });
 });
 
 test('requestReset: case-insensitive email lookup', async () => {
   const { svc } = await makeServiceWithUser();
   const result = await svc.requestReset({ email: 'BOB@EXAMPLE.COM' });
-  assert.equal(result.ok, true);
-  assert.equal(result.queued, true);
+  assert.deepEqual(result, { ok: true });
 });
 
 test('requestReset: previous pending token is revoked before new one issued', async () => {
   const { svc, repos } = await makeServiceWithUser();
-  const first  = await svc.requestReset({ email: 'bob@example.com' });
-  const second = await svc.requestReset({ email: 'bob@example.com' });
-  assert.equal(second.queued, true);
+  await svc.requestReset({ email: 'bob@example.com' });
+  await svc.requestReset({ email: 'bob@example.com' });
 
-  // Find first token in store and verify it was revoked
-  for (const t of repos.passwordResetRepo._resetTokens.values()) {
-    if (t.token_hash !== require('node:crypto').createHash('sha256').update(second.rawToken).digest('hex')) {
-      assert.equal(t.status, 'revoked', 'prior token must be revoked');
-    }
-  }
-  void first; // used above
+  const tokens = Array.from(repos.passwordResetRepo._resetTokens.values());
+  assert.equal(tokens.length, 2);
+  // First token inserted (rst_1) must be revoked; second (rst_2) must be pending.
+  assert.equal(tokens[0].status, 'revoked');
+  assert.equal(tokens[1].status, 'pending');
 });
 
 // ── completeReset ─────────────────────────────────────────────────────────────
 
+// Helper: request a reset and capture the raw token via the outbox.
+async function requestAndCaptureToken(svc, outbox) {
+  await svc.requestReset({ email: 'bob@example.com' });
+  return outbox.getCapturedToken();
+}
+
 test('completeReset: valid token resets password and marks token used', async () => {
-  const { svc, repos } = await makeServiceWithUser();
-  const req = await svc.requestReset({ email: 'bob@example.com' });
-  const result = await svc.completeReset({ token: req.rawToken, newPassword: 'NewPass1!XY' });
+  const { svc, repos, outbox } = await makeServiceWithUser();
+  const rawToken = await requestAndCaptureToken(svc, outbox);
+  assert.ok(rawToken, 'rawToken must be captured from outbox');
+
+  const result = await svc.completeReset({ token: rawToken, newPassword: 'NewPass1!XY' });
   assert.equal(result.ok, true);
 
-  // Token must be marked used
   const tok = Array.from(repos.passwordResetRepo._resetTokens.values())[0];
   assert.equal(tok.status, 'used');
 
-  // Refresh tokens must be revoked
-  // (stub updateUserPassword updates the user's password_hash in identityRepo._users)
   const user = repos.identityRepo._users.get(fx.USER_ID);
-  assert.ok(user.password_hash !== (await identity.hashPassword('OldPass1!')), 'password_hash must change');
+  assert.ok(user.password_hash !== (await identity.hashPassword('OldPass1!')), 'password must change');
 });
 
 test('completeReset: missing token returns missing_fields', async () => {
@@ -131,9 +173,9 @@ test('completeReset: missing newPassword returns missing_fields', async () => {
 });
 
 test('completeReset: password too short returns password_too_short', async () => {
-  const { svc } = await makeServiceWithUser();
-  const req = await svc.requestReset({ email: 'bob@example.com' });
-  const result = await svc.completeReset({ token: req.rawToken, newPassword: 'short' });
+  const { svc, outbox } = await makeServiceWithUser();
+  const rawToken = await requestAndCaptureToken(svc, outbox);
+  const result = await svc.completeReset({ token: rawToken, newPassword: 'short' });
   assert.equal(result.ok, false);
   assert.equal(result.error, 'password_too_short');
 });
@@ -146,37 +188,35 @@ test('completeReset: invalid token returns reset_token_invalid', async () => {
 });
 
 test('completeReset: already-used token returns reset_token_used', async () => {
-  const { svc } = await makeServiceWithUser();
-  const req = await svc.requestReset({ email: 'bob@example.com' });
-  await svc.completeReset({ token: req.rawToken, newPassword: 'NewPass1!' });
-  const again = await svc.completeReset({ token: req.rawToken, newPassword: 'AnotherPass1!' });
+  const { svc, outbox } = await makeServiceWithUser();
+  const rawToken = await requestAndCaptureToken(svc, outbox);
+  await svc.completeReset({ token: rawToken, newPassword: 'NewPass1!' });
+  const again = await svc.completeReset({ token: rawToken, newPassword: 'AnotherPass1!' });
   assert.equal(again.ok, false);
   assert.equal(again.error, 'reset_token_used');
 });
 
 test('completeReset: expired token returns reset_token_expired', async () => {
-  const { svc, repos } = await makeServiceWithUser();
-  const req = await svc.requestReset({ email: 'bob@example.com' });
+  const { svc, repos, outbox } = await makeServiceWithUser();
+  const rawToken = await requestAndCaptureToken(svc, outbox);
 
-  // Manually expire the token in the store
   for (const t of repos.passwordResetRepo._resetTokens.values()) {
     t.expires_at = new Date(Date.now() - 1000).toISOString();
   }
 
-  const result = await svc.completeReset({ token: req.rawToken, newPassword: 'NewPass1!' });
+  const result = await svc.completeReset({ token: rawToken, newPassword: 'NewPass1!' });
   assert.equal(result.ok, false);
   assert.equal(result.error, 'reset_token_expired');
 });
 
 test('completeReset: successful reset revokes all refresh tokens for user', async () => {
-  const { svc, repos } = await makeServiceWithUser();
-  // Seed a refresh token
+  const { svc, repos, outbox } = await makeServiceWithUser();
   const rt = await repos.tokensRepo.insertRefreshToken({
     user_id: fx.USER_ID, tenant_id: fx.TENANT_A,
     token_hash: 'rt-hash-1', family: 'fam1', revoked_at: null
   });
-  const req = await svc.requestReset({ email: 'bob@example.com' });
-  await svc.completeReset({ token: req.rawToken, newPassword: 'NewPass1!' });
+  const rawToken = await requestAndCaptureToken(svc, outbox);
+  await svc.completeReset({ token: rawToken, newPassword: 'NewPass1!' });
 
   const storedRt = repos.tokensRepo._refreshTokens.get(rt.token_hash);
   assert.ok(storedRt.revoked_at, 'refresh token must be revoked after password reset');

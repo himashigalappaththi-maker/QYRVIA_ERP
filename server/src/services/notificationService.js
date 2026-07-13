@@ -7,22 +7,71 @@
  *     -> { id, status }
  *   findById(id, ctx) -> notification + delivery_log array
  *   list(ctx, { status?, limit? })
- *   sendPending({ limit })  -- pulls pending notifications, attempts delivery via the
- *                              registered provider for the channel. With no provider
- *                              registered, marks as not_configured and records the
- *                              attempt in notification_delivery_log.
+ *   sendPending({ workerId?, limit?, leaseMinutes?, client })
+ *     -> { claimed, delivered, retried, failed, skipped }
+ *   registerProvider(channel, adapter)
  *
- *   registerProvider(channel, adapter) -- future hooks for SMTP/Twilio/Meta etc.
- *
- * Phase 3: no real provider integrations. Every send attempt logs a row.
- *
- * Audit: each requestNotification publishes 'notification.requested'; each
- * delivery attempt publishes 'notification.delivery_attempted'.
+ * Phase 58: sendPending uses explicit retry repo methods — explicit client required,
+ * attempt_count incremented exactly once (in beginNotificationAttempt), ownership
+ * checked on every transition, per-notification errors isolated so the batch continues.
  */
+
+const os = require('node:os');
 
 const { makeEvent } = require('../core/event');
 const eventBus      = require('../core/eventBus');
 const logger        = require('../config/logger');
+
+// ── Error classification ──────────────────────────────────────────────────────
+
+const RETRYABLE_SYSCODES = new Set([
+  'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_BODY_TIMEOUT',
+]);
+const RETRYABLE_HTTP_STATUS = new Set([429, 500, 502, 503, 504]);
+const RETRYABLE_CODES = new Set([
+  'timeout', 'smtp_timeout', 'connect_timeout', 'read_timeout',
+  'connection_reset', 'connection_refused',
+  'rate_limited', 'too_many_requests',
+  'temporary_outage', 'server_error', 'service_unavailable',
+  'bad_gateway', 'gateway_timeout',
+]);
+const PERMANENT_CODES = new Set([
+  'invalid_recipient', 'invalid_address', 'malformed_request', 'unsupported_type',
+  'expired_token', 'crypto_failure',
+  'permanent_bounce', 'hard_bounce', 'account_suspended', 'domain_not_found',
+]);
+
+function _classifyThrownError(err) {
+  const code   = (err.code   || '').toUpperCase();
+  const lcode  = (err.code   || '').toLowerCase();
+  const status = Number(err.status || err.statusCode || 0);
+
+  if (RETRYABLE_SYSCODES.has(code))           return 'retryable';
+  if (RETRYABLE_HTTP_STATUS.has(status))       return 'retryable';
+  if (RETRYABLE_CODES.has(lcode))              return 'retryable';
+  if (PERMANENT_CODES.has(lcode))              return 'permanent';
+  return 'retryable'; // unknown thrown exceptions default to retryable (usually transient infra)
+}
+
+function _classifyProviderResult(result) {
+  const errCode = ((result && result.error) || '').toLowerCase();
+  if (PERMANENT_CODES.has(errCode)) return 'permanent';
+  if (RETRYABLE_CODES.has(errCode)) return 'retryable';
+  return 'permanent'; // explicit provider rejection without recognised code → permanent
+}
+
+// ── Backoff schedule ──────────────────────────────────────────────────────────
+// attempt 1 → +5 min, attempt 2 → +30 min, attempt 3+ → +120 min (max)
+
+const BACKOFF_MS = [5 * 60_000, 30 * 60_000, 120 * 60_000];
+
+function _nextAttemptAt(attemptCount) {
+  const idx = Math.max(0, Math.min(attemptCount - 1, BACKOFF_MS.length - 1));
+  return new Date(Date.now() + BACKOFF_MS[idx]).toISOString();
+}
+
+// ── Template rendering ────────────────────────────────────────────────────────
 
 function renderTemplate(tpl, context) {
   if (!tpl) return '';
@@ -34,20 +83,30 @@ function renderTemplate(tpl, context) {
   });
 }
 
-function buildNotificationService({ repo }) {
+// ── Service factory ───────────────────────────────────────────────────────────
+
+function buildNotificationService({ repo, workerId: injectedWorkerId } = {}) {
   if (!repo) throw new Error('buildNotificationService: repo required');
+
+  // Stable process-level worker identity. Not derived from tenant, recipient, or secrets.
+  const _workerId = injectedWorkerId || (os.hostname() + ':' + process.pid);
+
   const providers = new Map();
 
   function registerProvider(channel, adapter) {
     providers.set(channel, adapter);
   }
 
-  async function requestNotification({ channel, recipient, templateCode, subject, body, context }, ctx) {
+  async function requestNotification({ channel, recipient, templateCode, subject, body, context }, ctx, client) {
+    if (!client || typeof client.query !== 'function') {
+      const err = new Error('Notification client required');
+      err.code = 'NOTIFICATION_CLIENT_REQUIRED';
+      throw err;
+    }
     if (!ctx || !ctx.tenantId) return { ok: false, error: 'tenant_required' };
     if (!channel || !recipient) return { ok: false, error: 'missing_fields' };
-    if (!['email','sms','whatsapp','in_app'].includes(channel)) return { ok: false, error: 'invalid_channel' };
+    if (!['email', 'sms', 'whatsapp', 'in_app'].includes(channel)) return { ok: false, error: 'invalid_channel' };
 
-    // Resolve template if specified - tenant-scoped
     let resolvedSubject = subject || null;
     let resolvedBody    = body    || '';
     if (templateCode) {
@@ -58,7 +117,7 @@ function buildNotificationService({ repo }) {
     }
     if (!resolvedBody) return { ok: false, error: 'empty_body' };
 
-    const row = await repo.insertNotification({
+    const result = await repo.insertNotification({
       tenant_id:     ctx.tenantId,
       property_id:   ctx.propertyId || null,
       channel,
@@ -69,17 +128,23 @@ function buildNotificationService({ repo }) {
       context:       context || {},
       requested_by:  ctx.actorId || null,
       status:        'pending'
-    });
+    }, client);
 
-    try {
-      await eventBus.publish(makeEvent({
-        type:          'notification.requested',
-        aggregateType: 'notification',
-        aggregateId:   row.id,
-        payload:       { channel, recipient, template_code: templateCode || null },
-        ctx
-      }));
-    } catch (e) { logger.error({ err: e }, '[notif] audit publish failed'); }
+    const row     = result.row;
+    const created = result.created;
+
+    if (created) {
+      try {
+        await eventBus.publish(makeEvent({
+          type:          'notification.requested',
+          aggregateType: 'notification',
+          aggregateId:   row.id,
+          // recipient excluded — audit events must not carry PII
+          payload:       { channel, template_code: templateCode || null },
+          ctx
+        }));
+      } catch (e) { logger.error({ notificationId: row.id }, '[notif] audit publish failed'); }
+    }
 
     return { ok: true, id: row.id, status: row.status };
   }
@@ -95,69 +160,231 @@ function buildNotificationService({ repo }) {
   }
 
   /**
-   * Pull pending notifications, attempt delivery via channel provider.
-   * No real providers registered in Phase 3 -> marks as not_configured.
-   * Always persists a row in notification_delivery_log.
+   * Phase 58 retry worker. Claims pending notifications and attempts delivery.
+   *
+   * @param {object} opts
+   * @param {string}  [opts.workerId]        Stable worker identity; defaults to hostname:pid.
+   * @param {number}  [opts.limit=25]        Max notifications to claim per run.
+   * @param {number}  [opts.leaseMinutes=10] Stale-lease recovery threshold.
+   * @param {object}  opts.client            Tenant-scoped DB client (required).
+   *
+   * @returns {{ claimed, delivered, retried, failed, skipped }}
    */
-  async function sendPending({ limit = 25 } = {}) {
-    const pending = await repo.claimPendingNotifications({ limit });
-    let attempted = 0, delivered = 0, failed = 0, notConfigured = 0;
-    for (const n of pending) {
-      attempted++;
-      const provider = providers.get(n.channel);
-      const ctx = { tenantId: n.tenant_id, propertyId: n.property_id, requestId: 'send-' + n.id, actorId: null };
-      const nextAttempt = (await repo.nextAttemptNo(n.id));
-      if (!provider) {
-        await repo.markNotificationStatus(n.id, 'not_configured');
-        await repo.insertDeliveryLog({
-          notification_id: n.id, tenant_id: n.tenant_id,
-          attempt_no: nextAttempt, status: 'not_configured',
-          provider: null, error: 'no_provider_registered'
-        });
-        try {
-          await eventBus.publish(makeEvent({
-            type:          'notification.delivery_attempted',
-            aggregateType: 'notification',
-            aggregateId:   n.id,
-            payload:       { status: 'not_configured', channel: n.channel },
-            ctx
-          }));
-        } catch (_) {}
-        notConfigured++;
-        continue;
-      }
+  async function sendPending({ workerId: callerWorkerId, limit = 25, leaseMinutes = 10, client } = {}) {
+    if (!client) throw Object.assign(
+      new Error('sendPending: tenant-scoped DB client required'),
+      { code: 'NOTIFICATION_CLIENT_REQUIRED' }
+    );
+    const workerId = callerWorkerId || _workerId;
+
+    const claimed  = await repo.claimPendingNotifications({ workerId, limit, leaseMinutes }, client);
+    const summary  = { claimed: claimed.length, delivered: 0, retried: 0, failed: 0, skipped: 0 };
+
+    for (const n of claimed) {
       try {
-        const r = await provider.send({ recipient: n.recipient, subject: n.subject, body: n.body, context: n.context });
-        const status = r && r.ok ? 'delivered' : 'failed';
-        await repo.markNotificationStatus(n.id, status);
-        await repo.insertDeliveryLog({
-          notification_id: n.id, tenant_id: n.tenant_id,
-          attempt_no: nextAttempt, status,
-          provider: (r && r.provider) || null,
-          provider_ref: (r && r.provider_ref) || null,
-          error: (r && r.error) || null
-        });
-        try {
-          await eventBus.publish(makeEvent({
-            type:          'notification.delivery_attempted',
-            aggregateType: 'notification',
-            aggregateId:   n.id,
-            payload:       { status, channel: n.channel },
-            ctx
-          }));
-        } catch (_) {}
-        if (status === 'delivered') delivered++; else failed++;
+        await _processOne(n, workerId, client, summary);
       } catch (err) {
-        await repo.markNotificationStatus(n.id, 'failed');
-        await repo.insertDeliveryLog({
-          notification_id: n.id, tenant_id: n.tenant_id,
-          attempt_no: nextAttempt, status: 'failed',
-          provider: null, error: String(err.message || err)
-        });
-        failed++;
+        // Per-notification unexpected error — log bounded fields only, continue the batch.
+        logger.warn({
+          notificationId: n.id,
+          channel:        n.channel,
+          workerId,
+          errCode:        err.code || 'UNEXPECTED',
+        }, '[notif] unhandled error processing notification');
+        summary.skipped++;
       }
     }
-    return { attempted, delivered, failed, notConfigured };
+
+    return summary;
+  }
+
+  async function _processOne(n, workerId, client, summary) {
+    // Derive one stable idempotency key from the notification ID — not from recipient or content.
+    const idempotencyKey = 'qyrvia-notification:' + n.id;
+
+    // Increment attempt_count exactly once before any real provider call.
+    const begun = await repo.beginNotificationAttempt(n.id, workerId, idempotencyKey, client);
+    if (!begun) {
+      // Lost ownership (reclaimed by another worker) or idempotency key conflict.
+      logger.warn({ notificationId: n.id, workerId }, '[notif] lost ownership before send');
+      summary.skipped++;
+      return;
+    }
+
+    const expectedAttemptCount = begun.attempt_count;
+    const provider             = providers.get(n.channel);
+
+    if (!provider) {
+      // No provider configured — permanent terminal failure. Never silently succeed.
+      logger.info({
+        notificationId: n.id,
+        channel:        n.channel,
+        attemptNo:      expectedAttemptCount,
+        workerId,
+        failureClass:   'permanent',
+      }, '[notif] no provider configured');
+
+      await repo.markNotificationFailed(n.id, workerId, expectedAttemptCount, 'permanent', client);
+      await repo.insertDeliveryLog({
+        notification_id: n.id,
+        tenant_id:       n.tenant_id,
+        attempt_no:      expectedAttemptCount,
+        status:          'not_configured',
+        provider:        null,
+        error_code:      'no_provider_registered',
+      });
+      _fireDeliveryAudit(n, 'not_configured');
+      summary.failed++;
+      return;
+    }
+
+    // Execute provider send. Plaintext fields live only in local scope for this call.
+    let sendResult = null;
+    let thrownClass = null;
+    let thrownCode  = null;
+    try {
+      sendResult = await provider.send({
+        recipient: n.recipient,
+        subject:   n.subject,
+        body:      n.body,
+        context:   n.context,
+      });
+    } catch (err) {
+      thrownClass = _classifyThrownError(err);
+      thrownCode  = err.code ? String(err.code).slice(0, 60) : 'PROVIDER_EXCEPTION';
+    }
+    // Clear local plaintext references as early as possible.
+    // (sendResult may still hold a provider reference — cleared after use below.)
+
+    if (!thrownClass && sendResult && sendResult.ok) {
+      // ── Success ──────────────────────────────────────────────────────────
+      const providerRef = sendResult.provider_ref || sendResult.message_id || null;
+      const msgId       = providerRef ? String(providerRef).slice(0, 255) : null;
+      sendResult = null; // clear immediately
+
+      const delivered = await repo.markNotificationDelivered(
+        n.id, workerId, expectedAttemptCount, msgId, client
+      );
+      if (!delivered) {
+        // Transition returned null — another worker already owns this row.
+        logger.warn({ notificationId: n.id, workerId, attemptNo: expectedAttemptCount }, '[notif] delivery lost ownership');
+        summary.skipped++;
+        return;
+      }
+
+      await repo.insertDeliveryLog({
+        notification_id: n.id,
+        tenant_id:       n.tenant_id,
+        attempt_no:      expectedAttemptCount,
+        status:          'delivered',
+        provider:        n.channel,
+        provider_ref:    msgId,
+      });
+      logger.info({
+        notificationId: n.id,
+        channel:        n.channel,
+        attemptNo:      expectedAttemptCount,
+        workerId,
+        providerRef:    msgId,
+      }, '[notif] delivered');
+      _fireDeliveryAudit(n, 'delivered');
+      summary.delivered++;
+      return;
+    }
+
+    // ── Failure — classify and decide retry vs terminal ───────────────────
+    let errClass, errCode;
+    if (thrownClass) {
+      errClass = thrownClass;
+      errCode  = thrownCode;
+    } else {
+      errClass = _classifyProviderResult(sendResult);
+      errCode  = sendResult && sendResult.error ? String(sendResult.error).slice(0, 60) : 'provider_rejected';
+    }
+    sendResult = null; // clear provider response — never persisted
+
+    const canRetry = errClass !== 'permanent' && begun.attempt_count < begun.max_attempts;
+
+    if (canRetry) {
+      const nextAttemptAt = _nextAttemptAt(expectedAttemptCount);
+      const retried = await repo.markNotificationRetry(
+        n.id, workerId, expectedAttemptCount, nextAttemptAt, client
+      );
+      if (!retried) { summary.skipped++; return; } // lost ownership
+
+      await repo.insertDeliveryLog({
+        notification_id: n.id,
+        tenant_id:       n.tenant_id,
+        attempt_no:      expectedAttemptCount,
+        status:          'failed',
+        provider:        n.channel,
+        error_code:      errCode,
+        retryable:       true,
+      });
+      logger.info({
+        notificationId: n.id,
+        channel:        n.channel,
+        attemptNo:      expectedAttemptCount,
+        workerId,
+        retryable:      true,
+        errCode,
+        nextAttemptAt,
+      }, '[notif] retrying');
+      summary.retried++;
+    } else {
+      const failureClass = errClass === 'permanent' ? 'permanent' : 'exhausted';
+      const failed = await repo.markNotificationFailed(
+        n.id, workerId, expectedAttemptCount, failureClass, client
+      );
+      if (!failed) { summary.skipped++; return; } // lost ownership
+
+      await repo.insertDeliveryLog({
+        notification_id: n.id,
+        tenant_id:       n.tenant_id,
+        attempt_no:      expectedAttemptCount,
+        status:          'failed',
+        provider:        n.channel,
+        error_code:      errCode,
+        retryable:       false,
+      });
+      logger.info({
+        notificationId: n.id,
+        channel:        n.channel,
+        attemptNo:      expectedAttemptCount,
+        workerId,
+        retryable:      false,
+        failureClass,
+        errCode,
+      }, '[notif] terminal failure');
+      _fireDeliveryAudit(n, 'failed');
+      summary.failed++;
+    }
+  }
+
+  function _fireDeliveryAudit(n, status) {
+    // Fire-and-forget — audit failure must never block the retry loop or affect
+    // the summary counters. Wraps both synchronous throws and non-Promise returns.
+    try {
+      const ctx = { tenantId: n.tenant_id, propertyId: n.property_id || null, requestId: null, actorId: null };
+      const p = eventBus.publish(makeEvent({
+        type:          'notification.delivery_attempted',
+        aggregateType: 'notification',
+        aggregateId:   n.id,
+        payload:       { status, channel: n.channel },
+        ctx,
+      }));
+      if (p && typeof p.catch === 'function') {
+        p.catch((e) => {
+          logger.warn({ notificationId: n.id, tenantId: n.tenant_id, event: 'notification.delivery_attempted',
+                        errCode: e && e.code, errMsg: e && e.message },
+            '[notif] delivery-audit publish failed');
+        });
+      }
+    } catch (e) {
+      logger.warn({ notificationId: n.id, tenantId: n.tenant_id, event: 'notification.delivery_attempted',
+                    errCode: e && e.code, errMsg: e && e.message },
+        '[notif] delivery-audit publish failed');
+    }
   }
 
   return { requestNotification, findById, list, sendPending, registerProvider, _renderTemplate: renderTemplate };

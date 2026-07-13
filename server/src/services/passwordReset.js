@@ -12,56 +12,88 @@ function generateResetToken() {
 }
 
 /**
- * buildPasswordResetService({ repo })
+ * buildPasswordResetService({ repo, identityNotificationOutbox, withTenantFn })
  *
  * repo contract:
  *   findUserByEmailGlobal(email) => row | null
- *   insertPasswordResetToken({ user_id, tenant_id, token_hash, expires_at }) => row
+ *   revokeActivePasswordResetTokensForUser(userId, client) => void
+ *   insertPasswordResetToken(rec, client) => row
  *   findPasswordResetToken(tokenHash) => row | null
  *   markPasswordResetTokenUsed(id) => void
  *   updateUserPassword(userId, passwordHash) => void
  *   revokeAllRefreshTokensForUser(userId) => void
- *   revokeActivePasswordResetTokensForUser(userId) => void  (optional)
+ *
+ * identityNotificationOutbox.enqueuePasswordResetNotification(data, client)
+ * withTenantFn: established tenant-scoped transaction helper (BEGIN/COMMIT/ROLLBACK)
  */
-function buildPasswordResetService({ repo }) {
+function buildPasswordResetService({ repo, identityNotificationOutbox, withTenantFn }) {
+  if (
+    !identityNotificationOutbox ||
+    typeof identityNotificationOutbox.enqueuePasswordResetNotification !== 'function'
+  ) {
+    const err = new Error('identityNotificationOutbox with enqueuePasswordResetNotification required');
+    err.code = 'OUTBOX_REQUIRED';
+    throw err;
+  }
+  if (typeof withTenantFn !== 'function') {
+    const err = new Error('withTenantFn required');
+    err.code = 'WITH_TENANT_REQUIRED';
+    throw err;
+  }
 
   /**
    * Request a password reset.
-   * ALWAYS returns { ok: true } to prevent email enumeration.
-   * rawToken is returned only when a matching user is found — caller queues
-   * it for delivery and must never log it.
+   * ALWAYS returns { ok: true } — prevents email enumeration.
+   * For a known active identity, revocation + token insertion + notification
+   * enqueue are all committed atomically inside one tenant-scoped transaction.
    */
   async function requestReset({ email }) {
-    if (!email) return { ok: true, queued: false };
+    if (!email) return { ok: true };
     const normalizedEmail = String(email).trim().toLowerCase();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(normalizedEmail)) {
-      return { ok: true, queued: false };
+      return { ok: true };
     }
 
     const user = typeof repo.findUserByEmailGlobal === 'function'
       ? await repo.findUserByEmailGlobal(normalizedEmail)
       : null;
 
-    if (!user) return { ok: true, queued: false };
+    if (!user) return { ok: true };
 
     if (user.status === 'DISABLED' || user.status === 'TERMINATED') {
-      return { ok: true, queued: false };
-    }
-
-    if (typeof repo.revokeActivePasswordResetTokensForUser === 'function') {
-      await repo.revokeActivePasswordResetTokensForUser(user.id);
+      return { ok: true };
     }
 
     const { raw, hash } = generateResetToken();
-    const expiresAt = new Date(Date.now() + RESET_TOKEN_EXPIRY_MS);
-    await repo.insertPasswordResetToken({
-      user_id:    user.id,
-      tenant_id:  user.tenant_id,
-      token_hash: hash,
-      expires_at: expiresAt
+    const calculatedExpiresAt = new Date(Date.now() + RESET_TOKEN_EXPIRY_MS);
+
+    await withTenantFn(user.tenant_id, async (client) => {
+      await repo.revokeActivePasswordResetTokensForUser(user.id, client);
+
+      const insertedRec = await repo.insertPasswordResetToken({
+        user_id:    user.id,
+        tenant_id:  user.tenant_id,
+        token_hash: hash,
+        expires_at: calculatedExpiresAt
+      }, client);
+
+      if (!insertedRec || !insertedRec.id) {
+        const err = new Error('Password reset record creation failed');
+        err.code = 'PASSWORD_RESET_RECORD_MISSING';
+        throw err;
+      }
+
+      await identityNotificationOutbox.enqueuePasswordResetNotification({
+        tenantId:      user.tenant_id,
+        identityId:    user.id,
+        resetRecordId: String(insertedRec.id),
+        email:         user.email,
+        rawToken:      raw,
+        expiresAt:     insertedRec.expires_at || calculatedExpiresAt
+      }, client);
     });
 
-    return { ok: true, queued: true, userId: user.id, rawToken: raw, email: normalizedEmail, expiresAt };
+    return { ok: true };
   }
 
   async function completeReset({ token, newPassword }) {

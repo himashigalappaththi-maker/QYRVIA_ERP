@@ -11,13 +11,18 @@
  *   - Invitation failure is non-fatal
  */
 
+process.env.QYRVIA_NOTIFICATION_ENCRYPTION_KEY =
+  Buffer.alloc(32, 0x42).toString('base64');
+process.env.APP_BASE_URL = 'http://localhost:3001';
+
 const fx       = require('./_fixtures');
 const { test } = require('node:test');
 const assert   = require('node:assert/strict');
 const crypto   = require('node:crypto');
 
-const { buildTenantProvisioningService } = require('../src/services/tenantProvisioning');
-const { buildInvitationService }         = require('../src/services/invitation');
+const { buildTenantProvisioningService }   = require('../src/services/tenantProvisioning');
+const { buildInvitationService }           = require('../src/services/invitation');
+const { buildIdentityNotificationOutbox }  = require('../src/services/identityNotificationOutbox');
 
 // ── Mock pool ─────────────────────────────────────────────────────────────────
 
@@ -70,8 +75,17 @@ function makeProvisioningService(pool, invitationService) {
 }
 
 function makeInvitationService() {
-  const repos = fx.makeFakeRepos();
-  return buildInvitationService({ repo: repos.invitationRepo });
+  const repos  = fx.makeFakeRepos();
+  const outbox = buildIdentityNotificationOutbox({ notificationRepo: repos.notificationRepo });
+  const withTenantFn = async (tenantId, cb) => {
+    const client = { tenantId, query: async () => ({ rows: [] }) };
+    return cb(client);
+  };
+  return buildInvitationService({
+    repo: repos.invitationRepo,
+    identityNotificationOutbox: outbox,
+    withTenantFn
+  });
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
@@ -150,14 +164,15 @@ test('provisionTenant: INSERT INTO tenants is called with companyCode uppercased
   assert.equal(tenantInsert.params[1], 'ACME'); // companyCode
 });
 
-test('provisionTenant: invitation is created and rawToken is returned', async () => {
+test('provisionTenant: invitation is created with invitationId and email (no rawToken)', async () => {
   const pool = makeMockPool();
   const svc  = makeProvisioningService(pool, makeInvitationService());
   const r    = await svc.provisionTenant(VALID_INPUT, CTX);
   assert.equal(r.ok, true);
   assert.ok(r.invitation, 'invitation should be present');
-  assert.ok(r.invitation.rawToken, 'rawToken should be in response');
+  assert.ok(r.invitation.invitationId, 'invitationId must be returned');
   assert.equal(r.invitation.email, 'owner@acme.com');
+  assert.equal(r.invitation.rawToken, undefined, 'rawToken must not be returned — token is in encrypted outbox only');
 });
 
 // ── Duplicate code ────────────────────────────────────────────────────────────
