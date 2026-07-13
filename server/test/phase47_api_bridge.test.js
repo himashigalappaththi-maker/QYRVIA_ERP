@@ -210,7 +210,7 @@ test('POST /api/pos/orders: agent creates Room Service order — returns 201 wit
   const { app, posOrderRepo } = makeApp();
   const { srv, url } = await fx.listen(app);
   try {
-    const tk = fx.issueTestToken({ roleCodes: ['agent'] });
+    const tk = fx.issueTestToken({ roleCodes: ['agent'], primaryPropertyId: fx.PROP_ID });
     const r  = await fx.fetchJson(url + '/api/pos/orders', {
       method: 'POST',
       headers: Object.assign({ 'Content-Type': 'application/json' }, fx.authHeader(tk)),
@@ -249,7 +249,7 @@ test('POST /api/pos/orders: admin creates any order type', async () => {
   const { app } = makeApp();
   const { srv, url } = await fx.listen(app);
   try {
-    const tk = fx.issueTestToken({ userId: ADMIN_ID, roleCodes: ['admin'] });
+    const tk = fx.issueTestToken({ userId: ADMIN_ID, roleCodes: ['admin'], primaryPropertyId: fx.PROP_ID });
     const r  = await fx.fetchJson(url + '/api/pos/orders', {
       method: 'POST',
       headers: Object.assign({ 'Content-Type': 'application/json' }, fx.authHeader(tk)),

@@ -24,7 +24,11 @@ const logger        = require('../config/logger');
  * @param {object} cmd      - the command record { name, aggregateType }
  * @param {object} input    - the command input payload
  * @param {object} ctx      - request context { tenantId, propertyId, requestId, actorId }
- * @param {Function} runHandler - async function returning { ok, result?, events?, error? }
+ * @param {Function} runHandler - async function returning
+ *   { ok, result?, events?, error?, entityType?, entityId? }. entityType/entityId
+ *   are optional and, when present, are copied onto the succeeded/failed/denied
+ *   audit event's payload (entity_type/entity_id) — existing callers that don't
+ *   set them are unaffected (fields are simply null).
  * @returns {Promise<object>} the runHandler outcome, unchanged
  */
 async function runWithAudit(cmd, input, ctx, runHandler) {
@@ -72,7 +76,9 @@ async function runWithAudit(cmd, input, ctx, runHandler) {
         command_name: cmd.name,
         actor_name:   ctx.actorName || null,
         error:        outcome.error || null,
-        detail:       outcome.detail || null
+        detail:       outcome.detail || null,
+        entity_type:  outcome.entityType || null,
+        entity_id:    outcome.entityId || null
       }
     }));
   } catch (err) {

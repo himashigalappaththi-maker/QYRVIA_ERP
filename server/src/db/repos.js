@@ -1954,6 +1954,303 @@ function buildRepos(pool) {
     }
   };
 
+  // ---- M1A: gate pass repo (Phase 46B contract, gate_passes table / 0053) ----
+  // Mirrors the in-memory fake used by server/test/phase47_api_bridge.test.js
+  // and server/test/phase46b_agent_rbac.test.js: list(ctx), create(rec, ctx),
+  // recordScan(id, body, ctx). Explicit tenant_id + property_id filtering on
+  // every query - RLS (0053) is defense-in-depth, not the sole guard.
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  const gatepasRepo = {
+    async list(ctx) {
+      const r = await pool.query(
+        `SELECT * FROM gate_passes
+          WHERE tenant_id = $1
+            AND ($2::uuid IS NULL OR property_id = $2)
+          ORDER BY created_at DESC`,
+        [ctx.tenantId, ctx.propertyId || null]
+      );
+      return r.rows;
+    },
+    async create(rec, ctx) {
+      const r = await pool.query(
+        `INSERT INTO gate_passes
+           (tenant_id, property_id, pass_no, type, name, movement,
+            reservation_id, created_by_user_id, purpose, status, valid_from)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         RETURNING *`,
+        [ctx.tenantId, rec.property_id || null, rec.pass_no, rec.type, rec.name,
+         rec.movement, rec.reservation_id || null, rec.created_by_user_id,
+         rec.purpose || null, rec.status, rec.valid_from]
+      );
+      return r.rows[0];
+    },
+    async recordScan(id, body, ctx) {
+      if (!UUID_RE.test(String(id || ''))) return null; // malformed id -> 404, not 500
+      const r = await pool.query(
+        `UPDATE gate_passes
+            SET scans = scans || jsonb_build_array(jsonb_build_object(
+                  'ts', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+                  'dir', $4::text, 'scanned_by', $5::text))
+          WHERE tenant_id = $1
+            AND ($2::uuid IS NULL OR property_id = $2)
+            AND id = $3
+          RETURNING *`,
+        [ctx.tenantId, ctx.propertyId || null, id, body.direction || 'IN', ctx.actorId]
+      );
+      return r.rows[0] || null;
+    }
+  };
+
+  // ---- M1A correction round: shared authorized-property resolution ---------
+  //
+  // Replaces the earlier "fall back to the tenant's arbitrary first property"
+  // behaviour, which let a POS order silently land on a property the caller
+  // was never granted access to. Resolution now uses ONLY real authorization
+  // data already established by Phase 6/31.5 (identityRepo.listAccessibleProperties
+  // / canAccessProperty) - never an unrestricted tenant-wide query:
+  //
+  //   - ctx.propertyId is already set (identityContext middleware resolved it
+  //     from the user's primary_property_id, or validated an X-Property-Id
+  //     header via canAccessProperty before ever reaching the route). We
+  //     re-verify authorization here too as defense-in-depth rather than
+  //     trusting the upstream layer blindly.
+  //   - ctx.propertyId is absent: resolve from the user's authorized-property
+  //     set. Exactly one authorized property -> auto-resolve to it (safe,
+  //     unambiguous). Zero authorized properties -> PROPERTY_ACCESS_DENIED
+  //     (403). More than one, with no active context to disambiguate ->
+  //     `requiredCode` (400; the caller must set an active property via
+  //     X-Property-Id before the mutation/read can proceed).
+  //
+  // `requiredCode` lets each domain surface a domain-specific 400 code
+  // (POS_PROPERTY_REQUIRED / PATROL_PROPERTY_REQUIRED) while sharing one
+  // authorization-resolution implementation.
+  async function _resolveAuthorizedPropertyId(ctx, requiredCode) {
+    if (ctx.propertyId) {
+      const ok = await identityRepo.canAccessProperty(ctx.actorId, ctx.propertyId);
+      if (!ok) {
+        throw Object.assign(
+          new Error('user is not authorized for the active property'),
+          { code: 'PROPERTY_ACCESS_DENIED' }
+        );
+      }
+      return ctx.propertyId;
+    }
+    const accessible = await identityRepo.listAccessibleProperties(ctx.actorId);
+    if (!accessible || accessible.length === 0) {
+      throw Object.assign(
+        new Error('user has no authorized property'),
+        { code: 'PROPERTY_ACCESS_DENIED' }
+      );
+    }
+    if (accessible.length > 1) {
+      throw Object.assign(
+        new Error('multiple authorized properties; an active property context is required'),
+        { code: requiredCode }
+      );
+    }
+    return accessible[0].id;
+  }
+
+  // ---- M1A: POS/KOT order repo (Phase 46B contract, pos_orders table / 0028 + 0054) --
+  //
+  // The pos_orders table (migration 0028) was built for a separate, fuller
+  // restaurant/KOT module: it requires outlet_id (NOT NULL FK), order_number
+  // (NOT NULL, UNIQUE per property), and a closed status enum ('OPEN','SENT',
+  // 'SERVED','PAID','VOIDED') - none of which the Phase 46B agent-facing
+  // pos.js route contract (type/table_ref/items/notes/status:'Pending')
+  // collects. Rather than altering that table's constraints (risking the
+  // separate restaurant/KOT feature) or forking a new table, this repo:
+  //   - stores the route's logical fields (type, table_ref, items, notes,
+  //     status) inside the existing `payload` JSONB column and reconstructs
+  //     them on read, so the HTTP response shape is byte-for-byte unchanged;
+  //   - auto-provisions one idempotent per-property "AGENT" outlet to satisfy
+  //     the outlet_id FK, and generates a unique order_number server-side;
+  //   - always persists the technical DB `status` as 'OPEN' (a valid enum
+  //     value) while the logical/contract status ('Pending') lives in payload.
+  // pos_orders.property_id is NOT NULL (unlike gate_passes), so this repo
+  // requires a resolved, AUTHORIZED property context - see
+  // _resolveAuthorizedPropertyId above - and throws a tagged error
+  // (POS_PROPERTY_REQUIRED / PROPERTY_ACCESS_DENIED) otherwise; the route
+  // translates those into 400 / 403, not a raw 500.
+  function _genOrderNumber() {
+    return 'AGT-' + Date.now().toString(36).toUpperCase() + '-' +
+      crypto.randomBytes(3).toString('hex').toUpperCase();
+  }
+  function _reshapePosOrder(row) {
+    if (!row) return null;
+    let payload = row.payload;
+    if (typeof payload === 'string') { try { payload = JSON.parse(payload); } catch (_) { payload = {}; } }
+    payload = payload || {};
+    return {
+      id: row.id,
+      tenant_id: row.tenant_id,
+      property_id: row.property_id,
+      type: payload.type || 'Room Service',
+      table_ref: payload.table_ref != null ? payload.table_ref : null,
+      items: Array.isArray(payload.items) ? payload.items : [],
+      notes: payload.notes != null ? payload.notes : null,
+      status: payload.status || 'Pending',
+      created_by_user_id: row.created_by_user_id || null,
+      created_at: row.opened_at
+    };
+  }
+  async function _ensureDefaultOutlet(tenantId, propertyId) {
+    const code = 'AGENT';
+    const ins = await pool.query(
+      `INSERT INTO restaurant_outlets (tenant_id, property_id, code, name, kind, active)
+       VALUES ($1,$2,$3,'Agent / Room Service Orders','ROOM_SERVICE',true)
+       ON CONFLICT (property_id, code) DO NOTHING
+       RETURNING id`,
+      [tenantId, propertyId, code]
+    );
+    if (ins.rows[0]) return ins.rows[0].id;
+    const sel = await pool.query(
+      `SELECT id FROM restaurant_outlets WHERE property_id = $1 AND code = $2 LIMIT 1`,
+      [propertyId, code]
+    );
+    return sel.rows[0].id;
+  }
+
+  const posOrderRepo = {
+    async list(ctx) {
+      const r = await pool.query(
+        `SELECT * FROM pos_orders
+          WHERE tenant_id = $1
+            AND ($2::uuid IS NULL OR property_id = $2)
+          ORDER BY opened_at DESC`,
+        [ctx.tenantId, ctx.propertyId || null]
+      );
+      return r.rows.map(_reshapePosOrder);
+    },
+    async create(rec, ctx) {
+      // Property is resolved from the AUTHENTICATED user's authorized-property
+      // set only - never from rec.property_id (client input) and never from an
+      // unrestricted tenant-wide query. See _resolveAuthorizedPropertyId.
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'POS_PROPERTY_REQUIRED');
+      const outletId = await _ensureDefaultOutlet(ctx.tenantId, propertyId);
+      const payload = {
+        type: rec.type || 'Room Service',
+        table_ref: rec.table_ref || null,
+        items: rec.items || [],
+        notes: rec.notes || null,
+        status: rec.status || 'Pending'
+      };
+      let lastErr;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const orderNumber = _genOrderNumber();
+        try {
+          const r = await pool.query(
+            `INSERT INTO pos_orders
+               (tenant_id, property_id, outlet_id, order_number, status,
+                created_by_user_id, payload)
+             VALUES ($1,$2,$3,$4,'OPEN'::pos_order_status,$5,$6)
+             RETURNING *`,
+            [ctx.tenantId, propertyId, outletId, orderNumber,
+             rec.created_by_user_id, JSON.stringify(payload)]
+          );
+          return _reshapePosOrder(r.rows[0]);
+        } catch (err) {
+          lastErr = err;
+          if (err && err.code === '23505') continue; // order_number collision - retry
+          throw err;
+        }
+      }
+      throw lastErr;
+    }
+  };
+
+  // ---- M1A: patrol repo (Phase 48 contract, patrol_points/patrol_logs / 0078) --
+  //
+  // Patrol points and logs are physical-property operational records
+  // (M1A correction round): property_id is NOT NULL on both tables (see
+  // migration 0078), and every read and mutation resolves and filters by an
+  // AUTHORIZED property via _resolveAuthorizedPropertyId - never a
+  // client-supplied or unrestricted tenant-wide value.
+  const patrolRepo = {
+    async listPoints(ctx) {
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'PATROL_PROPERTY_REQUIRED');
+      const r = await pool.query(
+        `SELECT * FROM patrol_points
+          WHERE tenant_id = $1 AND property_id = $2
+          ORDER BY name`,
+        [ctx.tenantId, propertyId]
+      );
+      return r.rows;
+    },
+    async createPoint(rec, ctx) {
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'PATROL_PROPERTY_REQUIRED');
+      const r = await pool.query(
+        `INSERT INTO patrol_points
+           (tenant_id, property_id, name, zone, lat, lng, active, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         RETURNING *`,
+        [ctx.tenantId, propertyId, rec.name, rec.zone,
+         rec.lat, rec.lng, rec.active !== false, rec.created_by || null]
+      );
+      return r.rows[0];
+    },
+    async togglePoint(id, ctx) {
+      if (!UUID_RE.test(String(id || ''))) return null;
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'PATROL_PROPERTY_REQUIRED');
+      const r = await pool.query(
+        `UPDATE patrol_points
+            SET active = NOT active, updated_at = now()
+          WHERE tenant_id = $1 AND property_id = $2 AND id = $3
+          RETURNING *`,
+        [ctx.tenantId, propertyId, id]
+      );
+      return r.rows[0] || null;
+    },
+    async listLogs(ctx) {
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'PATROL_PROPERTY_REQUIRED');
+      const r = await pool.query(
+        `SELECT * FROM patrol_logs
+          WHERE tenant_id = $1 AND property_id = $2
+          ORDER BY checked_at DESC`,
+        [ctx.tenantId, propertyId]
+      );
+      return r.rows;
+    },
+    async createLog(rec, ctx) {
+      if (!UUID_RE.test(String(rec.point_id || ''))) {
+        throw Object.assign(new Error('patrol point not found'), { code: 'PATROL_POINT_NOT_FOUND' });
+      }
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'PATROL_PROPERTY_REQUIRED');
+      try {
+        // INSERT ... SELECT ... WHERE EXISTS: the referenced point must belong
+        // to the SAME tenant AND SAME property as the log being created, in one
+        // atomic statement (no separate check-then-insert race). A point that
+        // exists but in a different property (or a different tenant, though RLS
+        // already makes those invisible) yields zero rows here, same as a
+        // point_id that doesn't exist at all - both surface as
+        // PATROL_POINT_NOT_FOUND to the caller, never a silent cross-property
+        // write.
+        const r = await pool.query(
+          `INSERT INTO patrol_logs
+             (tenant_id, property_id, point_id, officer_id, gps_lat, gps_lng, gps_acc, checked_at)
+           SELECT $1,$2,$3,$4,$5,$6,$7,$8
+            WHERE EXISTS (
+              SELECT 1 FROM patrol_points pp
+               WHERE pp.id = $3 AND pp.tenant_id = $1 AND pp.property_id = $2
+            )
+           RETURNING *`,
+          [ctx.tenantId, propertyId, rec.point_id, rec.officer_id,
+           rec.gps_lat, rec.gps_lng, rec.gps_acc, rec.checked_at]
+        );
+        if (!r.rows[0]) {
+          throw Object.assign(new Error('patrol point not found'), { code: 'PATROL_POINT_NOT_FOUND' });
+        }
+        return r.rows[0];
+      } catch (err) {
+        if (err && err.code === '23503') { // FK violation: point_id does not exist at all
+          throw Object.assign(new Error('patrol point not found'), { code: 'PATROL_POINT_NOT_FOUND' });
+        }
+        throw err;
+      }
+    }
+  };
+
   return {
     identityRepo, tokensRepo,
     settingsRepo, fileRepo, connectorRepo, schedulerRepo, notificationRepo,
@@ -1961,7 +2258,8 @@ function buildRepos(pool) {
     aggregateRepo, pmsRepo,
     folioRepo, housekeepingRepo, nightAuditRepo,
     costCenterRepo, revenueMapRepo, ledgerRepo,
-    invitationRepo, passwordResetRepo
+    invitationRepo, passwordResetRepo,
+    gatepasRepo, posOrderRepo, patrolRepo
   };
 }
 

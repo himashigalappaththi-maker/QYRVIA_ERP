@@ -3,6 +3,7 @@
 const express = require('express');
 const { requirePermission } = require('../middleware/authorization');
 const logger = require('../config/logger');
+const { runWithAudit } = require('../audit/pipeline');
 
 /**
  * /api/gatepass — Gate pass CRUD with server-side agent isolation.
@@ -63,8 +64,21 @@ function build({ gatepasRepo } = {}) {
         status:             'ACTIVE',
         valid_from:         body.valid_from || new Date().toISOString(),
       };
-      const pass = await gatepasRepo.create(record, req.ctx);
-      res.status(201).json({ ok: true, requestId: req.ctx.requestId, data: pass });
+
+      // Route through the established command/audit pipeline (runWithAudit)
+      // so the create is recorded in audit_events with actor/tenant/property/
+      // request_id/entity — without changing the HTTP request or response shape.
+      const outcome = await runWithAudit(
+        { name: 'gatepass.create', aggregateType: 'gate_pass' },
+        { type: record.type, movement: record.movement, reservation_id: record.reservation_id },
+        req.ctx,
+        async () => {
+          const pass = await gatepasRepo.create(record, req.ctx);
+          return { ok: true, result: pass, entityType: 'gate_pass', entityId: pass.id };
+        }
+      );
+      if (!outcome.ok) return next(Object.assign(new Error(outcome.detail || outcome.error || 'gatepass_create_failed'), { code: outcome.error }));
+      res.status(201).json({ ok: true, requestId: req.ctx.requestId, data: outcome.result });
     } catch (err) { next(err); }
   });
 
@@ -74,9 +88,18 @@ function build({ gatepasRepo } = {}) {
         logger.warn({ actorId: req.ctx.actorId, passId: req.params.id }, '[gatepass] agent scan denied');
         return res.status(403).json({ ok: false, requestId: req.ctx.requestId, error: 'Agents may not scan or approve gate passes' });
       }
-      const pass = await gatepasRepo.recordScan(req.params.id, req.body || {}, req.ctx);
-      if (!pass) return res.status(404).json({ ok: false, requestId: req.ctx.requestId, error: 'gate_pass_not_found' });
-      res.json({ ok: true, requestId: req.ctx.requestId, data: pass });
+      const outcome = await runWithAudit(
+        { name: 'gatepass.scan', aggregateType: 'gate_pass' },
+        { id: req.params.id, direction: (req.body || {}).direction || 'IN' },
+        req.ctx,
+        async () => {
+          const pass = await gatepasRepo.recordScan(req.params.id, req.body || {}, req.ctx);
+          return { ok: true, result: pass, entityType: 'gate_pass', entityId: req.params.id };
+        }
+      );
+      if (!outcome.ok) return next(Object.assign(new Error(outcome.detail || outcome.error || 'gatepass_scan_failed'), { code: outcome.error }));
+      if (!outcome.result) return res.status(404).json({ ok: false, requestId: req.ctx.requestId, error: 'gate_pass_not_found' });
+      res.json({ ok: true, requestId: req.ctx.requestId, data: outcome.result });
     } catch (err) { next(err); }
   });
 

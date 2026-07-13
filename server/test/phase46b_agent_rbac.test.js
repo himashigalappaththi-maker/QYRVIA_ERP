@@ -235,7 +235,7 @@ test('POST /api/pos/orders stamps created_by_user_id from JWT sub, ignores body 
   const { app, posOrderRepo } = makeApp();
   const { srv, url } = await fx.listen(app);
   try {
-    const tk = fx.issueTestToken({ roleCodes: ['agent'] }); // sub = AGENT_A_ID
+    const tk = fx.issueTestToken({ roleCodes: ['agent'], primaryPropertyId: fx.PROP_ID }); // sub = AGENT_A_ID
     const r  = await fx.fetchJson(url + '/api/pos/orders', {
       method: 'POST',
       headers: Object.assign({ 'Content-Type': 'application/json' }, fx.authHeader(tk)),
