@@ -2484,6 +2484,319 @@ function buildRepos(pool) {
     }
   };
 
+  // ---- Phase 59: Incident reports repo -----------------------------------
+  function _genIncidentNumber() {
+    return 'INC-' + Date.now().toString(36).toUpperCase() + '-' +
+      crypto.randomBytes(2).toString('hex').toUpperCase();
+  }
+
+  const VALID_INCIDENT_STATUSES = new Set(['open','assigned','in_progress','resolved','closed']);
+  const VALID_INCIDENT_CATEGORIES = new Set([
+    'Security','Accident','Fire','Medical','Theft','Property Damage','Other'
+  ]);
+  const VALID_INCIDENT_SEVERITIES = new Set(['low','medium','high','critical']);
+
+  const incidentRepo = {
+    async list(ctx, { status, limit } = {}) {
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'INCIDENT_PROPERTY_REQUIRED');
+      const r = await pool.query(
+        `SELECT * FROM incident_reports
+          WHERE tenant_id = $1 AND property_id = $2
+            AND ($3::text IS NULL OR status = $3)
+          ORDER BY occurred_at DESC
+          LIMIT $4`,
+        [ctx.tenantId, propertyId, status || null, Math.min(Number(limit) || 100, 500)]
+      );
+      return r.rows;
+    },
+    async findById(ctx, id) {
+      if (!UUID_RE.test(String(id || ''))) return null;
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'INCIDENT_PROPERTY_REQUIRED');
+      const r = await pool.query(
+        `SELECT * FROM incident_reports
+          WHERE tenant_id = $1 AND property_id = $2 AND id = $3`,
+        [ctx.tenantId, propertyId, id]
+      );
+      return r.rows[0] || null;
+    },
+    async create(rec, ctx) {
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'INCIDENT_PROPERTY_REQUIRED');
+      const incidentNumber = _genIncidentNumber();
+      const r = await pool.query(
+        `INSERT INTO incident_reports
+           (tenant_id, property_id, incident_number, category, severity,
+            title, description, location_text, occurred_at,
+            reported_by_user_id, status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'open')
+         RETURNING *`,
+        [ctx.tenantId, propertyId, incidentNumber,
+         rec.category || 'Other', rec.severity || 'medium',
+         rec.title, rec.description || null, rec.location_text || null,
+         rec.occurred_at || new Date().toISOString(),
+         rec.reported_by_user_id]
+      );
+      return r.rows[0];
+    },
+    async updateStatus(id, ctx, { status, assignedToUserId, actionTaken, resolvedAt } = {}) {
+      if (!UUID_RE.test(String(id || ''))) return null;
+      if (status && !VALID_INCIDENT_STATUSES.has(status)) {
+        throw Object.assign(new Error('invalid incident status'), { code: 'INVALID_STATUS' });
+      }
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'INCIDENT_PROPERTY_REQUIRED');
+      const r = await pool.query(
+        `UPDATE incident_reports
+            SET status               = COALESCE($4, status),
+                assigned_to_user_id = COALESCE($5, assigned_to_user_id),
+                action_taken        = COALESCE($6, action_taken),
+                resolved_at         = COALESCE($7, resolved_at),
+                updated_at          = now()
+          WHERE tenant_id = $1 AND property_id = $2 AND id = $3
+          RETURNING *`,
+        [ctx.tenantId, propertyId, id,
+         status || null, assignedToUserId || null,
+         actionTaken || null, resolvedAt || null]
+      );
+      return r.rows[0] || null;
+    }
+  };
+
+  // ---- Phase 59: Maintenance work orders repo ----------------------------
+  function _genWorkOrderNumber() {
+    return 'WO-' + Date.now().toString(36).toUpperCase() + '-' +
+      crypto.randomBytes(2).toString('hex').toUpperCase();
+  }
+
+  const VALID_WO_STATUSES = new Set([
+    'open','assigned','in_progress','on_hold','completed','cancelled'
+  ]);
+
+  const maintenanceRepo = {
+    async list(ctx, { status, limit } = {}) {
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'MAINTENANCE_PROPERTY_REQUIRED');
+      const r = await pool.query(
+        `SELECT * FROM maintenance_work_orders
+          WHERE tenant_id = $1 AND property_id = $2
+            AND ($3::text IS NULL OR status = $3)
+          ORDER BY created_at DESC
+          LIMIT $4`,
+        [ctx.tenantId, propertyId, status || null, Math.min(Number(limit) || 100, 500)]
+      );
+      return r.rows;
+    },
+    async findById(ctx, id) {
+      if (!UUID_RE.test(String(id || ''))) return null;
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'MAINTENANCE_PROPERTY_REQUIRED');
+      const r = await pool.query(
+        `SELECT * FROM maintenance_work_orders
+          WHERE tenant_id = $1 AND property_id = $2 AND id = $3`,
+        [ctx.tenantId, propertyId, id]
+      );
+      return r.rows[0] || null;
+    },
+    async create(rec, ctx) {
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'MAINTENANCE_PROPERTY_REQUIRED');
+      const workOrderNumber = _genWorkOrderNumber();
+      const r = await pool.query(
+        `INSERT INTO maintenance_work_orders
+           (tenant_id, property_id, work_order_number, asset_or_location,
+            category, priority, title, description,
+            reported_by_user_id, status, due_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'open',$10)
+         RETURNING *`,
+        [ctx.tenantId, propertyId, workOrderNumber,
+         rec.asset_or_location || null,
+         rec.category || 'General', rec.priority || 'medium',
+         rec.title, rec.description || null,
+         rec.reported_by_user_id, rec.due_at || null]
+      );
+      return r.rows[0];
+    },
+    async assign(id, ctx, { assignedToUserId } = {}) {
+      if (!UUID_RE.test(String(id || ''))) return null;
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'MAINTENANCE_PROPERTY_REQUIRED');
+      const r = await pool.query(
+        `UPDATE maintenance_work_orders
+            SET assigned_to_user_id = $4,
+                status              = CASE WHEN status = 'open' THEN 'assigned' ELSE status END,
+                updated_at          = now()
+          WHERE tenant_id = $1 AND property_id = $2 AND id = $3
+          RETURNING *`,
+        [ctx.tenantId, propertyId, id, assignedToUserId]
+      );
+      return r.rows[0] || null;
+    },
+    async updateStatus(id, ctx, { status, resolutionNotes } = {}) {
+      if (!UUID_RE.test(String(id || ''))) return null;
+      if (status && !VALID_WO_STATUSES.has(status)) {
+        throw Object.assign(new Error('invalid work order status'), { code: 'INVALID_STATUS' });
+      }
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'MAINTENANCE_PROPERTY_REQUIRED');
+      const r = await pool.query(
+        `UPDATE maintenance_work_orders
+            SET status           = COALESCE($4, status),
+                started_at       = CASE WHEN $4 = 'in_progress' AND started_at IS NULL
+                                        THEN now() ELSE started_at END,
+                completed_at     = CASE WHEN $4 = 'completed' AND completed_at IS NULL
+                                        THEN now() ELSE completed_at END,
+                resolution_notes = COALESCE($5, resolution_notes),
+                updated_at       = now()
+          WHERE tenant_id = $1 AND property_id = $2 AND id = $3
+          RETURNING *`,
+        [ctx.tenantId, propertyId, id, status || null, resolutionNotes || null]
+      );
+      return r.rows[0] || null;
+    },
+    async complete(id, ctx, { resolutionNotes } = {}) {
+      if (!UUID_RE.test(String(id || ''))) return null;
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'MAINTENANCE_PROPERTY_REQUIRED');
+      const r = await pool.query(
+        `UPDATE maintenance_work_orders
+            SET status           = 'completed',
+                completed_at     = COALESCE(completed_at, now()),
+                resolution_notes = COALESCE($4, resolution_notes),
+                updated_at       = now()
+          WHERE tenant_id = $1 AND property_id = $2 AND id = $3
+            AND status NOT IN ('completed','cancelled')
+          RETURNING *`,
+        [ctx.tenantId, propertyId, id, resolutionNotes || null]
+      );
+      return r.rows[0] || null;
+    }
+  };
+
+  // ---- Phase 59: Attendance events repo ----------------------------------
+  // Event-based only: check_in / check_out. No continuous tracking.
+  // GPS coordinates are optional; validated at the DB constraint level.
+  const VALID_ATTENDANCE_SOURCES = new Set(['manual','gate','patrol','mobile_event']);
+  const VALID_ATTENDANCE_EVENT_TYPES = new Set(['check_in','check_out']);
+
+  const attendanceRepo = {
+    async getOpenCheckIn(ctx, userId) {
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'ATTENDANCE_PROPERTY_REQUIRED');
+      const r = await pool.query(
+        `SELECT ae.*
+           FROM attendance_events ae
+          WHERE ae.tenant_id = $1
+            AND ae.property_id = $2
+            AND ae.user_id = $3
+            AND ae.event_type = 'check_in'
+            AND NOT EXISTS (
+              SELECT 1 FROM attendance_events co
+               WHERE co.tenant_id = ae.tenant_id
+                 AND co.property_id = ae.property_id
+                 AND co.user_id = ae.user_id
+                 AND co.event_type = 'check_out'
+                 AND co.event_at > ae.event_at
+            )
+          ORDER BY ae.event_at DESC
+          LIMIT 1`,
+        [ctx.tenantId, propertyId, userId]
+      );
+      return r.rows[0] || null;
+    },
+    async recordEvent(rec, ctx) {
+      if (!VALID_ATTENDANCE_EVENT_TYPES.has(rec.event_type)) {
+        throw Object.assign(new Error('invalid event_type'), { code: 'INVALID_EVENT_TYPE' });
+      }
+      if (rec.source && !VALID_ATTENDANCE_SOURCES.has(rec.source)) {
+        throw Object.assign(new Error('invalid source'), { code: 'INVALID_SOURCE' });
+      }
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'ATTENDANCE_PROPERTY_REQUIRED');
+      const r = await pool.query(
+        `INSERT INTO attendance_events
+           (tenant_id, property_id, user_id, event_type, event_at,
+            source, latitude, longitude, accuracy_meters,
+            patrol_point_id, gate_reference, device_reference)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         RETURNING *`,
+        [ctx.tenantId, propertyId, rec.user_id, rec.event_type,
+         rec.event_at || new Date().toISOString(),
+         rec.source || 'manual',
+         rec.latitude  != null ? rec.latitude  : null,
+         rec.longitude != null ? rec.longitude : null,
+         rec.accuracy_meters != null ? rec.accuracy_meters : null,
+         UUID_RE.test(String(rec.patrol_point_id || '')) ? rec.patrol_point_id : null,
+         rec.gate_reference   || null,
+         rec.device_reference || null]
+      );
+      return r.rows[0];
+    },
+    async listMyEvents(ctx, { limit } = {}) {
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'ATTENDANCE_PROPERTY_REQUIRED');
+      const r = await pool.query(
+        `SELECT * FROM attendance_events
+          WHERE tenant_id = $1 AND property_id = $2 AND user_id = $3
+          ORDER BY event_at DESC
+          LIMIT $4`,
+        [ctx.tenantId, propertyId, ctx.actorId, Math.min(Number(limit) || 50, 200)]
+      );
+      return r.rows;
+    },
+    async listAllEvents(ctx, { userId, dateFrom, dateTo, limit } = {}) {
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'ATTENDANCE_PROPERTY_REQUIRED');
+      const r = await pool.query(
+        `SELECT * FROM attendance_events
+          WHERE tenant_id = $1 AND property_id = $2
+            AND ($3::uuid IS NULL OR user_id = $3)
+            AND ($4::timestamptz IS NULL OR event_at >= $4)
+            AND ($5::timestamptz IS NULL OR event_at <= $5)
+          ORDER BY event_at DESC
+          LIMIT $6`,
+        [ctx.tenantId, propertyId,
+         UUID_RE.test(String(userId || '')) ? userId : null,
+         dateFrom || null, dateTo || null,
+         Math.min(Number(limit) || 100, 500)]
+      );
+      return r.rows;
+    },
+
+    // Returns authoritative attendance status for the calling user.
+    // No coordinates are returned. Status is computed server-side only.
+    async getStatus(ctx) {
+      const propertyId = await _resolveAuthorizedPropertyId(ctx, 'ATTENDANCE_PROPERTY_REQUIRED');
+      const latestR = await pool.query(
+        `SELECT id, event_type, event_at, source
+           FROM attendance_events
+          WHERE tenant_id = $1 AND property_id = $2 AND user_id = $3
+          ORDER BY event_at DESC LIMIT 1`,
+        [ctx.tenantId, propertyId, ctx.actorId]
+      );
+      const latest = latestR.rows[0] || null;
+
+      const openR = await pool.query(
+        `SELECT ae.id, ae.event_at, ae.source
+           FROM attendance_events ae
+          WHERE ae.tenant_id = $1
+            AND ae.property_id = $2
+            AND ae.user_id = $3
+            AND ae.event_type = 'check_in'
+            AND NOT EXISTS (
+              SELECT 1 FROM attendance_events co
+               WHERE co.tenant_id = ae.tenant_id
+                 AND co.property_id = ae.property_id
+                 AND co.user_id = ae.user_id
+                 AND co.event_type = 'check_out'
+                 AND co.event_at > ae.event_at
+            )
+          ORDER BY ae.event_at DESC LIMIT 1`,
+        [ctx.tenantId, propertyId, ctx.actorId]
+      );
+      const openCheckIn = openR.rows[0] || null;
+
+      const status = !latest ? 'no_events' : openCheckIn ? 'checked_in' : 'checked_out';
+      return {
+        status,
+        open_check_in: openCheckIn
+          ? { id: openCheckIn.id, event_at: openCheckIn.event_at, source: openCheckIn.source }
+          : null,
+        latest_event: latest
+          ? { id: latest.id, event_type: latest.event_type,
+              event_at: latest.event_at, source: latest.source }
+          : null
+      };
+    }
+  };
+
   return {
     identityRepo, tokensRepo,
     settingsRepo, fileRepo, connectorRepo, schedulerRepo, notificationRepo,
@@ -2493,7 +2806,8 @@ function buildRepos(pool) {
     costCenterRepo, revenueMapRepo, ledgerRepo,
     invitationRepo, passwordResetRepo,
     otaInboundEventDedupRepo,
-    gatepasRepo, posOrderRepo, patrolRepo
+    gatepasRepo, posOrderRepo, patrolRepo,
+    incidentRepo, maintenanceRepo, attendanceRepo
   };
 }
 

@@ -77,7 +77,9 @@ const {
   // M1A: gate pass / POS / patrol repos - real PostgreSQL-backed implementations
   // of the Phase 46B/48 route contracts (previously never injected, so
   // /api/gatepass, /api/pos, /api/patrol mounted as empty routers).
-  gatepasRepo, posOrderRepo, patrolRepo
+  gatepasRepo, posOrderRepo, patrolRepo,
+  // Phase 59: incident / maintenance / attendance repos
+  incidentRepo, maintenanceRepo, attendanceRepo
 } = buildRepos(obsPool);
 
 // Phase 8 - Ledger service. The single authority for balanced ledger
@@ -676,6 +678,10 @@ const app = createApp({
   invitationService,
   passwordResetService,
   tenantProvisioningService,
+  // Phase 59: incident / maintenance / attendance repos
+  incidentRepo,
+  maintenanceRepo,
+  attendanceRepo,
   // M1A: gate pass / POS / patrol - real repos so these routers mount live
   gatepasRepo,
   posOrderRepo,

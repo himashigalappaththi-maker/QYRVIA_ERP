@@ -2916,6 +2916,8 @@ th{border-bottom:2px solid #C9A84C !important}
         <div class="card-header"><div class="card-title">📊 Monthly Summary per Employee</div></div>
         <div class="table-wrap"><table id="attSummaryTable"></table></div>
       </div>
+      <!-- Phase 59 operational attendance — sibling of HR grid, never inside attGrid -->
+      <div id="att59OperationalSection" style="margin-top:12px"></div>
     </div>
 
     <!-- PAYROLL — Calculate Modal -->
@@ -48665,6 +48667,418 @@ document.addEventListener('DOMContentLoaded',function(){
       if (sid) ptFetch('PATCH', '/' + sid + '/toggle', {}).catch(function () {});
     } catch (_) {}
   };
+
+})(window);
+
+// ─── Phase 59 — Attendance · Incident · Maintenance frontend bridge ───────────
+(function (w) {
+  'use strict';
+
+  var _P59_TOKEN_KEY = 'gk_v26_token';
+
+  // ── Shared authenticated fetch helper ───────────────────────────────────────
+  // Returns {ok,status,data,unavailable}. Resolves even on network failure.
+  function _p59Fetch(method, path, body) {
+    var h = { 'Content-Type': 'application/json' };
+    var tok = null;
+    try { tok = localStorage.getItem(_P59_TOKEN_KEY); } catch (storageErr) { tok = null; }
+    if (tok) h['Authorization'] = 'Bearer ' + tok;
+    var propId = (w.AUTH && w.AUTH.user && w.AUTH.user.propertyId) || null;
+    if (propId) h['X-Property-ID'] = propId;
+    return fetch('/api' + path, {
+      method: method, headers: h,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      credentials: 'include'
+    }).then(function (res) {
+      return res.json().then(function (data) {
+        return { ok: res.ok, status: res.status, data: data, unavailable: false };
+      }, function (parseErr) {
+        return { ok: res.ok, status: res.status, data: null, unavailable: false };
+      });
+    }, function (netErr) {
+      return { ok: false, status: 0, data: null, unavailable: true };
+    });
+  }
+
+  function _p59HasPerm(module, action) {
+    return typeof w.hasPerm === 'function' && w.hasPerm(module, action);
+  }
+
+  // ═══════════════ A. ATTENDANCE ════════════════════════════════════════════
+  // Status:  GET /api/attendance/status/my  (authoritative)
+  // History: GET /api/attendance/events/my  (display only)
+  // Action:  POST /api/attendance/events
+
+  var _att59ActionBusy = false;
+
+  function _att59Sec() { return document.getElementById('att59OperationalSection'); }
+
+  function _att59Card(body) {
+    return '<div class="card" style="margin-top:4px;padding:14px 16px">' +
+           '<div class="card-header" style="margin-bottom:10px"><div class="card-title">🕐 My Attendance</div></div>' +
+           body + '</div>';
+  }
+
+  function att59RenderUnverified() {
+    var sec = _att59Sec(); if (!sec) return;
+    sec.innerHTML = _att59Card(
+      '<div style="color:var(--grey-500);font-size:13px;margin-bottom:10px">Attendance status could not be verified.</div>' +
+      '<button class="btn btn-secondary btn-sm" onclick="att59Retry()">Retry</button>'
+    );
+  }
+
+  function _att59RenderLoading() {
+    var sec = _att59Sec(); if (!sec) return;
+    sec.innerHTML = _att59Card('<div style="color:var(--grey-500);font-size:13px">Checking attendance status…</div>');
+  }
+
+  function _att59RenderDenied(msg) {
+    var sec = _att59Sec(); if (!sec) return;
+    sec.innerHTML = _att59Card('<div style="color:var(--grey-500);font-size:13px">' + msg + '</div>');
+  }
+
+  function _att59RenderState(statusData, events) {
+    var status = statusData && statusData.status;
+    if (status !== 'no_events' && status !== 'checked_in' && status !== 'checked_out') {
+      att59RenderUnverified(); return;
+    }
+    var sec = _att59Sec(); if (!sec) return;
+    var canRecord = _p59HasPerm('attendance', 'record');
+    var badge = '', actionBtn = '';
+    if (status === 'checked_in') {
+      var ciAt  = statusData.open_check_in && statusData.open_check_in.event_at
+                  ? new Date(statusData.open_check_in.event_at).toLocaleString() : '';
+      var ciSrc = (statusData.open_check_in && statusData.open_check_in.source) || '';
+      badge = '<span style="background:#d1fae5;color:#065f46;border-radius:4px;padding:2px 10px;font-weight:700;font-size:13px">Checked In</span>' +
+              (ciAt ? '<span style="color:var(--grey-500);font-size:11px;margin-left:8px">since ' + ciAt + (ciSrc ? ' \xB7 ' + ciSrc : '') + '</span>' : '');
+      if (canRecord) actionBtn = '<button class="btn btn-danger btn-sm" style="margin-left:12px" onclick="att59PostEvent(\'check_out\')">Check Out</button>';
+    } else if (status === 'checked_out') {
+      var latAt = statusData.latest_event && statusData.latest_event.event_at
+                  ? new Date(statusData.latest_event.event_at).toLocaleString() : '';
+      badge = '<span style="background:#fee2e2;color:#991b1b;border-radius:4px;padding:2px 10px;font-weight:700;font-size:13px">Checked Out</span>' +
+              (latAt ? '<span style="color:var(--grey-500);font-size:11px;margin-left:8px">at ' + latAt + '</span>' : '');
+      if (canRecord) actionBtn = '<button class="btn btn-primary btn-sm" style="margin-left:12px" onclick="att59PostEvent(\'check_in\')">Check In</button>';
+    } else {
+      badge = '<span style="color:var(--grey-500);font-size:13px">No events today</span>';
+      if (canRecord) actionBtn = '<button class="btn btn-primary btn-sm" style="margin-left:12px" onclick="att59PostEvent(\'check_in\')">Check In</button>';
+    }
+    var evRows = '';
+    if (Array.isArray(events) && events.length) {
+      evRows = events.map(function (e) {
+        var lbl = e.event_type === 'check_in' ? 'Check In' : e.event_type === 'check_out' ? 'Check Out' : (e.event_type || '—');
+        var ts  = e.event_at ? new Date(e.event_at).toLocaleString() : '—';
+        return '<tr><td>' + lbl + '</td><td>' + ts + '</td><td>' + (e.source || '—') + '</td></tr>';
+      }).join('');
+    } else {
+      evRows = '<tr><td colspan="3" style="text-align:center;color:var(--grey-400)">No events recorded.</td></tr>';
+    }
+    sec.innerHTML = _att59Card(
+      '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:12px">' + badge + actionBtn + '</div>' +
+      '<div class="table-wrap"><table><thead><tr><th>Event</th><th>Time</th><th>Source</th></tr></thead>' +
+      '<tbody>' + evRows + '</tbody></table></div>'
+    );
+  }
+
+  function att59LoadStatus() {
+    _att59RenderLoading();
+    return _p59Fetch('GET', '/attendance/status/my').then(function (r) {
+      if (r.unavailable) { att59RenderUnverified(); return; }
+      if (r.status === 401) { _att59RenderDenied('Session expired — please log in again.'); return; }
+      if (r.status === 403) {
+        _att59RenderDenied(r.data && r.data.error === 'property_access_denied'
+          ? 'Property access denied.'
+          : 'You do not have permission to view attendance.');
+        return;
+      }
+      if (r.status === 400) {
+        _att59RenderDenied(r.data && r.data.error === 'attendance_property_required'
+          ? 'No property selected — choose a property to view attendance.'
+          : 'Invalid attendance request.');
+        return;
+      }
+      if (!r.ok) { att59RenderUnverified(); return; }
+      var statusData = r.data && r.data.data;
+      if (!statusData || !statusData.status) { att59RenderUnverified(); return; }
+      return _p59Fetch('GET', '/attendance/events/my?limit=50').then(function (er) {
+        var events = (er.ok && er.data && Array.isArray(er.data.data)) ? er.data.data : [];
+        _att59RenderState(statusData, events);
+      }, function (evErr) {
+        _att59RenderState(statusData, []);
+      });
+    });
+  }
+
+  function att59PostEvent(eventType) {
+    if (_att59ActionBusy) return;
+    _att59ActionBusy = true;
+    _p59Fetch('POST', '/attendance/events', { event_type: eventType }).then(function (r) {
+      if (r.unavailable) {
+        if (typeof w.toast === 'function') w.toast('Network error — attendance not recorded.', 'error');
+        att59RenderUnverified();
+        _att59ActionBusy = false;
+        return;
+      }
+      if (!r.ok) {
+        var errCode = r.data && r.data.error;
+        var msg = r.status === 409 && errCode === 'open_checkin_exists'
+          ? 'Already checked in — please check out first.'
+          : r.status === 409 && errCode === 'no_open_checkin'
+            ? 'No open check-in — please check in first.'
+            : errCode || (eventType === 'check_in' ? 'Check-in failed.' : 'Check-out failed.');
+        if (typeof w.toast === 'function') w.toast(msg, 'error');
+        _att59ActionBusy = false;
+        return att59LoadStatus().then(null, function (reloadErr) { att59RenderUnverified(); });
+      }
+      return att59LoadStatus().then(function () {
+        _att59ActionBusy = false;
+      }, function (reloadErr) {
+        _att59ActionBusy = false;
+        att59RenderUnverified();
+      });
+    }, function (netErr) {
+      if (typeof w.toast === 'function') w.toast('Network error — attendance not recorded.', 'error');
+      att59RenderUnverified();
+      _att59ActionBusy = false;
+    });
+  }
+
+  w.att59LoadStatus = att59LoadStatus;
+  w.att59PostEvent  = att59PostEvent;
+  w.att59Retry = function att59Retry() {
+    att59LoadStatus().catch(function (retryErr) { att59RenderUnverified(); });
+  };
+
+  // ═══════════════ B. INCIDENT BRIDGE ══════════════════════════════════════
+
+  var _incBridgeBusy = false;
+
+  function incBridgeRenderUnavailable(err) {
+    var el = document.getElementById('incidentsList');
+    if (!el) return;
+    el.innerHTML =
+      '<div class="ops-card" style="text-align:center;padding:20px">' +
+      '<p style="color:var(--ops-mut);font-size:13px;margin-bottom:10px">Incident data could not be loaded — network error or service unavailable.</p>' +
+      '<button class="ops-btn ops-btn-border" onclick="incBridgeRetry()">Retry</button></div>';
+  }
+
+  function incBridgeRenderDenied(msg) {
+    var el = document.getElementById('incidentsList');
+    if (!el) return;
+    el.innerHTML =
+      '<div class="ops-card" style="text-align:center;padding:20px">' +
+      '<p style="color:var(--ops-mut);font-size:13px">' + msg + '</p></div>';
+  }
+
+  function incBridgeLoad() {
+    return _p59Fetch('GET', '/incidents').then(function (r) {
+      if (r.unavailable) { throw new Error('incidents_network_unavailable'); }
+      if (r.status === 401) { incBridgeRenderDenied('Session expired — please log in again.'); return; }
+      if (r.status === 403) {
+        incBridgeRenderDenied(r.data && r.data.error === 'property_access_denied'
+          ? 'Property access denied.'
+          : 'You do not have permission to view incidents.');
+        return;
+      }
+      if (r.status === 400 && r.data && r.data.error === 'incident_property_required') {
+        incBridgeRenderDenied('No property selected — choose a property to view incidents.');
+        return;
+      }
+      if (!r.ok) { throw new Error((r.data && r.data.error) || 'incidents_load_failed'); }
+      var rows = (r.data && Array.isArray(r.data.data)) ? r.data.data : [];
+      if (typeof OPS !== 'undefined') {
+        OPS.incidents = rows.map(function (row) {
+          return {
+            id:        row.id,
+            type:      row.category           || 'Other',
+            sev:       row.severity           || 'medium',
+            title:     row.title              || '',
+            loc:       row.location_text      || '',
+            ts:        row.occurred_at ? new Date(row.occurred_at).toLocaleString() : '',
+            reporter:  row.reported_by_user_id || '',
+            desc:      row.description        || '',
+            status:    row.status             || 'open',
+            _serverId: row.id
+          };
+        });
+        if (typeof renderIncidents === 'function') renderIncidents();
+      }
+    }, function (incNetErr) { throw incNetErr; });
+  }
+
+  w.incBridgeRetry = function incBridgeRetry() {
+    incBridgeLoad().catch(function (retryErr) { incBridgeRenderUnavailable(retryErr); });
+  };
+
+  w.incSubmit = function incSubmit59() {
+    if (_incBridgeBusy) return;
+    var title = (document.getElementById('inTitle') || {}).value;
+    if (!title || !title.trim()) {
+      if (typeof w.toast === 'function') w.toast('Title is required.', 'error'); return;
+    }
+    _incBridgeBusy = true;
+    _p59Fetch('POST', '/incidents', {
+      title:         title.trim(),
+      category:      ((document.getElementById('inType') || {}).value) || 'Other',
+      severity:      ((document.getElementById('inSev')  || {}).value) || 'medium',
+      location_text: ((document.getElementById('inLoc')  || {}).value) || null,
+      description:   ((document.getElementById('inDesc') || {}).value) || null
+    }).then(function (r) {
+      _incBridgeBusy = false;
+      if (r.unavailable) { if (typeof w.toast === 'function') w.toast('Network error — incident not submitted.', 'error'); return; }
+      if (!r.ok) { if (typeof w.toast === 'function') w.toast((r.data && r.data.error) || 'Incident submission failed.', 'error'); return; }
+      if (typeof w.incToggleNewForm === 'function') w.incToggleNewForm();
+      if (typeof w.toast === 'function') w.toast('Incident reported.', 'success');
+      incBridgeLoad().catch(function (loadErr) { incBridgeRenderUnavailable(loadErr); });
+    }, function (netErr) {
+      _incBridgeBusy = false;
+      if (typeof w.toast === 'function') w.toast('Network error — incident not submitted.', 'error');
+    });
+  };
+
+  w.incClose = function incClose59(id) {
+    var rec = (typeof OPS !== 'undefined') && OPS.incidents && OPS.incidents.find(function (i) { return i.id === id; });
+    var sid = (rec && rec._serverId) || id;
+    _p59Fetch('PATCH', '/incidents/' + sid + '/status', { status: 'resolved' }).then(function (r) {
+      if (r.unavailable || !r.ok) {
+        if (typeof w.toast === 'function') w.toast((r.data && r.data.error) || 'Close incident failed.', 'error'); return;
+      }
+      if (typeof w.toast === 'function') w.toast('Incident resolved.', 'success');
+      incBridgeLoad().catch(function (loadErr) { incBridgeRenderUnavailable(loadErr); });
+    }, function (netErr) {
+      if (typeof w.toast === 'function') w.toast('Network error — incident not updated.', 'error');
+    });
+  };
+
+  // ═══════════════ C. MAINTENANCE BRIDGE ═══════════════════════════════════
+
+  var _maintBridgeBusy = false;
+
+  function maintBridgeRenderUnavailable(err) {
+    var el = document.getElementById('maintJobsList');
+    if (!el) return;
+    el.innerHTML =
+      '<div class="ops-card" style="text-align:center;padding:20px">' +
+      '<p style="color:var(--ops-mut);font-size:13px;margin-bottom:10px">Maintenance data could not be loaded — network error or service unavailable.</p>' +
+      '<button class="ops-btn ops-btn-border" onclick="maintBridgeRetry()">Retry</button></div>';
+  }
+
+  function maintBridgeRenderDenied(msg) {
+    var el = document.getElementById('maintJobsList');
+    if (!el) return;
+    el.innerHTML =
+      '<div class="ops-card" style="text-align:center;padding:20px">' +
+      '<p style="color:var(--ops-mut);font-size:13px">' + msg + '</p></div>';
+  }
+
+  function maintBridgeLoad() {
+    return _p59Fetch('GET', '/maintenance').then(function (r) {
+      if (r.unavailable) { throw new Error('maintenance_network_unavailable'); }
+      if (r.status === 401) { maintBridgeRenderDenied('Session expired — please log in again.'); return; }
+      if (r.status === 403) {
+        maintBridgeRenderDenied(r.data && r.data.error === 'property_access_denied'
+          ? 'Property access denied.'
+          : 'You do not have permission to view maintenance jobs.');
+        return;
+      }
+      if (r.status === 400 && r.data && r.data.error === 'maintenance_property_required') {
+        maintBridgeRenderDenied('No property selected — choose a property to view maintenance jobs.');
+        return;
+      }
+      if (!r.ok) { throw new Error((r.data && r.data.error) || 'maintenance_load_failed'); }
+      var rows = (r.data && Array.isArray(r.data.data)) ? r.data.data : [];
+      if (typeof OPS !== 'undefined') {
+        OPS.jobs = rows.map(function (row) {
+          return {
+            id:        row.id,
+            title:     row.title               || '',
+            room:      row.asset_or_location   || '',
+            prio:      row.priority            || 'medium',
+            desc:      row.description         || '',
+            status:    row.status              || 'open',
+            assignee:  row.assigned_to_user_id || null,
+            ts:        row.created_at ? new Date(row.created_at).toLocaleString() : '',
+            _serverId: row.id
+          };
+        });
+        if (typeof renderMaintOps === 'function') renderMaintOps();
+      }
+    }, function (maintNetErr) { throw maintNetErr; });
+  }
+
+  w.maintBridgeRetry = function maintBridgeRetry() {
+    maintBridgeLoad().catch(function (retryErr) { maintBridgeRenderUnavailable(retryErr); });
+  };
+
+  w.maintSubmitNew = function maintSubmitNew59() {
+    if (_maintBridgeBusy) return;
+    var title = (document.getElementById('mnTitle') || {}).value;
+    if (!title || !title.trim()) {
+      if (typeof w.toast === 'function') w.toast('Title is required.', 'error'); return;
+    }
+    _maintBridgeBusy = true;
+    _p59Fetch('POST', '/maintenance', {
+      title:             title.trim(),
+      asset_or_location: ((document.getElementById('mnRoom') || {}).value) || null,
+      priority:          ((document.getElementById('mnPrio') || {}).value) || 'medium',
+      description:       ((document.getElementById('mnDesc') || {}).value) || null
+    }).then(function (r) {
+      _maintBridgeBusy = false;
+      if (r.unavailable) { if (typeof w.toast === 'function') w.toast('Network error — work order not created.', 'error'); return; }
+      if (!r.ok) { if (typeof w.toast === 'function') w.toast((r.data && r.data.error) || 'Work order creation failed.', 'error'); return; }
+      if (typeof MAINT_NEW_FORM_OPEN !== 'undefined' && MAINT_NEW_FORM_OPEN) {
+        if (typeof w.maintToggleNewForm === 'function') w.maintToggleNewForm();
+      }
+      if (typeof w.toast === 'function') w.toast('Maintenance job created.', 'success');
+      maintBridgeLoad().catch(function (loadErr) { maintBridgeRenderUnavailable(loadErr); });
+    }, function (netErr) {
+      _maintBridgeBusy = false;
+      if (typeof w.toast === 'function') w.toast('Network error — work order not created.', 'error');
+    });
+  };
+
+  w.maintComplete = function maintComplete59(id) {
+    var rec = (typeof OPS !== 'undefined') && OPS.jobs && OPS.jobs.find(function (j) { return j.id === id; });
+    var sid = (rec && rec._serverId) || id;
+    _p59Fetch('PATCH', '/maintenance/' + sid + '/complete', {}).then(function (r) {
+      if (r.unavailable || !r.ok) {
+        if (typeof w.toast === 'function') w.toast((r.data && r.data.error) || 'Complete work order failed.', 'error'); return;
+      }
+      if (typeof w.toast === 'function') w.toast('Job marked complete.', 'success');
+      maintBridgeLoad().catch(function (loadErr) { maintBridgeRenderUnavailable(loadErr); });
+    }, function (netErr) {
+      if (typeof w.toast === 'function') w.toast('Network error — job not updated.', 'error');
+    });
+  };
+
+  // ═══════════════ D. showPage WRAPPER ═════════════════════════════════════
+
+  var _origShowPage59 = w.showPage;
+  w.showPage = function showPage59(pageId) {
+    var result = _origShowPage59 ? _origShowPage59.apply(this, arguments) : undefined;
+    if (pageId === 'attendance') {
+      att59LoadStatus().catch(function (loadErr) { att59RenderUnverified(); });
+    }
+    if (pageId === 'incidents') {
+      incBridgeLoad().catch(function (incLoadErr) { incBridgeRenderUnavailable(incLoadErr); });
+    }
+    if (pageId === 'maint-ops') {
+      maintBridgeLoad().catch(function (maintLoadErr) { maintBridgeRenderUnavailable(maintLoadErr); });
+    }
+    return result;
+  };
+
+  // ═══════════════ E. BOOT ═════════════════════════════════════════════════
+
+  var _activePage59 = document.querySelector('.page.active');
+  if (_activePage59 && _activePage59.id === 'page-attendance') {
+    att59LoadStatus().catch(function (bootErr) { att59RenderUnverified(); });
+  }
+  if (_activePage59 && _activePage59.id === 'page-incidents') {
+    incBridgeLoad().catch(function (bootErr) { incBridgeRenderUnavailable(bootErr); });
+  }
+  if (_activePage59 && _activePage59.id === 'page-maint-ops') {
+    maintBridgeLoad().catch(function (bootErr) { maintBridgeRenderUnavailable(bootErr); });
+  }
 
 })(window);
 </script>
