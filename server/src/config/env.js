@@ -121,6 +121,34 @@ const config = Object.freeze({
   RESEND_API_KEY: getOptional('RESEND_API_KEY', ''),
   RESEND_FROM:    getOptional('RESEND_FROM',    ''),
   APP_BASE_URL:   getOptional('APP_BASE_URL',   'http://localhost:3001'),
+  // Phase 61: CORS and proxy hardening.
+  // CORS_ORIGIN: allowed cross-origin for the SPA (e.g. https://app.qyrvia.com).
+  // Empty (default) = same-origin only; no Access-Control-Allow-Origin header emitted.
+  CORS_ORIGIN:    getOptional('CORS_ORIGIN',    ''),
+  // TRUST_PROXY: passed directly to Express app.set('trust proxy', ...).
+  // '1' (default) = trust exactly one reverse-proxy hop (nginx/load-balancer in front).
+  // 'false' = no proxy. 'loopback' = loopback only. Numeric string parsed to number.
+  TRUST_PROXY:    getOptional('TRUST_PROXY',    '1'),
 });
+
+// Phase 61: production environment validation gate.
+// Only runs when NODE_ENV=production to avoid breaking dev/test boots.
+if (config.NODE_ENV === 'production') {
+  const { validateProductionEnv } = require('./envValidation');
+  const { errors, warnings } = validateProductionEnv(config);
+  for (const w of warnings) {
+    // eslint-disable-next-line no-console
+    console.warn('[env:prod] WARNING: ' + w);
+  }
+  if (errors.length) {
+    for (const e of errors) {
+      // eslint-disable-next-line no-console
+      console.error('[env:prod] ERROR: ' + e);
+    }
+    // eslint-disable-next-line no-console
+    console.error('[env:prod] ' + errors.length + ' production environment error(s) — refusing to start');
+    process.exit(2);
+  }
+}
 
 module.exports = config;

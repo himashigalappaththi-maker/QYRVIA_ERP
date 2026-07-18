@@ -129,4 +129,25 @@ function verifyWebhookSignature({ secretFor, toleranceSec } = {}) {
   };
 }
 
-module.exports = { securityHeaders, sanitizeJsonBody, verifyWebhookSignature, _nonceLru };
+/**
+ * Phase 61: CORS middleware. Only installed when CORS_ORIGIN is set.
+ * Emits Access-Control-Allow-Origin for the configured origin only (no wildcard).
+ * Handles pre-flight OPTIONS requests with a 204.
+ */
+function corsMiddleware({ origin } = {}) {
+  if (!origin) throw new Error('corsMiddleware: origin is required');
+  return function (req, res, next) {
+    const reqOrigin = req.get('Origin');
+    if (reqOrigin && reqOrigin === origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Request-Id,X-Tenant-Id,X-Property-ID');
+    }
+    if (req.method === 'OPTIONS') return res.status(204).end();
+    next();
+  };
+}
+
+module.exports = { securityHeaders, sanitizeJsonBody, verifyWebhookSignature, corsMiddleware, _nonceLru };

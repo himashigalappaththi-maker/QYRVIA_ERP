@@ -2,11 +2,12 @@
 
 const express = require('express');
 
+const env       = require('./config/env');
 const logger    = require('./config/logger');
 const requestId = require('./middleware/requestId');
 const apiBuild  = require('./routes/api');
 const { notFound, errorHandler } = require('./middleware/error');
-const { securityHeaders, sanitizeJsonBody } = require('./middleware/security');
+const { securityHeaders, sanitizeJsonBody, corsMiddleware } = require('./middleware/security');
 const { httpMetricsMiddleware } = require('./observability/httpMetrics');
 
 const eventBus = require('./core/eventBus');
@@ -40,15 +41,24 @@ function createApp(deps = {}) {
   const app = express();
 
   app.disable('x-powered-by');
-  app.set('trust proxy', true);
+  // Phase 61: trust proxy configured from TRUST_PROXY env var (default '1' = one hop).
+  // '1' is safe behind a single nginx/load-balancer. 'true' (unbounded) was the prior
+  // default and allowed X-Forwarded-For spoofing by any client.
+  const rawProxy = deps._trustProxy !== undefined ? deps._trustProxy : env.TRUST_PROXY;
+  const trustProxy = rawProxy === 'false' ? false
+    : (rawProxy !== undefined && !isNaN(Number(rawProxy))) ? Number(rawProxy)
+    : rawProxy;
+  app.set('trust proxy', trustProxy);
   if (deps.db) app.set('db', deps.db);
 
   // Wire the event bus to the supplied DB facade (or leave unwired - bus
   // will warn but not crash).
   eventBus.init({ db: deps.db });
 
-  // 1. security headers + requestId + request logger
+  // 1. security headers + CORS (if CORS_ORIGIN set) + requestId + request logger
   app.use(securityHeaders());
+  const corsOrigin = deps._corsOrigin !== undefined ? deps._corsOrigin : env.CORS_ORIGIN;
+  if (corsOrigin) app.use(corsMiddleware({ origin: corsOrigin }));
   app.use(requestId);
   // Phase 33: HTTP request metrics (count + latency + in-flight gauge). Mounted
   // before the logger so the active-request gauge spans the whole request. Route

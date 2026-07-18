@@ -17,6 +17,7 @@
     "test:db": "node --test --test-concurrency=1 \"test/db/**/*.db.test.js\"",
     "db:provision": "node scripts/ci-provision-db.js",
     "db:preflight": "node scripts/rls-preflight.js",
+    "test:db-safe": "node scripts/run-db-tests.js",
     "test:db:guarded": "npm run db:preflight && npm run test:db",
     "db:test:up": "docker compose -f test/db/docker-compose.test.yml up -d",
     "db:test:down": "docker compose -f test/db/docker-compose.test.yml down -v"

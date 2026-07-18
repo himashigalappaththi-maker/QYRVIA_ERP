@@ -692,24 +692,20 @@ const server = app.listen(env.PORT, () => {
   logger.info({ port: env.PORT, env: env.NODE_ENV }, '[qyrvia] listening');
 });
 
-function shutdown(signal) {
-  logger.info({ signal }, '[qyrvia] shutdown requested');
-  server.close(async (err) => {
-    if (err) logger.error({ err }, '[qyrvia] http close error');
-    try { await db.close(); } catch (e) { logger.error({ err: e }, '[qyrvia] db close error'); }
-    logger.info('[qyrvia] shutdown complete');
-    process.exit(err ? 1 : 0);
-  });
-  setTimeout(() => {
-    logger.error('[qyrvia] forced exit after 10s');
-    process.exit(1);
-  }, 10000).unref();
-}
+const { buildShutdown, safeErrMeta } = require('./lifecycle/shutdown');
+const { shutdown } = buildShutdown({
+  getServer: () => server,
+  closeDb:   db.close,
+  log:       logger,
+  timeoutMs: 10000,
+});
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT',  () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM', 0));
+process.on('SIGINT',  () => shutdown('SIGINT',  0));
 process.on('unhandledRejection', (reason) => {
-  logger.error({ reason }, '[qyrvia] unhandledRejection');
+  const s = (reason instanceof Error) ? safeErrMeta(reason) : { type: typeof reason };
+  logger.fatal({ reason: s }, '[qyrvia] unhandledRejection — initiating graceful shutdown');
+  shutdown('unhandledRejection', 1);
 });
 process.on('uncaughtException', (err) => {
   logger.fatal({ err }, '[qyrvia] uncaughtException - exiting');

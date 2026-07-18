@@ -52,6 +52,47 @@ preflight gate** (`db:preflight`) which STOPS the job on a superuser/leak, then
 `npm run test:db`. The in-suite `rls_guard.db.test.js` enforces the same
 invariants so no regression can reintroduce superuser-based testing.
 
+## CRITICAL: DB tests must never run concurrently
+
+Every DB test file calls `freshSchema(pool)` in its `before()` hook, which
+executes `DROP SCHEMA IF EXISTS public CASCADE` followed by a migration replay
+against the shared `qyrvia_test` database.
+
+**Running two or more DB test files at the same time causes `freshSchema()` to
+race.** One file drops the schema while another file's tests are still running
+against it, producing spurious failures that are unrelated to the code under
+test. This is not a test defect — it is an inherent constraint of the
+schema-reset isolation model.
+
+### Safe commands
+
+```bash
+# Canonical safe command — loads .env, validates local target, runs serially:
+npm run test:db-safe
+
+# Legacy command — requires TEST_DATABASE_URL to already be exported:
+npm run test:db           # already uses --test-concurrency=1
+
+# Guarded command — RLS preflight gate first, then DB suite:
+npm run test:db:guarded
+```
+
+### What to avoid
+
+```bash
+# NEVER: combined run that executes DB test files concurrently with unit tests
+npm test                           # with TEST_DATABASE_URL set = race condition
+node --test                        # with TEST_DATABASE_URL set = race condition
+
+# NEVER: DB test files without --test-concurrency=1
+node --test test/db/*.db.test.js   # no concurrency limit = race condition
+```
+
+The pre-existing `npm run test:db` script already uses `--test-concurrency=1`.
+The `npm run test:db-safe` script additionally validates that the target is a
+local `qyrvia_test` database and loads credentials from `.env`, so it is safe
+to run without exporting `TEST_DATABASE_URL` first.
+
 ## What each file covers
 
 - `_dbHarness.js` — fresh-schema + migration applier, restricted RLS role,
