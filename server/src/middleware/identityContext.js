@@ -35,6 +35,13 @@ function identityContext(repo) {
       return res.status(401).json({ error: 'authentication_required', requestId: req.requestId });
     }
 
+    // Phase 62A: fail closed — when RLS-scoped repo is active, reject JWTs with no tenant context.
+    if (repo && repo.withTenant && !req.user.tenant_id) {
+      logger.warn({ request_id: req.requestId, user_id: req.user.sub },
+        '[identity] JWT missing tenant_id; rejecting request');
+      return res.status(401).json({ error: 'tenant_id_required', requestId: req.requestId });
+    }
+
     // Spoof detection: header tenant must match token tenant (or be absent).
     const headerTenant = req.get(HEADER_TENANT);
     if (headerTenant && headerTenant !== req.user.tenant_id) {
@@ -59,7 +66,14 @@ function identityContext(repo) {
           repo && typeof repo.canAccessProperty === 'function') {
         let allowed = false;
         try {
-          allowed = await repo.canAccessProperty(req.user.sub, headerProperty);
+          // Phase 62A: use withTenant for FORCE RLS compliance.
+          if (repo.withTenant && req.user.tenant_id) {
+            await repo.withTenant(req.user.tenant_id, async (client) => {
+              allowed = await repo.canAccessProperty(req.user.sub, headerProperty, client);
+            });
+          } else {
+            allowed = await repo.canAccessProperty(req.user.sub, headerProperty);
+          }
         } catch (err) {
           logger.error({ err, user_id: req.user.sub }, '[identity] property access check failed');
           return res.status(500).json({ error: 'property_access_check_failed', requestId: req.requestId });
@@ -78,7 +92,14 @@ function identityContext(repo) {
     let permissions = [];
     if (repo && typeof repo.findPermissionsForUser === 'function') {
       try {
-        permissions = await repo.findPermissionsForUser(req.user.sub);
+        // Phase 62A: use withTenant for FORCE RLS compliance.
+        if (repo.withTenant && req.user.tenant_id) {
+          await repo.withTenant(req.user.tenant_id, async (client) => {
+            permissions = await repo.findPermissionsForUser(req.user.sub, client);
+          });
+        } else {
+          permissions = await repo.findPermissionsForUser(req.user.sub);
+        }
       } catch (err) {
         logger.error({ err, user_id: req.user.sub }, '[identity] permission lookup failed');
         return res.status(500).json({ error: 'permission_lookup_failed', requestId: req.requestId });

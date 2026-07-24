@@ -4,35 +4,6 @@ const crypto = require('crypto');
 const jwt    = require('jsonwebtoken');
 const env    = require('../config/env');
 
-/**
- * Tokens service.
- *
- *   issueAccessToken({ userId, tenantId, primaryPropertyId, roleCodes, roleIds })
- *     => { token, expiresAt, jti }
- *
- *   verifyAccessToken(rawHeader) => { ok:true, claims } | { ok:false, reason }
- *
- *   issueRefreshToken(repo, { userId, tenantId, ttlDays, deviceName, deviceId, ipAddress, userAgent })
- *     => { token, hash, expiresAt, id }
- *
- *   rotateRefreshToken(repo, presented, ctx) => { ok, newToken?, reason? }
- *
- *   revokeRefreshToken(repo, presented) => { ok, reason? }
- *
- * Refresh tokens are opaque 256-bit random strings (base64url). We store only
- * sha256(token) in the DB and compare hashes - the raw token never lands in
- * persistent storage.
- *
- * repo contract (refresh token operations):
- *   insertRefreshToken({ user_id, tenant_id, token_hash, device_name, device_id,
- *                        ip_address, user_agent, expires_at }) => row
- *   findActiveRefreshTokenByHash(hash)  => row | null
- *   markRefreshTokenUsed(id, ts)        => void
- *   revokeRefreshToken(id, ts)          => void
- *   revokeChainFrom(id, ts)             => void   // for reuse-detection
- *   linkRotation(oldId, newId)          => void
- */
-
 const ACCESS_TTL  = env.ACCESS_TOKEN_TTL_SEC;
 const REFRESH_TTL = env.REFRESH_TOKEN_TTL_DAYS;
 const PRIMARY     = env.JWT_SECRET;
@@ -88,7 +59,12 @@ function verifyAccessToken(authHeader) {
   return { ok: true, claims };
 }
 
-async function issueRefreshToken(repo, { userId, tenantId, deviceName, deviceId, ipAddress, userAgent }) {
+/**
+ * Issue a refresh token and persist its hash.
+ * When client is provided, uses it (e.g. inside a withTenant transaction).
+ * Legacy callers omit client; the fake repo ignores the missing arg.
+ */
+async function issueRefreshToken(repo, { userId, tenantId, deviceName, deviceId, ipAddress, userAgent }, client) {
   if (!userId)   throw new Error('issueRefreshToken: userId required');
   if (!tenantId) throw new Error('issueRefreshToken: tenantId required');
   const raw  = _genOpaque();
@@ -103,32 +79,115 @@ async function issueRefreshToken(repo, { userId, tenantId, deviceName, deviceId,
     ip_address:  ipAddress  || null,
     user_agent:  userAgent  || null,
     expires_at:  expiresAt
-  });
+  }, client);
   return { token: raw, hash, expiresAt, id: row.id };
 }
 
+// ---------------------------------------------------------------------------
+// Phase 62A: RLS-safe rotation — uses resolver + withTenant atomically.
+// ---------------------------------------------------------------------------
+async function _rotateWithRLS(repo, hash, ctx, emitSecurityEvent) {
+  // B. Resolve token_id, tenant_id, user_id (no transaction, BYPASSRLS function)
+  const resolved = await repo.resolveRefreshTokenByHash(hash);
+  if (!resolved) return { ok: false, reason: 'invalid_token' };
+
+  const { token_id, tenant_id, user_id } = resolved;
+  let result = null;
+
+  // C. Open withTenant (atomic transaction for all mutations)
+  await repo.withTenant(tenant_id, async (client) => {
+    // D. Re-select token by ID, tenant and hash FOR UPDATE
+    const tokenRow = await repo.findRefreshTokenByIdAndHash(token_id, hash, client);
+    if (!tokenRow) { result = { ok: false, reason: 'invalid_token' }; return; }
+
+    // E. Revalidate: rotated_to (already used), revoked_at (explicitly revoked), expires_at
+    if (tokenRow.rotated_to || tokenRow.revoked_at) {
+      // Reuse detected — revoke all active tokens for this user within the tenant
+      await repo.revokeAllRefreshTokensForUser(user_id, client);
+      // G. Return sentinel; commit (containment committed before reused is returned)
+      result = { ok: false, reason: 'token_reuse_detected', _committed: true };
+      return;
+    }
+    if (new Date(tokenRow.expires_at) <= new Date()) {
+      result = { ok: false, reason: 'token_expired' };
+      return;
+    }
+
+    // Valid token — F. generate replacement, preserve device metadata
+    const rawNew    = _genOpaque();
+    const hashNew   = _sha256hex(rawNew);
+    const expiresAt = new Date(Date.now() + Number(REFRESH_TTL) * 86400 * 1000).toISOString();
+    const nowIso    = new Date().toISOString();
+
+    const freshRow = await repo.insertRefreshToken({
+      user_id:     tokenRow.user_id,
+      tenant_id:   tokenRow.tenant_id,
+      token_hash:  hashNew,
+      device_name: (ctx && ctx.deviceName) || tokenRow.device_name,
+      device_id:   (ctx && ctx.deviceId)   || tokenRow.device_id,
+      ip_address:  (ctx && ctx.ipAddress)  || tokenRow.ip_address,
+      user_agent:  (ctx && ctx.userAgent)  || tokenRow.user_agent,
+      expires_at:  expiresAt
+    }, client);
+
+    await repo.linkRotation(token_id, freshRow.id, client);
+    await repo.revokeRefreshToken(token_id, nowIso, client);
+    await repo.markRefreshTokenUsed(token_id, nowIso, client);
+
+    result = {
+      ok:         true,
+      newRefresh: { token: rawNew, expiresAt, id: freshRow.id },
+      userId:     tokenRow.user_id,
+      tenantId:   tokenRow.tenant_id
+    };
+  }); // commit
+
+  // Emit security event for reuse after commit
+  if (result && result.reason === 'token_reuse_detected') {
+    if (emitSecurityEvent) {
+      try { emitSecurityEvent({ type: 'auth.refresh_reuse', userId: user_id, tenantId: tenant_id }); }
+      catch (_) {}
+    }
+    return { ok: false, reason: 'token_reuse_detected' };
+  }
+
+  return result;
+}
+
 /**
- * Rotate a presented refresh token. Returns:
- *   { ok:true, newRefresh:{token, ...}, userId, tenantId }
- *   { ok:false, reason: 'invalid' | 'expired' | 'revoked' | 'reused' }
+ * Rotate a presented refresh token.
+ * Returns { ok:true, newRefresh, userId, tenantId } or { ok:false, reason }.
  *
- * Reuse detection: if the presented hash maps to a row that's already revoked,
- * we revoke the entire chain (forces re-login on all devices). This signals
- * that someone exfiltrated the token.
+ * Dispatches to the RLS-safe path when repo.withTenant + resolver are present;
+ * falls back to the legacy path for tests with in-memory repos.
  */
-async function rotateRefreshToken(repo, presented, ctx) {
+async function rotateRefreshToken(repo, presented, ctx, emitSecurityEvent) {
   if (!presented) return { ok: false, reason: 'invalid' };
   const hash = _sha256hex(presented);
-  const row  = await repo.findRefreshTokenByHash(hash);
+
+  // RLS-safe path — always taken in production (repo always has withTenant).
+  // Fail closed: if withTenant present but resolver missing, the repo is
+  // misconfigured; throw rather than fall through to broken pool-query path.
+  if (repo.withTenant) {
+    if (!repo.resolveRefreshTokenByHash) {
+      throw Object.assign(
+        new Error('[tokens] withTenant present but resolveRefreshTokenByHash missing — repo misconfigured'),
+        { code: 'TOKENS_REPO_MISCONFIGURED' }
+      );
+    }
+    return _rotateWithRLS(repo, hash, ctx, emitSecurityEvent);
+  }
+
+  // Legacy path (in-memory repos, no FORCE RLS — unit tests only)
+  const row = await repo.findRefreshTokenByHash(hash);
   if (!row) return { ok: false, reason: 'invalid' };
   if (row.revoked_at) {
-    // Reuse signal: revoke the whole chain
     if (repo.revokeChainFrom) await repo.revokeChainFrom(row.id, new Date().toISOString());
     return { ok: false, reason: 'reused' };
   }
+  if (row.rotated_to) return { ok: false, reason: 'reused' };
   if (new Date(row.expires_at) <= new Date()) return { ok: false, reason: 'expired' };
 
-  // Mark old token used + revoked; issue fresh one; link the chain.
   const nowIso = new Date().toISOString();
   if (repo.markRefreshTokenUsed) await repo.markRefreshTokenUsed(row.id, nowIso);
   await repo.revokeRefreshToken(row.id, nowIso);
@@ -144,11 +203,31 @@ async function rotateRefreshToken(repo, presented, ctx) {
   return { ok: true, newRefresh: fresh, userId: row.user_id, tenantId: row.tenant_id };
 }
 
+/**
+ * Revoke a presented refresh token.
+ * RLS-safe path uses resolver + withTenant; legacy path for test repos.
+ */
 async function revokeRefreshToken(repo, presented) {
   if (!presented) return { ok: false, reason: 'invalid' };
-  const row = await repo.findRefreshTokenByHash(_sha256hex(presented));
+  const hash = _sha256hex(presented);
+
+  // RLS-safe path
+  if (repo.withTenant && repo.resolveRefreshTokenByHash) {
+    const resolved = await repo.resolveRefreshTokenByHash(hash);
+    if (!resolved) return { ok: true }; // already gone — idempotent
+    await repo.withTenant(resolved.tenant_id, async (client) => {
+      const row = await repo.findRefreshTokenByHash(hash, client);
+      if (row && !row.revoked_at) {
+        await repo.revokeRefreshToken(row.id, new Date().toISOString(), client);
+      }
+    });
+    return { ok: true };
+  }
+
+  // Legacy path
+  const row = await repo.findRefreshTokenByHash(hash);
   if (!row) return { ok: false, reason: 'invalid' };
-  if (row.revoked_at) return { ok: true }; // idempotent
+  if (row.revoked_at) return { ok: true };
   await repo.revokeRefreshToken(row.id, new Date().toISOString());
   return { ok: true };
 }

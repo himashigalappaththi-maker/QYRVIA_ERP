@@ -57,7 +57,7 @@ export function LoginView({ services, session, navigate }) {
 
             <!-- Legacy path: tenant_code + username (hidden by default) -->
             <form id="login-form-legacy" class="space-y-4 hidden">
-              <div><label class="block text-xs uppercase tracking-wider text-slate mb-1">Tenant / Property Code</label>
+              <div><label class="block text-xs uppercase tracking-wider text-slate mb-1">Tenant Code</label>
                 <input name="code" autocomplete="organization"
                   class="w-full rounded-lg border border-outline-variant focus:border-primary px-3 py-2.5 text-sm outline-none" /></div>
               <div><label class="block text-xs uppercase tracking-wider text-slate mb-1">Username</label>
@@ -105,10 +105,9 @@ export function LoginView({ services, session, navigate }) {
         e.preventDefault();
         const f = qs('#login-form-legacy', appEl);
         const code = f.code.value.trim();
-        // Detect whether it's a tenant code or property code (heuristic: property codes contain hyphens)
-        const payload = code.includes('-')
-          ? { property_code: code, username: f.username.value.trim(), password: f.password.value }
-          : { tenant_code: code,   username: f.username.value.trim(), password: f.password.value };
+        // Always send tenant_code — the frontend cannot know the property UUID,
+        // so property login requires the email path or a future property-picker flow.
+        const payload = { tenant_code: code, username: f.username.value.trim(), password: f.password.value };
         try {
           const res = await services.auth.login(payload);
           await _handleLoginResponse(res, navigate, session);

@@ -26,6 +26,12 @@ const { authentication } = require('../middleware/authentication');
 function build(deps) {
   const { identityRepo, tokensRepo, eventBus, makeAuthEvent,
           invitationService, passwordResetService } = deps;
+  // Phase 62A: merged repo for login (T2 needs insertRefreshToken from tokensRepo).
+  // When the new RLS path is active, authRepo combines identity + token repo methods.
+  // Legacy repos (no withTenant) fall through to identityRepo unchanged.
+  const authRepo = identityRepo && identityRepo.withTenant
+    ? Object.assign({}, identityRepo, tokensRepo)
+    : identityRepo;
   const router = express.Router(); // fresh per call - tests build many apps
 
   // Rate limit login: 5 attempts / IP / minute is plenty for a real user.
@@ -54,20 +60,28 @@ function build(deps) {
       const { tenant_code, property_code, username, email, password, device_name, device_id, property_id } = req.body || {};
       // Phase 57: email path requires email+password only (no tenant/property hint).
       // Legacy path requires username + exactly one of tenant_code/property_code.
-      const useEmailPath = email && !username && !tenant_code && !property_code;
+      // Phase 62A: property_id alone (no tenant_code, no property_code) is a new login identifier.
+      // property_id alongside tenant_code or property_code remains the Phase-4 post-login filter.
+      const useEmailPath = email && !username && !tenant_code && !property_code && !property_id;
       if (!useEmailPath) {
         if (!username || !password) {
           return res.status(400).json({ error: 'missing_fields', requestId: req.requestId });
         }
-        if ((tenant_code && property_code) || (!tenant_code && !property_code)) {
-          return res.status(400).json({ error: 'invalid_login_identifiers', requestId: req.requestId,
-                                         detail: 'Provide exactly one of: tenant_code, property_code.' });
+        // Only validate the primary identifier when property_id is not the sole identifier.
+        if (!property_id || tenant_code || property_code) {
+          if ((tenant_code && property_code) || (!tenant_code && !property_code && !property_id)) {
+            return res.status(400).json({ error: 'invalid_login_identifiers', requestId: req.requestId,
+                                           detail: 'Provide exactly one of: tenant_code, property_code, property_id.' });
+          }
         }
       } else if (!password) {
         return res.status(400).json({ error: 'missing_fields', requestId: req.requestId });
       }
-      const result = await identity.attemptLogin(identityRepo,
-        { tenantCode: tenant_code, propertyCode: property_code, username, email, password });
+      const result = await identity.attemptLogin(authRepo,
+        { tenantCode: tenant_code, propertyCode: property_code, propertyId: property_id,
+          username, email, password,
+          deviceName: device_name || null, deviceId: device_id || null,
+          ipAddress: req.ip || null, userAgent: req.get('user-agent') || null });
       // Phase 4: optional property_id - validates the user has at least one
       // role granted at that property OR a tenant-wide grant.
       if (result.ok && property_id) {
@@ -96,21 +110,47 @@ function build(deps) {
         return res.status(401).json({ error: result.reason, requestId: req.requestId });
       }
 
-      const access  = tokens.issueAccessToken({
-        userId:           result.user.id,
-        tenantId:         result.user.tenant_id,
-        primaryPropertyId: result.user.primary_property_id,
-        roleCodes:        result.roles.map((r) => r.code),
-        roleIds:          result.roles.map((r) => r.id)
-      });
-      const refresh = await tokens.issueRefreshToken(tokensRepo, {
-        userId:     result.user.id,
-        tenantId:   result.user.tenant_id,
-        deviceName: device_name || null,
-        deviceId:   device_id   || null,
-        ipAddress:  req.ip      || null,
-        userAgent:  req.get('user-agent') || null
-      });
+      // Phase 62A: new RLS path has refresh token already committed in T2.
+      // Sign access token AFTER commit; compensate (revoke) if signing throws.
+      let access, refresh;
+      if (result.refreshToken) {
+        refresh = result.refreshToken;
+        try {
+          access = tokens.issueAccessToken({
+            userId:            result.user.id,
+            tenantId:          result.user.tenant_id,
+            primaryPropertyId: result.user.primary_property_id,
+            roleCodes:         result.roles.map((r) => r.code),
+            roleIds:           result.roles.map((r) => r.id)
+          });
+        } catch (signingErr) {
+          if (identityRepo.withTenant && result.user.tenant_id) {
+            try {
+              await identityRepo.withTenant(result.user.tenant_id, async (c) => {
+                await tokensRepo.revokeRefreshToken(refresh.id, new Date().toISOString(), c);
+              });
+            } catch (_) {}
+          }
+          throw signingErr;
+        }
+      } else {
+        // Legacy path: sign first (sync), then insert refresh token.
+        access = tokens.issueAccessToken({
+          userId:            result.user.id,
+          tenantId:          result.user.tenant_id,
+          primaryPropertyId: result.user.primary_property_id,
+          roleCodes:         result.roles.map((r) => r.code),
+          roleIds:           result.roles.map((r) => r.id)
+        });
+        refresh = await tokens.issueRefreshToken(tokensRepo, {
+          userId:     result.user.id,
+          tenantId:   result.user.tenant_id,
+          deviceName: device_name || null,
+          deviceId:   device_id   || null,
+          ipAddress:  req.ip      || null,
+          userAgent:  req.get('user-agent') || null
+        });
+      }
 
       if (eventBus && makeAuthEvent) {
         try {
@@ -172,7 +212,8 @@ function build(deps) {
       }
 
       // Resolve fresh roles/permissions for the new access token
-      const session = await identity.resolveSession(identityRepo, r.userId);
+      // Phase 62A: pass tenantId from rotation result for RLS-safe resolveSession.
+      const session = await identity.resolveSession(identityRepo, r.userId, r.tenantId);
       if (!session) return res.status(401).json({ error: 'user_unavailable', requestId: req.requestId });
 
       const access = tokens.issueAccessToken({
@@ -220,7 +261,8 @@ function build(deps) {
   // -------- GET /me ----------------------------------------------------
   router.get('/me', authentication, async (req, res, next) => {
     try {
-      const session = await identity.resolveSession(identityRepo, req.user.sub);
+      // Phase 62A: pass tenant_id from JWT for RLS-safe resolveSession.
+      const session = await identity.resolveSession(identityRepo, req.user.sub, req.user.tenant_id);
       if (!session) return res.status(401).json({ error: 'user_unavailable', requestId: req.requestId });
       res.status(200).json({
         user:        session.user,
@@ -238,7 +280,15 @@ function build(deps) {
       if (typeof identityRepo.listAccessibleProperties !== 'function') {
         return res.status(501).json({ error: 'not_implemented', requestId: req.requestId });
       }
-      const rows = await identityRepo.listAccessibleProperties(req.user.sub);
+      // Phase 62A: use withTenant when available for FORCE RLS compliance.
+      let rows;
+      if (identityRepo.withTenant && req.user.tenant_id) {
+        await identityRepo.withTenant(req.user.tenant_id, async (client) => {
+          rows = await identityRepo.listAccessibleProperties(req.user.sub, client);
+        });
+      } else {
+        rows = await identityRepo.listAccessibleProperties(req.user.sub);
+      }
       if (eventBus && makeAuthEvent) {
         try {
           await eventBus.publish(makeAuthEvent('auth.properties_listed', {
@@ -260,7 +310,8 @@ function build(deps) {
       if (!property_id) {
         return res.status(400).json({ error: 'property_id_required', requestId: req.requestId });
       }
-      const session = await identity.resolveSession(identityRepo, req.user.sub);
+      // Phase 62A: pass tenant_id from JWT for RLS-safe resolveSession.
+      const session = await identity.resolveSession(identityRepo, req.user.sub, req.user.tenant_id);
       if (!session) return res.status(401).json({ error: 'user_unavailable', requestId: req.requestId });
 
       const allowed = session.roles.some((r) => r.property_id === property_id || r.property_id === null);
@@ -283,14 +334,29 @@ function build(deps) {
         roleCodes:         session.roles.map((x) => x.code),
         roleIds:           session.roles.map((x) => x.id)
       });
-      const refresh = await tokens.issueRefreshToken(tokensRepo, {
-        userId:     session.user.id,
-        tenantId:   session.user.tenant_id,
-        deviceName: device_name || null,
-        deviceId:   device_id   || null,
-        ipAddress:  req.ip      || null,
-        userAgent:  req.get('user-agent') || null
-      });
+      // Phase 62A: insertRefreshToken requires a client when withTenant is active.
+      let refresh;
+      if (tokensRepo.withTenant && session.user.tenant_id) {
+        await tokensRepo.withTenant(session.user.tenant_id, async (client) => {
+          refresh = await tokens.issueRefreshToken(tokensRepo, {
+            userId:     session.user.id,
+            tenantId:   session.user.tenant_id,
+            deviceName: device_name || null,
+            deviceId:   device_id   || null,
+            ipAddress:  req.ip      || null,
+            userAgent:  req.get('user-agent') || null
+          }, client);
+        });
+      } else {
+        refresh = await tokens.issueRefreshToken(tokensRepo, {
+          userId:     session.user.id,
+          tenantId:   session.user.tenant_id,
+          deviceName: device_name || null,
+          deviceId:   device_id   || null,
+          ipAddress:  req.ip      || null,
+          userAgent:  req.get('user-agent') || null
+        });
+      }
 
       if (eventBus && makeAuthEvent) {
         try {

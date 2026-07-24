@@ -688,7 +688,10 @@ const app = createApp({
   patrolRepo
 });
 
-const server = app.listen(env.PORT, () => {
+// BIND_HOST: when set (e.g. '127.0.0.1') the server binds only to that
+// interface. Default (unset) binds to all interfaces — existing behaviour.
+const _bindHost = process.env.BIND_HOST || undefined;
+const server = app.listen(env.PORT, _bindHost, () => {
   logger.info({ port: env.PORT, env: env.NODE_ENV }, '[qyrvia] listening');
 });
 

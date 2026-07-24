@@ -6,14 +6,240 @@
  *
  * Repositories are kept thin (no business rules). Tenant scoping is enforced
  * by the SQL queries themselves AND by RLS on the DB side (post-0004).
+ *
+ * Phase 62A: auth-critical methods now require a tenant-scoped client obtained
+ * via withTenant(). Pre-auth resolver methods use pool.query directly against
+ * SECURITY DEFINER functions in the auth_resolvers schema (bypass RLS).
  */
 
 const crypto = require('crypto');
+const { withTenant } = require('./client');
+
+function _requireClient(client, label) {
+  if (!client || typeof client.query !== 'function') {
+    throw Object.assign(
+      new Error((label || 'repo') + ': tenant-scoped DB client required'),
+      { code: 'CLIENT_REQUIRED' }
+    );
+  }
+}
 
 function buildRepos(pool) {
 
+  // Phase 62A: pool-local withTenant. Uses the same pool instance passed to
+  // buildRepos so unit tests with mock pools (no pool.connect) are not routed
+  // through the global pool in client.js. When pool has no connect() (mock),
+  // the callback receives pool directly — no BEGIN/COMMIT needed because mock
+  // pools have no real FORCE RLS.
+  async function _withTenantForPool(tenantId, cb) {
+    if (!tenantId) throw new Error('_withTenantForPool: tenantId is required');
+    if (typeof pool.connect !== 'function') {
+      return cb(pool); // mock pool: bypass transaction scaffolding
+    }
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+      const result = await cb(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   // ---- identity-repo --------------------------------------------------
   const identityRepo = {
+    // withTenant from client.js — callers open a tenant-scoped transaction
+    // and pass the scoped client to repo methods.
+    withTenant,
+
+    // --- Pre-auth resolvers (pool.query OK: SECURITY DEFINER functions) ---
+    async resolveByEmail(email) {
+      const r = await pool.query(
+        `SELECT user_id, tenant_id FROM auth_resolvers.resolve_by_email($1)`,
+        [String(email).trim()]
+      );
+      return r.rows[0] || null;
+    },
+    async resolveByTenantUsername(tenantCode, username) {
+      const r = await pool.query(
+        `SELECT user_id, tenant_id FROM auth_resolvers.resolve_by_tenant_username($1, $2)`,
+        [tenantCode, username]
+      );
+      return r.rows[0] || null;
+    },
+    async resolveByPropertyIdUsername(propertyId, username) {
+      const r = await pool.query(
+        `SELECT user_id, tenant_id, property_id FROM auth_resolvers.resolve_by_property_id_username($1, $2)`,
+        [propertyId, username]
+      );
+      return r.rows[0] || null;
+    },
+
+    // --- Tenant-scoped read methods (client required) ---
+    async findUserById(id, client, opts) {
+      _requireClient(client, 'findUserById');
+      const forUpdate = opts && opts.forUpdate;
+      const sql = forUpdate
+        ? `SELECT * FROM users WHERE id = $1 AND soft_deleted_at IS NULL LIMIT 1 FOR UPDATE`
+        : `SELECT * FROM users WHERE id = $1 AND soft_deleted_at IS NULL LIMIT 1`;
+      const r = await client.query(sql, [id]);
+      return r.rows[0] || null;
+    },
+    async findTenantStatus(tenantId, client) {
+      _requireClient(client, 'findTenantStatus');
+      const r = await client.query(`SELECT status FROM tenants WHERE id = $1 LIMIT 1`, [tenantId]);
+      return r.rows[0] ? r.rows[0].status : null;
+    },
+    async findPropertyForAuth(propertyId, client) {
+      _requireClient(client, 'findPropertyForAuth');
+      const r = await client.query(
+        `SELECT id, tenant_id, active FROM properties WHERE id = $1 LIMIT 1`,
+        [propertyId]
+      );
+      return r.rows[0] || null;
+    },
+    async findRolesForUser(userId, client) {
+      _requireClient(client, 'findRolesForUser');
+      const sql = `
+        SELECT r.id, r.code, r.scope, ur.property_id
+          FROM user_roles ur
+          JOIN roles r ON r.id = ur.role_id
+         WHERE ur.user_id = $1`;
+      const r = await client.query(sql, [userId]);
+      return r.rows;
+    },
+    async findPermissionsForUser(userId, client) {
+      _requireClient(client, 'findPermissionsForUser');
+      const sql = `
+        SELECT DISTINCT p.code
+          FROM user_roles ur
+          JOIN role_permissions rp ON rp.role_id = ur.role_id
+          JOIN permissions p      ON p.id = rp.permission_id
+         WHERE ur.user_id = $1`;
+      const r = await client.query(sql, [userId]);
+      return r.rows.map((x) => x.code);
+    },
+    async listAccessibleProperties(userId, client) {
+      // client is optional: when present (auth/identityContext via withTenant), uses
+      // tenant-scoped connection; when absent (operational repos for property resolution),
+      // falls back to pool.query (non-RLS path, acceptable for property picker).
+      const db = client || pool;
+      const sql = `
+        WITH role_props AS (
+          SELECT DISTINCT ur.property_id
+            FROM user_roles ur
+           WHERE ur.user_id = $1 AND ur.property_id IS NOT NULL
+        ),
+        scoped AS (
+          SELECT p.id, p.code, p.name, p.tenant_id, p.active
+            FROM properties p
+           WHERE p.id IN (SELECT property_id FROM role_props)
+              OR p.id = (SELECT primary_property_id FROM users WHERE id = $1)
+        )
+        SELECT s.id, s.code, s.name, s.tenant_id, s.active,
+               COALESCE(array_agg(r.code) FILTER (WHERE r.code IS NOT NULL), ARRAY[]::text[]) AS role_codes
+          FROM scoped s
+          LEFT JOIN user_roles ur ON ur.user_id = $1 AND (ur.property_id = s.id OR ur.property_id IS NULL)
+          LEFT JOIN roles r ON r.id = ur.role_id
+         WHERE s.active = true
+         GROUP BY s.id, s.code, s.name, s.tenant_id, s.active
+         ORDER BY s.code`;
+      const r = await db.query(sql, [userId]);
+      return r.rows;
+    },
+    async canAccessProperty(userId, propertyId, client) {
+      // client is optional: when present (identityContext via withTenant), uses
+      // tenant-scoped connection; when absent (operational repos), falls back to pool.
+      const db = client || pool;
+      const r = await db.query(
+        `SELECT EXISTS (
+           SELECT 1 FROM user_roles ur
+            WHERE ur.user_id = $1 AND (ur.property_id = $2 OR ur.property_id IS NULL)
+           UNION ALL
+           SELECT 1 FROM users u
+            WHERE u.id = $1 AND u.primary_property_id = $2
+         ) AS ok`, [userId, propertyId]);
+      return r.rows[0].ok === true;
+    },
+    async updateUserOnSuccessfulLogin(userId, client) {
+      _requireClient(client, 'updateUserOnSuccessfulLogin');
+      await client.query(
+        `UPDATE users
+            SET last_login_at = now(),
+                failed_login_count = 0,
+                locked_until = NULL,
+                updated_at = now()
+          WHERE id = $1`,
+        [userId]
+      );
+    },
+    async updateUserOnFailedLogin(userId, client) {
+      _requireClient(client, 'updateUserOnFailedLogin');
+      await client.query(
+        `UPDATE users
+            SET failed_login_count = failed_login_count + 1,
+                locked_until = CASE
+                  WHEN failed_login_count + 1 >= 5 THEN now() + INTERVAL '15 minutes'
+                  ELSE locked_until END,
+                status = CASE
+                  WHEN failed_login_count + 1 >= 5 THEN 'LOCKED'::user_status
+                  ELSE status END,
+                updated_at = now()
+          WHERE id = $1`,
+        [userId]
+      );
+    },
+
+    // Phase 21: read-only IAM listings. Never returns password_hash.
+    async listUsers(tenantId) {
+      const r = await pool.query(
+        `SELECT id, tenant_id, username, email, full_name, primary_property_id,
+                status, last_login_at, locked_until, created_at
+           FROM users
+          WHERE tenant_id = $1 AND soft_deleted_at IS NULL
+          ORDER BY username
+          LIMIT 500`,
+        [tenantId]
+      );
+      return r.rows;
+    },
+    async listRoles() {
+      const r = await pool.query(
+        `SELECT id, code, name, description, scope, is_system FROM roles ORDER BY code`
+      );
+      return r.rows;
+    },
+    async insertUser(rec) {
+      const r = await pool.query(
+        `INSERT INTO users (tenant_id, username, email, password_hash, full_name, primary_property_id, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING *`,
+        [rec.tenant_id, rec.username, rec.email, rec.password_hash, rec.full_name, rec.primary_property_id, rec.status]
+      );
+      return r.rows[0];
+    },
+    async insertUserRoleByCode({ user_id, role_code, tenant_id, property_id, granted_by }) {
+      await pool.query(
+        `INSERT INTO user_roles (user_id, role_id, tenant_id, property_id, granted_by)
+         SELECT $1, r.id, $2, $3, $4 FROM roles r WHERE r.code = $5
+         ON CONFLICT DO NOTHING`,
+        [user_id, tenant_id, property_id, granted_by, role_code]
+      );
+    },
+    async findPropertyBusinessDate(propertyId) {
+      const r = await pool.query(
+        `SELECT current_business_date, business_date_locked FROM properties WHERE id = $1 LIMIT 1`,
+        [propertyId]
+      );
+      return r.rows[0] || null;
+    },
+
+    // Legacy pre-62A pool-based lookups — broken under FORCE RLS; kept for backward compat.
     async findUserByTenantUsername(tenantCode, username) {
       const sql = `
         SELECT u.*, t.status AS tenant_status, t.id AS tenant_id_resolved
@@ -51,155 +277,7 @@ function buildRepos(pool) {
       return r.rows[0] || null;
     },
 
-    // Phase 6 / C2: list properties the user has any role at, plus the
-    // user's primary_property_id (always included).
-    async listAccessibleProperties(userId) {
-      const sql = `
-        WITH role_props AS (
-          SELECT DISTINCT ur.property_id
-            FROM user_roles ur
-           WHERE ur.user_id = $1 AND ur.property_id IS NOT NULL
-        ),
-        scoped AS (
-          SELECT p.id, p.code, p.name, p.tenant_id, p.active
-            FROM properties p
-           WHERE p.id IN (SELECT property_id FROM role_props)
-              OR p.id = (SELECT primary_property_id FROM users WHERE id = $1)
-        )
-        SELECT s.id, s.code, s.name, s.tenant_id, s.active,
-               COALESCE(array_agg(r.code) FILTER (WHERE r.code IS NOT NULL), ARRAY[]::text[]) AS role_codes
-          FROM scoped s
-          LEFT JOIN user_roles ur ON ur.user_id = $1 AND (ur.property_id = s.id OR ur.property_id IS NULL)
-          LEFT JOIN roles r ON r.id = ur.role_id
-         WHERE s.active = true
-         GROUP BY s.id, s.code, s.name, s.tenant_id, s.active
-         ORDER BY s.code`;
-      const r = await pool.query(sql, [userId]);
-      return r.rows;
-    },
-
-    // Phase 31.5: property authorization. True if the user may act on propertyId:
-    // a role explicitly scoped to it, a tenant-wide role (property_id IS NULL =>
-    // all properties of the company), or it being the user's primary property.
-    // RLS additionally guarantees propertyId belongs to the user's tenant.
-    async canAccessProperty(userId, propertyId) {
-      const r = await pool.query(
-        `SELECT EXISTS (
-           SELECT 1 FROM user_roles ur
-            WHERE ur.user_id = $1 AND (ur.property_id = $2 OR ur.property_id IS NULL)
-           UNION ALL
-           SELECT 1 FROM users u
-            WHERE u.id = $1 AND u.primary_property_id = $2
-         ) AS ok`, [userId, propertyId]);
-      return r.rows[0].ok === true;
-    },
-
-    async findUserById(id) {
-      const r = await pool.query(`SELECT * FROM users WHERE id = $1 AND soft_deleted_at IS NULL LIMIT 1`, [id]);
-      return r.rows[0] || null;
-    },
-
-    async findRolesForUser(userId) {
-      const sql = `
-        SELECT r.id, r.code, r.scope, ur.property_id
-          FROM user_roles ur
-          JOIN roles r ON r.id = ur.role_id
-         WHERE ur.user_id = $1`;
-      const r = await pool.query(sql, [userId]);
-      return r.rows;
-    },
-
-    async findPermissionsForUser(userId) {
-      const sql = `
-        SELECT DISTINCT p.code
-          FROM user_roles ur
-          JOIN role_permissions rp ON rp.role_id = ur.role_id
-          JOIN permissions p      ON p.id = rp.permission_id
-         WHERE ur.user_id = $1`;
-      const r = await pool.query(sql, [userId]);
-      return r.rows.map((x) => x.code);
-    },
-
-    // Phase 21: read-only IAM listings (no RBAC change). Never returns password_hash.
-    async listUsers(tenantId) {
-      const r = await pool.query(
-        `SELECT id, tenant_id, username, email, full_name, primary_property_id,
-                status, last_login_at, locked_until, created_at
-           FROM users
-          WHERE tenant_id = $1 AND soft_deleted_at IS NULL
-          ORDER BY username
-          LIMIT 500`,
-        [tenantId]
-      );
-      return r.rows;
-    },
-    async listRoles() {
-      const r = await pool.query(
-        `SELECT id, code, name, description, scope, is_system FROM roles ORDER BY code`
-      );
-      return r.rows;
-    },
-
-    async updateUserOnSuccessfulLogin(userId) {
-      await pool.query(
-        `UPDATE users
-            SET last_login_at = now(),
-                failed_login_count = 0,
-                locked_until = NULL,
-                updated_at = now()
-          WHERE id = $1`,
-        [userId]
-      );
-    },
-
-    async updateUserOnFailedLogin(userId) {
-      // 5 strikes -> lock for 15 minutes
-      await pool.query(
-        `UPDATE users
-            SET failed_login_count = failed_login_count + 1,
-                locked_until = CASE
-                  WHEN failed_login_count + 1 >= 5 THEN now() + INTERVAL '15 minutes'
-                  ELSE locked_until END,
-                status = CASE
-                  WHEN failed_login_count + 1 >= 5 THEN 'LOCKED'::user_status
-                  ELSE status END,
-                updated_at = now()
-          WHERE id = $1`,
-        [userId]
-      );
-    },
-
-    async insertUser(rec) {
-      const r = await pool.query(
-        `INSERT INTO users (tenant_id, username, email, password_hash, full_name, primary_property_id, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING *`,
-        [rec.tenant_id, rec.username, rec.email, rec.password_hash, rec.full_name, rec.primary_property_id, rec.status]
-      );
-      return r.rows[0];
-    },
-
-    async insertUserRoleByCode({ user_id, role_code, tenant_id, property_id, granted_by }) {
-      await pool.query(
-        `INSERT INTO user_roles (user_id, role_id, tenant_id, property_id, granted_by)
-         SELECT $1, r.id, $2, $3, $4 FROM roles r WHERE r.code = $5
-         ON CONFLICT DO NOTHING`,
-        [user_id, tenant_id, property_id, granted_by, role_code]
-      );
-    },
-
-    async findPropertyBusinessDate(propertyId) {
-      const r = await pool.query(
-        `SELECT current_business_date, business_date_locked FROM properties WHERE id = $1 LIMIT 1`,
-        [propertyId]
-      );
-      return r.rows[0] || null;
-    },
-
-    // Phase 57: global email lookup for SaaS email-based login.
-    // Tenant is unknown at login time when only email+password are supplied;
-    // this intentionally bypasses the per-tenant RLS filter by running on the
-    // unrestricted app pool (same pattern as findUserByTenantUsername above).
+    // Phase 57: global email lookup — legacy, broken under FORCE RLS; kept for backward compat.
     async findUserByEmailGlobal(email) {
       const sql = `
         SELECT u.*, t.status AS tenant_status
@@ -215,8 +293,20 @@ function buildRepos(pool) {
 
   // ---- tokens repo ----------------------------------------------------
   const tokensRepo = {
-    async insertRefreshToken(rec) {
+    withTenant,
+
+    // Pre-auth resolver (pool.query OK: SECURITY DEFINER function)
+    async resolveRefreshTokenByHash(hash) {
       const r = await pool.query(
+        `SELECT token_id, tenant_id, user_id FROM auth_resolvers.resolve_refresh_token_by_hash($1)`,
+        [hash]
+      );
+      return r.rows[0] || null;
+    },
+
+    async insertRefreshToken(rec, client) {
+      _requireClient(client, 'insertRefreshToken');
+      const r = await client.query(
         `INSERT INTO refresh_tokens
            (user_id, tenant_id, token_hash, device_name, device_id, ip_address, user_agent, expires_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -226,31 +316,37 @@ function buildRepos(pool) {
       return r.rows[0];
     },
 
-    async findRefreshTokenByHash(hash) {
-      const r = await pool.query(`SELECT * FROM refresh_tokens WHERE token_hash = $1 LIMIT 1`, [hash]);
+    async findRefreshTokenByHash(hash, client) {
+      _requireClient(client, 'findRefreshTokenByHash');
+      const r = await client.query(
+        `SELECT * FROM refresh_tokens WHERE token_hash = $1 LIMIT 1`,
+        [hash]
+      );
       return r.rows[0] || null;
     },
 
-    async markRefreshTokenUsed(id, ts) {
-      await pool.query(`UPDATE refresh_tokens SET last_used_at = $2 WHERE id = $1`, [id, ts]);
-    },
-
-    async revokeRefreshToken(id, ts) {
-      await pool.query(`UPDATE refresh_tokens SET revoked_at = $2 WHERE id = $1`, [id, ts]);
-    },
-
-    async revokeChainFrom(id, ts) {
-      // Revoke the row + everything it rotated to (transitive)
-      await pool.query(
-        `WITH RECURSIVE chain AS (
-           SELECT id FROM refresh_tokens WHERE id = $1
-           UNION ALL
-           SELECT rt.id FROM refresh_tokens rt JOIN chain c ON rt.id = c.id  -- single row guarded
-         ) UPDATE refresh_tokens SET revoked_at = $2 WHERE id IN (SELECT id FROM chain)`,
-        [id, ts]
+    async findRefreshTokenByIdAndHash(id, hash, client) {
+      _requireClient(client, 'findRefreshTokenByIdAndHash');
+      const r = await client.query(
+        `SELECT * FROM refresh_tokens WHERE id = $1 AND token_hash = $2 LIMIT 1 FOR UPDATE`,
+        [id, hash]
       );
-      // Also walk forward via rotated_to
-      await pool.query(
+      return r.rows[0] || null;
+    },
+
+    async markRefreshTokenUsed(id, ts, client) {
+      _requireClient(client, 'markRefreshTokenUsed');
+      await client.query(`UPDATE refresh_tokens SET last_used_at = $2 WHERE id = $1`, [id, ts]);
+    },
+
+    async revokeRefreshToken(id, ts, client) {
+      _requireClient(client, 'revokeRefreshToken');
+      await client.query(`UPDATE refresh_tokens SET revoked_at = $2 WHERE id = $1`, [id, ts]);
+    },
+
+    async revokeChainFrom(id, ts, client) {
+      _requireClient(client, 'revokeChainFrom');
+      await client.query(
         `WITH RECURSIVE forward AS (
            SELECT id, rotated_to FROM refresh_tokens WHERE id = $1
            UNION ALL
@@ -260,13 +356,14 @@ function buildRepos(pool) {
       );
     },
 
-    async linkRotation(oldId, newId) {
-      await pool.query(`UPDATE refresh_tokens SET rotated_to = $2 WHERE id = $1`, [oldId, newId]);
+    async linkRotation(oldId, newId, client) {
+      _requireClient(client, 'linkRotation');
+      await client.query(`UPDATE refresh_tokens SET rotated_to = $2 WHERE id = $1`, [oldId, newId]);
     },
 
-    // Phase 57: revoke all active refresh tokens for a user (e.g. after password reset).
-    async revokeAllRefreshTokensForUser(userId) {
-      await pool.query(
+    async revokeAllRefreshTokensForUser(userId, client) {
+      _requireClient(client, 'revokeAllRefreshTokensForUser');
+      await client.query(
         `UPDATE refresh_tokens SET revoked_at = now()
           WHERE user_id = $1 AND revoked_at IS NULL`,
         [userId]
@@ -2259,8 +2356,19 @@ function buildRepos(pool) {
   // (POS_PROPERTY_REQUIRED / PATROL_PROPERTY_REQUIRED) while sharing one
   // authorization-resolution implementation.
   async function _resolveAuthorizedPropertyId(ctx, requiredCode) {
+    // Phase 62A: user_roles has FORCE RLS. Use _withTenantForPool so the GUC
+    // is set before querying canAccessProperty / listAccessibleProperties.
+    // _withTenantForPool uses the same pool as buildRepos so unit tests with
+    // mock pools continue to work without hitting the global pool.
     if (ctx.propertyId) {
-      const ok = await identityRepo.canAccessProperty(ctx.actorId, ctx.propertyId);
+      let ok = false;
+      if (ctx.tenantId) {
+        await _withTenantForPool(ctx.tenantId, async (client) => {
+          ok = await identityRepo.canAccessProperty(ctx.actorId, ctx.propertyId, client);
+        });
+      } else {
+        ok = await identityRepo.canAccessProperty(ctx.actorId, ctx.propertyId);
+      }
       if (!ok) {
         throw Object.assign(
           new Error('user is not authorized for the active property'),
@@ -2269,7 +2377,14 @@ function buildRepos(pool) {
       }
       return ctx.propertyId;
     }
-    const accessible = await identityRepo.listAccessibleProperties(ctx.actorId);
+    let accessible = [];
+    if (ctx.tenantId) {
+      await _withTenantForPool(ctx.tenantId, async (client) => {
+        accessible = await identityRepo.listAccessibleProperties(ctx.actorId, client);
+      });
+    } else {
+      accessible = await identityRepo.listAccessibleProperties(ctx.actorId);
+    }
     if (!accessible || accessible.length === 0) {
       throw Object.assign(
         new Error('user has no authorized property'),
