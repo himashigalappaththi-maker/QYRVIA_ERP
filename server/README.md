@@ -1,18 +1,24 @@
-# QYRVIA Server — Phase 1
+# QYRVIA Server
 
-Backend foundation for QYRVIA Enterprise ERP. Phase 1 delivers the kernel
-primitives every later phase depends on:
+Node.js/Express backend for QYRVIA Enterprise Hotel Property Management ERP.
+Multi-tenant, multi-property, PostgreSQL with full Row-Level Security.
 
-- **Process bootstrap** with structured logging (pino) and graceful shutdown.
-- **PostgreSQL connection** with a tenant-scoping helper (`withTenant`).
-- **Schema migrations** (raw SQL files, no ORM lock-in).
-- **In-memory event bus** with a built-in `audit_events` persistence subscriber.
-- **Command bus** that routes every business action through the audit pipeline.
-- **`/api` URL surface** stubbed end-to-end (`/health`, `/core/commands/:name`,
-  `/connector/:id/probe`, `/connector/:id/health`) so the frontend stops
-  seeing network errors against unimplemented routes.
+Current delivery (Phase 62A): RLS-safe T1/T2 login, token rotation, and
+property resolution hardening. The system includes:
 
-No business features. No auth. That's Phase 2+.
+- **Auth** — JWT + refresh-token rotation, SECURITY DEFINER pre-auth resolvers,
+  FORCE RLS on all tenant tables, bcrypt outside transactions.
+- **PMS** — reservations, room inventory, rate plans, check-in/check-out, folio,
+  housekeeping, night audit, guests, group reservations.
+- **Finance** — billing, cost centers, revenue management, dynamic pricing.
+- **Channel Manager** — OTA adapter framework, ARI sync, inbound webhook
+  dedup, outbound queue/worker, credential store.
+- **Platform** — RBAC, IAM, event bus, command bus, observability, scheduler.
+- **Operations** — incidents, maintenance work orders, attendance events,
+  gate passes, patrol security.
+- **Booking Engine** — AI booking confirmation, multi-provider LLM support.
+- **Process bootstrap** — pino structured logging, graceful shutdown,
+  PostgreSQL pool with `withTenant` tenant-scoping, raw-SQL migration runner.
 
 ## Quick start
 
@@ -47,7 +53,7 @@ curl -H "X-Tenant-Id: 00000000-0000-0000-0000-000000000000" \
 | `X-Tenant-Id`  | `/api/core/*`, `/api/connector/*` | UUID. Health endpoints exempt. |
 | `X-Property-Id`| Optional | UUID. Some commands will require it in later phases. |
 
-## Architecture (Phase 1 surface)
+## Architecture (request pipeline)
 
 ```
 HTTP request
@@ -123,11 +129,15 @@ npm test
 
 Uses Node's built-in `node:test` runner — no extra deps.
 
-## Row-Level Security note
+## Row-Level Security
 
-Phase 1 enables RLS on `tenants`, `properties`, `audit_events` but
-**intentionally adds no policies yet** — policies arrive in Phase 3 (Auth)
-when the session can issue `SET LOCAL app.tenant_id`. The application contract
-is already correct: every query that should be tenant-scoped goes through
-`withTenant(tenantId, cb)` in `db/client.js`. When Phase 3 lands the policies,
-no application code changes.
+All tenant-scoped tables have `ENABLE + FORCE ROW LEVEL SECURITY`. Policies
+gate on `app.tenant_id` GUC set via `withTenant(tenantId, cb)` in `db/client.js`.
+Pre-auth lookups use four `SECURITY DEFINER` functions in the `auth_resolvers`
+schema (owned by `qyrvia_auth_resolver`, a `BYPASSRLS` NOLOGIN role) so login
+can resolve user/tenant identity before a tenant GUC context exists.
+
+Column grants on public tables to `qyrvia_auth_resolver` are applied by
+migration `0083_auth_resolvers_grants.sql`. The roles and functions are created
+by `scripts/db/phase62a_auth_resolvers_bootstrap.sql` which must be run as a
+superuser before the first migration on any new instance.
