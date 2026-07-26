@@ -396,10 +396,21 @@ function makeCommands({ pmsRepo }) {
 
         const rtype = input.reservation_type || 'INDIVIDUAL';
 
+        // Phase 63 P0-6: a two-phase (pay-to-hold) booking must land in
+        // PENDING_PAYMENT so the availability engine counts it as consumed for
+        // the duration of the payment hold. Anything else stays INQUIRY —
+        // existing callers are unaffected. The allow-list is closed: a caller
+        // cannot inject an arbitrary status here.
+        const INITIAL_STATUSES = ['INQUIRY', 'PENDING_PAYMENT'];
+        const initialStatus = input.initial_status || 'INQUIRY';
+        if (!INITIAL_STATUSES.includes(initialStatus)) {
+          return { ok: false, error: 'invalid_initial_status', detail: String(initialStatus) };
+        }
+
         const row = await pmsRepo.insertReservation({
           tenant_id: ctx.tenantId, property_id: ctx.propertyId,
           reservation_number: number,
-          reservation_type: rtype, status: 'INQUIRY',
+          reservation_type: rtype, status: initialStatus,
           holder_guest_id: holderId, primary_adult_guest_id: primaryAdultId,
           arrival_date: arrival, departure_date: departure,
           adults, children, room_type_id: roomTypeId,
@@ -416,7 +427,7 @@ function makeCommands({ pmsRepo }) {
 
         return { ok: true, result: { id: row.id, reservation_number: number, sequence, year }, events: [
           makeEvent({ type: 'reservation.created', aggregateType: 'reservation', aggregateId: row.id,
-            payload: { reservation_number: number, reservation_type: rtype, status: 'INQUIRY',
+            payload: { reservation_number: number, reservation_type: rtype, status: initialStatus,
                        holder_guest_id: holderId, room_type_id: roomTypeId,
                        arrival_date: arrival, departure_date: departure, adults, children,
                        allocation_id: input.allocation_id || null,
@@ -467,7 +478,9 @@ function makeCommands({ pmsRepo }) {
       const before = await pmsRepo.findReservationById(ctx.tenantId, input.reservation_id);
       if (!before) return { ok: false, error: 'reservation_not_found' };
       const fromStatus = before.status;
-      if (!['INQUIRY', 'OPTION'].includes(fromStatus)) {
+      // Phase 63 P0-6: PENDING_PAYMENT is the two-phase hold state; confirming
+      // it after a verified payment is the normal Booking Engine path.
+      if (!['INQUIRY', 'OPTION', 'PENDING_PAYMENT'].includes(fromStatus)) {
         return { ok: false, error: 'invalid_transition', detail: 'from ' + fromStatus };
       }
       const updated = await pmsRepo.setReservationStatus(ctx.tenantId, input.reservation_id, 'CONFIRMED', {});
@@ -489,7 +502,9 @@ function makeCommands({ pmsRepo }) {
       ]};
     }
   });
-  list.push(transitionCmd('pms.reservation.cancel',  'reservation.cancelled', 'CANCELLED', { requireFrom: ['INQUIRY','OPTION','CONFIRMED'] }));
+  // Phase 63 P0-6: an expired payment hold is cancelled from PENDING_PAYMENT by
+  // the hold-expiry sweep, so that status must be cancellable.
+  list.push(transitionCmd('pms.reservation.cancel',  'reservation.cancelled', 'CANCELLED', { requireFrom: ['INQUIRY','OPTION','CONFIRMED','PENDING_PAYMENT'] }));
   list.push(transitionCmd('pms.reservation.noShow',  'reservation.no_show',   'NO_SHOW',   { requireFrom: ['CONFIRMED'] }));
 
   // -- pms.reservation.update (Phase 21: edit a pre-stay booking) ----------

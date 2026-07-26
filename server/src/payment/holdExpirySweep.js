@@ -14,8 +14,16 @@ const logger = require('../config/logger');
  *
  * ARI adjustSold is NOT called here because initiateBooking does not call
  * adjustSold(+1). The ARI inventory is only adjusted at confirmBooking time,
- * so hold expiry only affects PMS availability (INQUIRY reservation cancelled),
- * not the ARI sold counter.
+ * so hold expiry only affects PMS availability, not the ARI sold counter.
+ *
+ * Phase 63 P0-6: the reservation being cancelled is now PENDING_PAYMENT (it was
+ * INQUIRY, which the PMS availability engine did not count as consumed — so an
+ * expiring hold released inventory that had never been taken in the first
+ * place, and concurrent guests all saw the same last room as free).
+ *
+ * Phase 63 P0-8: the 'pending_payment' -> 'failed' transition is an atomic
+ * compare-and-set, so the sweep and confirmBooking can no longer both act on
+ * the same hold.
  *
  * DI:
  *   paymentStateStore  — supports findExpiredHolds(client?) + getByReservationId + upsert
@@ -61,17 +69,27 @@ function buildHoldExpirySweep({ paymentStateStore, commandBus, withTenantFn = nu
       };
 
       try {
-        // Idempotency: re-read before acting — another sweep or confirmBooking may
-        // have already transitioned this record out of pending_payment.
-        const current = await paymentStateStore.getByReservationId(hold.reservation_id, holdCtx);
-        if (!current || current.payment_status !== 'pending_payment') continue;
-
-        // Step 1: transition to 'failed' BEFORE PMS cancel so confirmBooking cannot race.
-        await paymentStateStore.upsert({
-          reservation_id: hold.reservation_id,
-          payment_status: 'failed',
-          failed_at:      new Date().toISOString(),
-        }, holdCtx);
+        // Phase 63 P0-8: claim the hold with an ATOMIC compare-and-set.
+        //
+        // The old read-then-upsert was not a CAS: confirmBooking could read
+        // 'pending', the sweep could then flip the row and cancel the PMS
+        // reservation, and confirm would still charge the guest. Now exactly
+        // one of {sweep, confirm} wins; the loser gets null and stands down.
+        if (typeof paymentStateStore.transitionPending === 'function') {
+          const claimed = await paymentStateStore.transitionPending(
+            hold.reservation_id, 'failed', { failed_at: new Date().toISOString() }, holdCtx
+          );
+          if (!claimed) continue; // confirmBooking (or another sweep) got there first
+        } else {
+          // Legacy store without CAS support — preserve the old best-effort path.
+          const current = await paymentStateStore.getByReservationId(hold.reservation_id, holdCtx);
+          if (!current || current.payment_status !== 'pending_payment') continue;
+          await paymentStateStore.upsert({
+            reservation_id: hold.reservation_id,
+            payment_status: 'failed',
+            failed_at:      new Date().toISOString(),
+          }, holdCtx);
+        }
 
         // Step 2: cancel the PMS reservation. Log failure but do not undo step 1.
         try {

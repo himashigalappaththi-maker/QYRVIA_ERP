@@ -38,6 +38,9 @@ function _makeFakeReposCore(overrides = {}) {
   const userPerms = new Map();
   const refreshTokens = new Map();
   const propertyDates = new Map();
+  // Property ids deliberately made invisible (RLS-blocked / nonexistent) so a
+  // test can exercise the fail-closed branch of the businessDate middleware.
+  const unknownProperties = new Set();
   const _propertiesById = new Map();   // Phase 6 / C2 + C3 fixture state
 
   const identityRepo = Object.assign({
@@ -82,9 +85,24 @@ function _makeFakeReposCore(overrides = {}) {
       list.push({ id: 'role-' + role_code, code: role_code, scope: 'TENANT', property_id: null });
       userRoles.set(user_id, list);
     },
+    // Phase 63 P0-9: model production faithfully. In PostgreSQL this is
+    //   SELECT current_business_date, business_date_locked FROM properties WHERE id = $1
+    // so an EXISTING, VISIBLE property always yields a ROW — with a null
+    // current_business_date when it has never been night-audited. NULL means
+    // "no such property / not visible" (wrong tenant, RLS blocked, deleted),
+    // which the middleware must now fail closed on rather than silently
+    // assuming today's date and businessDateLocked=false.
+    //
+    // The old fixture returned null for any unseeded property, conflating those
+    // two very different states and hiding the fail-open bug.
     async findPropertyBusinessDate(propertyId) {
-      return propertyDates.get(propertyId) || null;
+      const seeded = propertyDates.get(propertyId);
+      if (seeded) return seeded;
+      if (unknownProperties.has(propertyId)) return null;
+      return { current_business_date: null, business_date_locked: false };
     },
+    /** Test helper: mark a property id as NOT visible (RLS-blocked / nonexistent). */
+    _markPropertyUnresolvable(propertyId) { unknownProperties.add(propertyId); },
 
     // Phase 6 / C3: in-memory property-code login resolver.
     // Phase 57: global email lookup (bypasses per-tenant scope, same as production app pool)

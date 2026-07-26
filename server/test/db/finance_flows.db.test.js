@@ -31,6 +31,8 @@ if (!URL) {
   const commandBus = require('../../src/core/commandBus');
   const eventBus   = require('../../src/core/eventBus');
   const { buildRepos } = require('../../src/db/repos');
+  const tenantUow = require('../../src/db/tenantUnitOfWork');
+  const { asTenantScoped } = require('../../src/commands/_tenantScoped');
   const { buildLedgerService } = require('../../src/services/finance/ledger');
   const { buildPaymentAllocationService } = require('../../src/services/pms/paymentAllocation');
   const { makeInvoiceCommands } = require('../../src/commands/pms/invoices');
@@ -68,26 +70,39 @@ if (!URL) {
     const paySvc = buildPaymentAllocationService({ folioRepo: repos.folioRepo, pmsRepo: repos.pmsRepo });
 
     commandBus.reset();
-    makeInvoiceCommands({ folioRepo: repos.folioRepo, pmsRepo: repos.pmsRepo, ledgerService }).forEach((c) => commandBus.register(c));
-    makePaymentAllocationCommands({ paymentAllocationService: paySvc, ledgerService }).forEach((c) => commandBus.register(c));
-    makeLedgerCommands({ ledgerService }).forEach((c) => commandBus.register(c));
+    // Phase 64: wire the SAME unit of work production wires, and stamp the
+    // commands tenantScoped, so this test exercises the real transaction
+    // boundary rather than side-stepping it.
+    commandBus.setUnitOfWork({
+      pool: admin,
+      runWithTenantTransaction: tenantUow.runWithTenantTransaction,
+      runWithTenantRead:        tenantUow.runWithTenantRead
+    });
+    asTenantScoped(makeInvoiceCommands({ folioRepo: repos.folioRepo, pmsRepo: repos.pmsRepo, ledgerService })).forEach((c) => commandBus.register(c));
+    asTenantScoped(makePaymentAllocationCommands({ paymentAllocationService: paySvc, ledgerService, folioRepo: repos.folioRepo })).forEach((c) => commandBus.register(c));
+    asTenantScoped(makeLedgerCommands({ ledgerService })).forEach((c) => commandBus.register(c));
 
     // Seed a cost center + the three revenue maps (pin the cost center on each).
-    const cc = await repos.costCenterRepo.insertCostCenter({
-      tenant_id: ctx.tenantId, property_id: ctx.propertyId, code: 'CC-ROOM', name: 'Room', type: 'ROOM' });
-    ctx.costCenterId = cc.id;
-    for (const [ev, dr, crd] of [
-      ['invoice.issued', 'AR', 'ROOM_REVENUE'],
-      ['folio.payment_allocated', 'CASH', 'AR'],
-      ['voucher.redeemed', 'AGENT_COST', 'AR']]) {
-      await repos.revenueMapRepo.upsertRevenueMap({
-        tenant_id: ctx.tenantId, property_id: ctx.propertyId, event_type: ev,
-        revenue_type: ev, cost_center_id: cc.id, debit_account: dr, credit_account: crd });
-    }
+    await tenantUow.runWithTenantTransaction(admin, ctx.tenantId, async () => {
+      const cc = await repos.costCenterRepo.insertCostCenter({
+        tenant_id: ctx.tenantId, property_id: ctx.propertyId, code: 'CC-ROOM', name: 'Room', type: 'ROOM' });
+      ctx.costCenterId = cc.id;
+      for (const [ev, dr, crd] of [
+        ['invoice.issued', 'AR', 'ROOM_REVENUE'],
+        ['folio.payment_allocated', 'CASH', 'AR'],
+        ['voucher.redeemed', 'AGENT_COST', 'AR']]) {
+        await repos.revenueMapRepo.upsertRevenueMap({
+          tenant_id: ctx.tenantId, property_id: ctx.propertyId, event_type: ev,
+          revenue_type: ev, cost_center_id: cc.id, debit_account: dr, credit_account: crd });
+      }
+    });
   });
   after(async () => { if (admin) await admin.end(); });
 
-  async function settledFolio(amount = 100, paid = amount) {
+  /** Run direct repo calls inside a tenant-bound unit of work, as production does. */
+  const withUow = (fn) => tenantUow.runWithTenantTransaction(admin, ctx.tenantId, fn);
+
+  async function settledFolio(amount = 100, paid = amount) { return withUow(async () => {
     const f = await repos.folioRepo.insertFolio({
       tenant_id: ctx.tenantId, property_id: ctx.propertyId,
       folio_number: 'F-' + Date.now() + '-' + Math.floor(Math.random() * 1e6),
@@ -97,7 +112,7 @@ if (!URL) {
     if (paid) await repos.folioRepo.insertFolioLine({
       tenant_id: ctx.tenantId, folio_id: f.id, charge_type: 'PAYMENT', amount: -paid, business_date: '2026-06-22' });
     return repos.folioRepo.findFolioById(ctx.tenantId, f.id);
-  }
+  }); }
 
   const sum = (rows, k) => rows.reduce((s, r) => s + Number(r[k] || 0), 0);
 
@@ -108,7 +123,8 @@ if (!URL) {
     assert.equal(inv.ok, true, JSON.stringify(inv));
     assert.ok(inv.result.ledger_batch_id);
 
-    const entries = await repos.ledgerRepo.findLedgerByReference(ctx.tenantId, 'invoice', inv.result.id);
+    const entries = await withUow(() =>
+      repos.ledgerRepo.findLedgerByReference(ctx.tenantId, 'invoice', inv.result.id));
     assert.equal(entries.length, 2);
     assert.equal(sum(entries, 'debit_amount'), 100);
     assert.equal(sum(entries, 'credit_amount'), 100);
@@ -159,16 +175,20 @@ if (!URL) {
   });
 
   test('payment allocation posts a balanced Cash/AR batch and credits AR', async () => {
-    const f = await repos.folioRepo.insertFolio({
-      tenant_id: ctx.tenantId, property_id: ctx.propertyId,
-      folio_number: 'PA-' + Date.now(), status: 'OPEN', currency: 'LKR', business_date: '2026-06-22' });
-    await repos.folioRepo.insertFolioLine({ tenant_id: ctx.tenantId, folio_id: f.id, charge_type: 'ROOM', amount: 100, business_date: '2026-06-22' });
-    const payLine = await repos.folioRepo.insertFolioLine({ tenant_id: ctx.tenantId, folio_id: f.id, charge_type: 'PAYMENT', amount: -60, business_date: '2026-06-22' });
+    const { f, payLine } = await withUow(async () => {
+      const folio = await repos.folioRepo.insertFolio({
+        tenant_id: ctx.tenantId, property_id: ctx.propertyId,
+        folio_number: 'PA-' + Date.now(), status: 'OPEN', currency: 'LKR', business_date: '2026-06-22' });
+      await repos.folioRepo.insertFolioLine({ tenant_id: ctx.tenantId, folio_id: folio.id, charge_type: 'ROOM', amount: 100, business_date: '2026-06-22' });
+      const pl = await repos.folioRepo.insertFolioLine({ tenant_id: ctx.tenantId, folio_id: folio.id, charge_type: 'PAYMENT', amount: -60, business_date: '2026-06-22' });
+      return { f: folio, payLine: pl };
+    });
 
     const r = await commandBus.dispatch('pms.folio.payment.allocate',
       { folio_id: f.id, payment_line_id: payLine.id }, CTX());
     assert.equal(r.ok, true, JSON.stringify(r));
-    const entries = await repos.ledgerRepo.findLedgerByReference(ctx.tenantId, 'payment_allocation', payLine.id);
+    const entries = await withUow(() =>
+      repos.ledgerRepo.findLedgerByReference(ctx.tenantId, 'payment_allocation', payLine.id));
     assert.equal(entries.length, 2);
     assert.equal(sum(entries, 'debit_amount'), 60);
     assert.equal(sum(entries, 'credit_amount'), 60);
@@ -176,11 +196,14 @@ if (!URL) {
   });
 
   test('payment allocation balance rule: explicit over-allocation is rejected', async () => {
-    const f = await repos.folioRepo.insertFolio({
-      tenant_id: ctx.tenantId, property_id: ctx.propertyId,
-      folio_number: 'OV-' + Date.now(), status: 'OPEN', currency: 'LKR', business_date: '2026-06-22' });
-    const charge = await repos.folioRepo.insertFolioLine({ tenant_id: ctx.tenantId, folio_id: f.id, charge_type: 'ROOM', amount: 40, business_date: '2026-06-22' });
-    const payLine = await repos.folioRepo.insertFolioLine({ tenant_id: ctx.tenantId, folio_id: f.id, charge_type: 'PAYMENT', amount: -100, business_date: '2026-06-22' });
+    const { f, charge, payLine } = await withUow(async () => {
+      const folio = await repos.folioRepo.insertFolio({
+        tenant_id: ctx.tenantId, property_id: ctx.propertyId,
+        folio_number: 'OV-' + Date.now(), status: 'OPEN', currency: 'LKR', business_date: '2026-06-22' });
+      const ch = await repos.folioRepo.insertFolioLine({ tenant_id: ctx.tenantId, folio_id: folio.id, charge_type: 'ROOM', amount: 40, business_date: '2026-06-22' });
+      const pl = await repos.folioRepo.insertFolioLine({ tenant_id: ctx.tenantId, folio_id: folio.id, charge_type: 'PAYMENT', amount: -100, business_date: '2026-06-22' });
+      return { f: folio, charge: ch, payLine: pl };
+    });
     const r = await commandBus.dispatch('pms.folio.payment.allocate', {
       folio_id: f.id, payment_line_id: payLine.id,
       allocations: [{ charge_line_id: charge.id, amount: 80 }]   // > 40 owed
@@ -190,7 +213,8 @@ if (!URL) {
   });
 
   test('cost-center report aggregates real ledger rows by cost center', async () => {
-    const rep = await repos.ledgerRepo.reportByCostCenter(ctx.tenantId, ctx.propertyId, {});
+    const rep = await withUow(() =>
+      repos.ledgerRepo.reportByCostCenter(ctx.tenantId, ctx.propertyId, {}));
     const row = rep.find((x) => x.cost_center_id === ctx.costCenterId);
     assert.ok(row, 'cost center should appear in report');
     assert.ok(row.debit > 0 && row.credit > 0);

@@ -26,10 +26,37 @@ function businessDateMiddleware(repo) {
       let businessDate = null;
       let dateLocked   = false;
       if (req.ctx.propertyId && repo && typeof repo.findPropertyBusinessDate === 'function') {
-        const row = await repo.findPropertyBusinessDate(req.ctx.propertyId);
-        if (row && row.current_business_date) {
+        // Phase 64 P0-11: pass the tenant. `properties` is FORCE-RLS, so this
+        // lookup must be tenant-bound — and the tenant is also the predicate the
+        // query itself was missing.
+        const row = await repo.findPropertyBusinessDate(req.ctx.propertyId, req.ctx.tenantId);
+        // Phase 63 P0-9 — distinguish "no row" from "row with no date".
+        //
+        // Both used to fall into the same else-branch, which defaulted the
+        // business date to today AND businessDateLocked to false. A NULL row
+        // does not mean "new property": it also means the property was not
+        // visible (RLS blocked the read, wrong tenant, deleted property). In
+        // that case the request proceeded believing accounting was UNLOCKED
+        // and stamped folio lines with a fabricated business date — silently
+        // defeating the night-audit financial lock.
+        //
+        // A row with a null current_business_date is the genuine brand-new
+        // property case and still defaults to today, but it carries the real
+        // lock flag rather than assuming false.
+        if (!row) {
+          logger.error({
+            request_id: req.requestId,
+            property_id: req.ctx.propertyId,
+            code: 'property_business_date_unresolved'
+          }, '[businessDate] property row not visible — refusing to assume an unlocked business date');
+          return res.status(409).json({
+            error: 'property_business_date_unresolved',
+            requestId: req.requestId
+          });
+        }
+        dateLocked = !!row.business_date_locked;
+        if (row.current_business_date) {
           businessDate = String(row.current_business_date).slice(0, 10);
-          dateLocked   = !!row.business_date_locked;
         } else {
           businessDate = new Date().toISOString().slice(0, 10);
           logger.info({

@@ -6,7 +6,11 @@
 
 const { makeEvent } = require('../../core/event');
 
-function makePaymentAllocationCommands({ paymentAllocationService, ledgerService }) {
+// Phase 64 P1-7: folioRepo is injected so the command can verify that the folio
+// belongs to ctx.propertyId before allocating. It is optional so existing
+// callers that do not supply it keep working (the guard then degrades to the
+// property_context_required check only, and says so).
+function makePaymentAllocationCommands({ paymentAllocationService, ledgerService, folioRepo }) {
   if (!paymentAllocationService) throw new Error('paymentAllocationService required');
 
   return [{
@@ -18,6 +22,21 @@ function makePaymentAllocationCommands({ paymentAllocationService, ledgerService
       if (!ctx.tenantId) return { ok: false, error: 'tenant_required' };
       if (!input || !input.folio_id || !input.payment_line_id) {
         return { ok: false, error: 'folio_id_and_payment_line_id_required' };
+      }
+
+      // Phase 64 P1-7 — property isolation.
+      // The folio was resolved by tenant only, while the ledger legs are stamped
+      // with ctx.propertyId. A caller on property A allocating property B's
+      // folio payment produced ledger rows booked to A against a B folio, and
+      // the ledger service's own cross-property guard could not catch it because
+      // it only inspects entries it built from ctx itself.
+      if (!ctx.propertyId) return { ok: false, error: 'property_context_required' };
+      if (folioRepo) {
+        const folio = await folioRepo.findFolioById(ctx.tenantId, input.folio_id);
+        if (!folio) return { ok: false, error: 'folio_not_found' };
+        if (folio.property_id && folio.property_id !== ctx.propertyId) {
+          return { ok: false, error: 'property_access_denied', detail: 'folio' };
+        }
       }
 
       // Phase 8 bridge: pre-flight the cash/AR mapping before allocating.

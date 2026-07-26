@@ -149,6 +149,25 @@ if (config.NODE_ENV === 'production') {
     console.error('[env:prod] ' + errors.length + ' production environment error(s) — refusing to start');
     process.exit(2);
   }
+} else {
+  // Phase 63 P1-3: the gate above is skipped whenever NODE_ENV !== 'production',
+  // including when NODE_ENV was simply never set. Detect the one case where that
+  // is unambiguously dangerous — an unvalidated boot against a NON-LOCAL
+  // database — and refuse. Loopback boots (development, CI, DB test runner) are
+  // untouched.
+  const { checkUnvalidatedRemoteBoot } = require('./envValidation');
+  const verdict = checkUnvalidatedRemoteBoot(config, process.env);
+  for (const w of verdict.warnings) {
+    // eslint-disable-next-line no-console
+    console.warn('[env] WARNING: ' + w);
+  }
+  if (verdict.block) {
+    // eslint-disable-next-line no-console
+    console.error('[env] ERROR: ' + verdict.reason);
+    // eslint-disable-next-line no-console
+    console.error('[env] refusing to start an unvalidated deployment-like boot');
+    process.exit(2);
+  }
 }
 
 module.exports = config;

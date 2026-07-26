@@ -26,6 +26,38 @@ function _requireClient(client, label) {
 
 function buildRepos(pool) {
 
+  // -------------------------------------------------------------------------
+  // Phase 64 P0-11 — tenant-scoped query helper.
+  //
+  // `tq` routes a statement to the ACTIVE tenant-bound client, i.e. the single
+  // connection whose transaction has `app.tenant_id` bound with transaction-
+  // LOCAL scope. Every tenant-scoped method of pmsRepo / folioRepo /
+  // housekeepingRepo / nightAuditRepo (107 statements) now goes through it.
+  //
+  // Previously those methods called `pool.query(...)` directly. A pooled
+  // connection carries NO `app.tenant_id`, and reservations, folios,
+  // folio_lines, payment_allocations, housekeeping_tasks, night_audit_runs and
+  // properties are all FORCE-RLS with a policy keyed on that setting — so under
+  // the non-superuser / NOBYPASSRLS role the project mandates, every SELECT
+  // returned zero rows and every INSERT failed its WITH CHECK.
+  //
+  // There is deliberately NO `client || pool` fallback: outside a unit of work
+  // this THROWS TENANT_CONTEXT_REQUIRED. A silent fallback is what produced the
+  // defect, and a statement that quietly runs without RLS context is either
+  // invisible data loss or a cross-tenant leak depending on the role.
+  //
+  // Because every statement in a command now shares ONE client and ONE
+  // transaction, multi-step writes (check-in, check-out, folio line + balance
+  // rollup, payment allocation + ledger post) became atomic as a direct
+  // consequence — that is P1-5, P1-6 and P1-8.
+  const {
+    getTenantClient, getTenantId, hasTenantContext, runWithTenantRead
+  } = require('./tenantUnitOfWork');
+  function tq(text, params) {
+    return getTenantClient('repos').query(text, params);
+  }
+
+
   // Phase 62A: pool-local withTenant. Uses the same pool instance passed to
   // buildRepos so unit tests with mock pools (no pool.connect) are not routed
   // through the global pool in client.js. When pool has no connect() (mock),
@@ -231,12 +263,34 @@ function buildRepos(pool) {
         [user_id, tenant_id, property_id, granted_by, role_code]
       );
     },
-    async findPropertyBusinessDate(propertyId) {
-      const r = await pool.query(
-        `SELECT current_business_date, business_date_locked FROM properties WHERE id = $1 LIMIT 1`,
-        [propertyId]
-      );
-      return r.rows[0] || null;
+    /**
+     * Phase 64 P0-11 — property business-date lookup, tenant-bound.
+     *
+     * `properties` is FORCE-RLS (0004_rls_policies.sql), so the old bare
+     * `pool.query` returned NULL for every property in production. Combined with
+     * the Phase 63 P0-9 fail-closed middleware that would have rejected EVERY
+     * request with 409 property_business_date_unresolved.
+     *
+     * This lookup runs from the businessDate MIDDLEWARE, i.e. before any command
+     * has opened a unit of work, so it opens its own READ ONLY one when it has
+     * to. `tenantId` is now required — it also supplies the tenant predicate the
+     * query was missing.
+     */
+    async findPropertyBusinessDate(propertyId, tenantId) {
+      const SQL = `SELECT current_business_date, business_date_locked
+                     FROM properties WHERE id = $1 AND tenant_id = $2 LIMIT 1`;
+      if (hasTenantContext()) {
+        const r = await tq(SQL, [propertyId, tenantId || getTenantId()]);
+        return r.rows[0] || null;
+      }
+      if (!tenantId) {
+        throw Object.assign(new Error('findPropertyBusinessDate: tenantId is required'),
+          { code: 'TENANT_CONTEXT_REQUIRED' });
+      }
+      return runWithTenantRead(pool, tenantId, async (client) => {
+        const r = await client.query(SQL, [propertyId, tenantId]);
+        return r.rows[0] || null;
+      });
     },
 
     // Legacy pre-62A pool-based lookups — broken under FORCE RLS; kept for backward compat.
@@ -972,7 +1026,7 @@ function buildRepos(pool) {
   const pmsRepo = {
     // ----- room_types -----
     async insertRoomType(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO room_types (tenant_id, property_id, code, name, description,
             max_adults, max_children, base_occupancy, extra_bed_capacity, active, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
@@ -983,21 +1037,21 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async findRoomTypeById(tenantId, id) {
-      const r = await pool.query(`SELECT * FROM room_types WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
+      const r = await tq(`SELECT * FROM room_types WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
       return r.rows[0] || null;
     },
     async findRoomTypeByCode(tenantId, propertyId, code) {
-      const r = await pool.query(`SELECT * FROM room_types WHERE tenant_id=$1 AND property_id=$2 AND code=$3 LIMIT 1`, [tenantId, propertyId, code]);
+      const r = await tq(`SELECT * FROM room_types WHERE tenant_id=$1 AND property_id=$2 AND code=$3 LIMIT 1`, [tenantId, propertyId, code]);
       return r.rows[0] || null;
     },
     async listRoomTypes(tenantId, propertyId) {
-      const r = await pool.query(`SELECT * FROM room_types WHERE tenant_id=$1 AND property_id=$2 ORDER BY code`, [tenantId, propertyId]);
+      const r = await tq(`SELECT * FROM room_types WHERE tenant_id=$1 AND property_id=$2 ORDER BY code`, [tenantId, propertyId]);
       return r.rows;
     },
 
     // ----- buildings + floors -----
     async insertBuilding(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO buildings (tenant_id, property_id, code, name, active, created_by)
          VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
         [rec.tenant_id, rec.property_id, rec.code, rec.name, rec.active !== false, rec.created_by]
@@ -1005,11 +1059,11 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async listBuildings(tenantId, propertyId) {
-      const r = await pool.query(`SELECT * FROM buildings WHERE tenant_id=$1 AND property_id=$2 ORDER BY code`, [tenantId, propertyId]);
+      const r = await tq(`SELECT * FROM buildings WHERE tenant_id=$1 AND property_id=$2 ORDER BY code`, [tenantId, propertyId]);
       return r.rows;
     },
     async insertFloor(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO floors (tenant_id, property_id, building_id, code, name, active)
          VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
         [rec.tenant_id, rec.property_id, rec.building_id, rec.code, rec.name, rec.active !== false]
@@ -1017,13 +1071,13 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async listFloors(tenantId, buildingId) {
-      const r = await pool.query(`SELECT * FROM floors WHERE tenant_id=$1 AND building_id=$2 ORDER BY code`, [tenantId, buildingId]);
+      const r = await tq(`SELECT * FROM floors WHERE tenant_id=$1 AND building_id=$2 ORDER BY code`, [tenantId, buildingId]);
       return r.rows;
     },
 
     // ----- rooms -----
     async insertRoom(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO rooms (tenant_id, property_id, building_id, floor_id, room_type_id,
             room_number, room_name, status, active, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
@@ -1034,11 +1088,11 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async findRoomById(tenantId, id) {
-      const r = await pool.query(`SELECT * FROM rooms WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
+      const r = await tq(`SELECT * FROM rooms WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
       return r.rows[0] || null;
     },
     async findRoomByNumber(tenantId, propertyId, number) {
-      const r = await pool.query(`SELECT * FROM rooms WHERE tenant_id=$1 AND property_id=$2 AND room_number=$3 LIMIT 1`, [tenantId, propertyId, number]);
+      const r = await tq(`SELECT * FROM rooms WHERE tenant_id=$1 AND property_id=$2 AND room_number=$3 LIMIT 1`, [tenantId, propertyId, number]);
       return r.rows[0] || null;
     },
     async listRooms(tenantId, propertyId, opts = {}) {
@@ -1046,7 +1100,7 @@ function buildRepos(pool) {
       let sql = `SELECT r.*, rt.code AS room_type_code FROM rooms r JOIN room_types rt ON rt.id = r.room_type_id WHERE r.tenant_id=$1 AND r.property_id=$2`;
       if (opts.activeOnly) sql += ` AND r.active = true`;
       sql += ` ORDER BY r.room_number`;
-      const r = await pool.query(sql, params);
+      const r = await tq(sql, params);
       return r.rows;
     },
     async listRoomsForAvailability({ tenantId, propertyId, roomTypeId }) {
@@ -1055,18 +1109,18 @@ function buildRepos(pool) {
                   WHERE r.tenant_id=$1 AND r.property_id=$2`;
       const params = [tenantId, propertyId];
       if (roomTypeId) { sql += ` AND r.room_type_id = $3`; params.push(roomTypeId); }
-      const r = await pool.query(sql, params);
+      const r = await tq(sql, params);
       return r.rows;
     },
     async updateRoomStatus(tenantId, id, status) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE rooms SET status=$3::room_status, updated_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING *`,
         [tenantId, id, status]
       );
       return r.rows[0] || null;
     },
     async setRoomActive(tenantId, id, active) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE rooms SET active=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING *`,
         [tenantId, id, active]
       );
@@ -1075,7 +1129,7 @@ function buildRepos(pool) {
 
     // ----- room_features + M2M -----
     async insertRoomFeature(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO room_features (tenant_id, property_id, code, name, active)
          VALUES ($1,$2,$3,$4,$5) RETURNING *`,
         [rec.tenant_id, rec.property_id, rec.code, rec.name, rec.active !== false]
@@ -1083,18 +1137,18 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async listRoomFeatures(tenantId, propertyId) {
-      const r = await pool.query(`SELECT * FROM room_features WHERE tenant_id=$1 AND property_id=$2 ORDER BY code`, [tenantId, propertyId]);
+      const r = await tq(`SELECT * FROM room_features WHERE tenant_id=$1 AND property_id=$2 ORDER BY code`, [tenantId, propertyId]);
       return r.rows;
     },
     async attachRoomFeature(tenantId, roomId, featureId) {
-      await pool.query(
+      await tq(
         `INSERT INTO room_room_features (room_id, feature_id, tenant_id)
          VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
         [roomId, featureId, tenantId]
       );
     },
     async listFeaturesForRoom(tenantId, roomId) {
-      const r = await pool.query(
+      const r = await tq(
         `SELECT f.* FROM room_features f
            JOIN room_room_features rf ON rf.feature_id = f.id
           WHERE rf.tenant_id=$1 AND rf.room_id=$2 ORDER BY f.code`,
@@ -1105,7 +1159,7 @@ function buildRepos(pool) {
 
     // ----- guests -----
     async insertGuest(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO guests (tenant_id, property_id, guest_type, title, first_name, last_name, gender, dob,
               nationality, language, email, mobile, address, passport_number, national_id,
               organization_name, tax_id, vip_flag, blacklisted_flag, notes, created_by)
@@ -1121,7 +1175,7 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async findGuestById(tenantId, id) {
-      const r = await pool.query(`SELECT * FROM guests WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
+      const r = await tq(`SELECT * FROM guests WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
       return r.rows[0] || null;
     },
     async listGuests(tenantId, opts = {}) {
@@ -1134,11 +1188,11 @@ function buildRepos(pool) {
         sql += ` AND (first_name ILIKE $${i} OR last_name ILIKE $${i} OR email ILIKE $${i} OR mobile ILIKE $${i} OR organization_name ILIKE $${i})`;
       }
       sql += ` ORDER BY created_at DESC LIMIT 200`;
-      const r = await pool.query(sql, params);
+      const r = await tq(sql, params);
       return r.rows;
     },
     async updateGuestFlags(tenantId, id, { vip_flag, blacklisted_flag }) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE guests SET vip_flag=COALESCE($3, vip_flag), blacklisted_flag=COALESCE($4, blacklisted_flag), updated_at=now()
           WHERE tenant_id=$1 AND id=$2 RETURNING *`,
         [tenantId, id, vip_flag === undefined ? null : vip_flag, blacklisted_flag === undefined ? null : blacklisted_flag]
@@ -1148,7 +1202,7 @@ function buildRepos(pool) {
 
     // ----- child policies -----
     async insertChildPolicy(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO child_policies (tenant_id, property_id, code, name, description, active, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
         [rec.tenant_id, rec.property_id, rec.code, rec.name, rec.description || null, rec.active !== false, rec.created_by]
@@ -1156,7 +1210,7 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async insertChildAgeCategory(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO child_age_categories (tenant_id, child_policy_id, code, name,
             age_from, age_to, stay_charge_pct, meal_charge_pct, counts_in_occupancy, requires_extra_bed, extra_bed_charge)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
@@ -1167,13 +1221,13 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async loadChildPolicyWithCategories(tenantId, policyId) {
-      const p = await pool.query(`SELECT * FROM child_policies WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, policyId]);
+      const p = await tq(`SELECT * FROM child_policies WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, policyId]);
       if (!p.rows[0]) return null;
-      const c = await pool.query(`SELECT * FROM child_age_categories WHERE tenant_id=$1 AND child_policy_id=$2 ORDER BY age_from`, [tenantId, policyId]);
+      const c = await tq(`SELECT * FROM child_age_categories WHERE tenant_id=$1 AND child_policy_id=$2 ORDER BY age_from`, [tenantId, policyId]);
       return Object.assign({}, p.rows[0], { categories: c.rows });
     },
     async listChildPolicies(tenantId, propertyId) {
-      const r = await pool.query(`SELECT * FROM child_policies WHERE tenant_id=$1 AND property_id=$2 ORDER BY code`, [tenantId, propertyId]);
+      const r = await tq(`SELECT * FROM child_policies WHERE tenant_id=$1 AND property_id=$2 ORDER BY code`, [tenantId, propertyId]);
       return r.rows;
     },
 
@@ -1189,13 +1243,13 @@ function buildRepos(pool) {
         ON CONFLICT (property_id, year)
         DO UPDATE SET next_number = reservation_counters.next_number + 1, updated_at = now()
         RETURNING next_number - 1 AS claimed`;
-      const r = await pool.query(sql, [tenantId, propertyId, year]);
+      const r = await tq(sql, [tenantId, propertyId, year]);
       return parseInt(r.rows[0].claimed, 10);
     },
 
     // ----- reservations -----
     async insertReservation(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO reservations (tenant_id, property_id, reservation_number, reservation_type,
               status, holder_guest_id, primary_adult_guest_id, arrival_date, departure_date,
               adults, children, room_type_id, rate_plan_id, rooms_count, notes,
@@ -1212,22 +1266,22 @@ function buildRepos(pool) {
     },
     async findReservationByIdempotencyKey(tenantId, idempotencyKey) {
       if (!idempotencyKey) return null;
-      const r = await pool.query(
+      const r = await tq(
         `SELECT * FROM reservations WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1`,
         [tenantId, idempotencyKey]
       );
       return r.rows[0] || null;
     },
     async findReservationById(tenantId, id) {
-      const r = await pool.query(`SELECT * FROM reservations WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
+      const r = await tq(`SELECT * FROM reservations WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
       return r.rows[0] || null;
     },
     async findReservationByNumber(tenantId, propertyId, number) {
-      const r = await pool.query(`SELECT * FROM reservations WHERE tenant_id=$1 AND property_id=$2 AND reservation_number=$3 LIMIT 1`, [tenantId, propertyId, number]);
+      const r = await tq(`SELECT * FROM reservations WHERE tenant_id=$1 AND property_id=$2 AND reservation_number=$3 LIMIT 1`, [tenantId, propertyId, number]);
       return r.rows[0] || null;
     },
     async setReservationStatus(tenantId, id, newStatus, { cancellationReason } = {}) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE reservations
             SET status=$3::reservation_status,
                 cancelled_at=CASE WHEN $3 IN ('CANCELLED','NO_SHOW') THEN now() ELSE cancelled_at END,
@@ -1239,7 +1293,7 @@ function buildRepos(pool) {
       return r.rows[0] || null;
     },
     async setReservationConfirmation(tenantId, id, { confirmationNumber }) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE reservations
             SET confirmation_number=$3,
                 updated_at=now()
@@ -1249,7 +1303,7 @@ function buildRepos(pool) {
       return r.rows[0] || null;
     },
     async setReservationConfirmationSent(tenantId, id, sentAt) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE reservations
             SET confirmation_sent_at=COALESCE(confirmation_sent_at, $3),
                 updated_at=now()
@@ -1266,7 +1320,7 @@ function buildRepos(pool) {
       if (opts.dateTo)         { params.push(opts.dateTo);         sql += ` AND arrival_date <= $${params.length}`; }
       if (opts.source_channel) { params.push(opts.source_channel); sql += ` AND source_channel = $${params.length}`; }
       sql += ` ORDER BY arrival_date DESC LIMIT 500`;
-      const r = await pool.query(sql, params);
+      const r = await tq(sql, params);
       return r.rows;
     },
     async listReservationsOverlapping({ tenantId, propertyId, date, statuses, roomTypeId }) {
@@ -1277,7 +1331,7 @@ function buildRepos(pool) {
                     AND r.arrival_date <= $3 AND r.departure_date > $3
                     AND r.status::text = ANY($4)`;
       if (roomTypeId) { params.push(roomTypeId); sql += ` AND r.room_type_id = $${params.length}`; }
-      const r = await pool.query(sql, params);
+      const r = await tq(sql, params);
       return r.rows;
     },
     async listReservationsInRange({ tenantId, propertyId, dateFrom, dateTo, statuses, roomTypeId }) {
@@ -1288,7 +1342,7 @@ function buildRepos(pool) {
                     AND r.departure_date > $3 AND r.arrival_date < $4
                     AND r.status::text = ANY($5)`;
       if (roomTypeId) { params.push(roomTypeId); sql += ` AND r.room_type_id = $${params.length}`; }
-      const r = await pool.query(sql, params);
+      const r = await tq(sql, params);
       return r.rows;
     },
     // Phase 21: modify mutable booking fields (pre-stay). Whitelisted columns only;
@@ -1305,7 +1359,7 @@ function buildRepos(pool) {
         }
       }
       if (sets.length === 0) return this.findReservationById(tenantId, id);
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE reservations SET ${sets.join(', ')}, updated_at=now()
           WHERE tenant_id=$1 AND id=$2 RETURNING *`, params);
       return r.rows[0] || null;
@@ -1313,19 +1367,19 @@ function buildRepos(pool) {
     // Phase 21: move an in-house guest to a different room. Reassigns the
     // reservation and flips both rooms (old -> VACANT_DIRTY, new -> OCCUPIED).
     async reassignReservationRoom(tenantId, id, newRoomId) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE reservations SET assigned_room_id=$3, updated_at=now()
           WHERE tenant_id=$1 AND id=$2 RETURNING *`,
         [tenantId, id, newRoomId]);
       const row = r.rows[0];
       if (!row) return null;
-      await pool.query(`UPDATE rooms SET status='OCCUPIED'::room_status, updated_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, newRoomId]);
+      await tq(`UPDATE rooms SET status='OCCUPIED'::room_status, updated_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, newRoomId]);
       return row;
     },
 
     // ----- rate plans -----
     async insertRatePlan(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO rate_plans (tenant_id, property_id, code, name, description, currency, base_rate, active, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
         [rec.tenant_id, rec.property_id, rec.code, rec.name, rec.description || null,
@@ -1334,15 +1388,15 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async findRatePlanById(tenantId, id) {
-      const r = await pool.query(`SELECT * FROM rate_plans WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
+      const r = await tq(`SELECT * FROM rate_plans WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
       return r.rows[0] || null;
     },
     async listRatePlans(tenantId, propertyId) {
-      const r = await pool.query(`SELECT * FROM rate_plans WHERE tenant_id=$1 AND property_id=$2 ORDER BY code`, [tenantId, propertyId]);
+      const r = await tq(`SELECT * FROM rate_plans WHERE tenant_id=$1 AND property_id=$2 ORDER BY code`, [tenantId, propertyId]);
       return r.rows;
     },
     async insertRatePlanPeriod(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO rate_plan_periods (tenant_id, rate_plan_id, name, date_from, date_to, rate)
          VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
         [rec.tenant_id, rec.rate_plan_id, rec.name || null, rec.date_from, rec.date_to, rec.rate]
@@ -1350,7 +1404,7 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async insertRatePlanPricing(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO rate_plan_pricing (tenant_id, rate_plan_id, pricing_type, occupancy_count, child_category_code, rate, rate_pct)
          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
         [rec.tenant_id, rec.rate_plan_id, rec.pricing_type, rec.occupancy_count || null,
@@ -1359,23 +1413,23 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async listRatePlanPeriods(tenantId, ratePlanId) {
-      const r = await pool.query(`SELECT * FROM rate_plan_periods WHERE tenant_id=$1 AND rate_plan_id=$2 ORDER BY date_from`, [tenantId, ratePlanId]);
+      const r = await tq(`SELECT * FROM rate_plan_periods WHERE tenant_id=$1 AND rate_plan_id=$2 ORDER BY date_from`, [tenantId, ratePlanId]);
       return r.rows;
     },
     async listRatePlanPricing(tenantId, ratePlanId) {
-      const r = await pool.query(`SELECT * FROM rate_plan_pricing WHERE tenant_id=$1 AND rate_plan_id=$2`, [tenantId, ratePlanId]);
+      const r = await tq(`SELECT * FROM rate_plan_pricing WHERE tenant_id=$1 AND rate_plan_id=$2`, [tenantId, ratePlanId]);
       return r.rows;
     },
 
     // ----- property lookup (needed by reservation number gen) -----
     async findPropertyById(tenantId, propertyId) {
-      const r = await pool.query(`SELECT * FROM properties WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, propertyId]);
+      const r = await tq(`SELECT * FROM properties WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, propertyId]);
       return r.rows[0] || null;
     },
 
     // ----- meal plans (Phase 6 / C4) -----
     async insertMealPlan(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO meal_plans (tenant_id, property_id, code, name, basis,
               includes_breakfast, includes_lunch, includes_dinner, includes_snack,
               adult_rate, child_rate, currency, active, description, created_by)
@@ -1389,17 +1443,17 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async findMealPlanById(tenantId, id) {
-      const r = await pool.query(`SELECT * FROM meal_plans WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
+      const r = await tq(`SELECT * FROM meal_plans WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
       return r.rows[0] || null;
     },
     async listMealPlans(tenantId, propertyId) {
-      const r = await pool.query(`SELECT * FROM meal_plans WHERE tenant_id=$1 AND property_id=$2 ORDER BY code`, [tenantId, propertyId]);
+      const r = await tq(`SELECT * FROM meal_plans WHERE tenant_id=$1 AND property_id=$2 ORDER BY code`, [tenantId, propertyId]);
       return r.rows;
     },
     // ----- stale business-date sweep (Phase 6 / C13) -----
     async listPropertiesWithStaleBusinessDate(thresholdHours) {
       // age_hours computed as hours since current_business_date end-of-day
-      const r = await pool.query(
+      const r = await tq(
         `SELECT p.id, p.tenant_id, p.code, p.current_business_date,
                 EXTRACT(EPOCH FROM (now() - (p.current_business_date::timestamptz + INTERVAL '1 day'))) / 3600 AS age_hours
            FROM properties p
@@ -1412,7 +1466,7 @@ function buildRepos(pool) {
     },
 
     async attachMealPlanToRatePlan(tenantId, ratePlanId, mealPlanId) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE rate_plans SET meal_plan_id=$3, updated_at=now()
           WHERE tenant_id=$1 AND id=$2 RETURNING *`,
         [tenantId, ratePlanId, mealPlanId]
@@ -1422,7 +1476,7 @@ function buildRepos(pool) {
 
     // ----- check-in / check-out (Phase 5.5) -----
     async checkInReservation(tenantId, id, { userId, businessDate, assignedRoomId }) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE reservations
             SET status='CHECKED_IN'::reservation_status,
                 checked_in_at=now(),
@@ -1435,7 +1489,7 @@ function buildRepos(pool) {
       );
       // Also flip the assigned room to OCCUPIED if provided.
       if (assignedRoomId) {
-        await pool.query(
+        await tq(
           `UPDATE rooms SET status='OCCUPIED'::room_status, updated_at=now() WHERE tenant_id=$1 AND id=$2`,
           [tenantId, assignedRoomId]
         );
@@ -1443,7 +1497,7 @@ function buildRepos(pool) {
       return r.rows[0] || null;
     },
     async checkOutReservation(tenantId, id, { userId }) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE reservations
             SET status='CHECKED_OUT'::reservation_status,
                 checked_out_at=now(),
@@ -1456,7 +1510,7 @@ function buildRepos(pool) {
       // Mark assigned room VACANT_DIRTY for housekeeping.
       const row = r.rows[0];
       if (row && row.assigned_room_id) {
-        await pool.query(
+        await tq(
           `UPDATE rooms SET status='VACANT_DIRTY'::room_status, updated_at=now() WHERE tenant_id=$1 AND id=$2`,
           [tenantId, row.assigned_room_id]
         );
@@ -1468,7 +1522,7 @@ function buildRepos(pool) {
   // ---- finance: cost centers (Phase 8 / C11) --------------------------
   const costCenterRepo = {
     async insertCostCenter(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO cost_centers (tenant_id, property_id, code, name, type, description, is_active, created_by)
          VALUES ($1,$2,$3,$4,$5::cost_center_type,$6,$7,$8) RETURNING *`,
         [rec.tenant_id, rec.property_id, rec.code, rec.name, rec.type,
@@ -1477,7 +1531,7 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async findCostCenterById(tenantId, id) {
-      const r = await pool.query(`SELECT * FROM cost_centers WHERE tenant_id=$1 AND id=$2 LIMIT 1`,
+      const r = await tq(`SELECT * FROM cost_centers WHERE tenant_id=$1 AND id=$2 LIMIT 1`,
         [tenantId, id]);
       return r.rows[0] || null;
     },
@@ -1486,11 +1540,11 @@ function buildRepos(pool) {
       let sql = `SELECT * FROM cost_centers WHERE tenant_id=$1 AND property_id=$2`;
       if (opts.activeOnly) sql += ` AND is_active = true`;
       sql += ` ORDER BY code`;
-      const r = await pool.query(sql, params);
+      const r = await tq(sql, params);
       return r.rows;
     },
     async updateCostCenter(tenantId, id, patch) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE cost_centers SET
             name        = COALESCE($3, name),
             type        = COALESCE($4::cost_center_type, type),
@@ -1502,7 +1556,7 @@ function buildRepos(pool) {
       return r.rows[0] || null;
     },
     async setCostCenterActive(tenantId, id, active) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE cost_centers SET is_active=$3, updated_at=now()
           WHERE tenant_id=$1 AND id=$2 RETURNING *`,
         [tenantId, id, active]);
@@ -1513,7 +1567,7 @@ function buildRepos(pool) {
   // ---- finance: revenue posting map (Phase 8 / C12) -------------------
   const revenueMapRepo = {
     async upsertRevenueMap(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO revenue_posting_map (tenant_id, property_id, event_type, revenue_type,
               cost_center_id, debit_account, credit_account, is_active, description, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
@@ -1534,7 +1588,7 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async findRevenueMap(tenantId, propertyId, eventType) {
-      const r = await pool.query(
+      const r = await tq(
         `SELECT * FROM revenue_posting_map
           WHERE tenant_id=$1 AND property_id=$2 AND event_type=$3 AND is_active=true
           LIMIT 1`,
@@ -1542,13 +1596,13 @@ function buildRepos(pool) {
       return r.rows[0] || null;
     },
     async listRevenueMaps(tenantId, propertyId) {
-      const r = await pool.query(
+      const r = await tq(
         `SELECT * FROM revenue_posting_map WHERE tenant_id=$1 AND property_id=$2 ORDER BY event_type`,
         [tenantId, propertyId]);
       return r.rows;
     },
     async deleteRevenueMap(tenantId, propertyId, eventType) {
-      const r = await pool.query(
+      const r = await tq(
         `DELETE FROM revenue_posting_map WHERE tenant_id=$1 AND property_id=$2 AND event_type=$3`,
         [tenantId, propertyId, eventType]);
       return r.rowCount;
@@ -1560,7 +1614,7 @@ function buildRepos(pool) {
   // migration 0044 and src/services/finance/ledger.js.
   const ledgerRepo = {
     async insertLedgerBatch(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO ledger_batches (tenant_id, property_id, entry_type, reference_type, reference_id,
               currency, total_debit, total_credit, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
@@ -1570,7 +1624,7 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async insertLedgerEntry(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO ledger_entries (tenant_id, property_id, batch_id, entry_type, reference_type,
               reference_id, cost_center_id, account_code, debit_amount, credit_amount, currency)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
@@ -1581,7 +1635,7 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async findLedgerByReference(tenantId, refType, refId) {
-      const r = await pool.query(
+      const r = await tq(
         `SELECT * FROM ledger_entries
           WHERE tenant_id=$1 AND reference_type=$2 AND reference_id=$3
           ORDER BY created_at, id`,
@@ -1589,12 +1643,12 @@ function buildRepos(pool) {
       return r.rows;
     },
     async listLedgerByBatch(batchId) {
-      const r = await pool.query(
+      const r = await tq(
         `SELECT * FROM ledger_entries WHERE batch_id=$1 ORDER BY created_at, id`, [batchId]);
       return r.rows;
     },
     async findBatchById(tenantId, batchId) {
-      const r = await pool.query(`SELECT * FROM ledger_batches WHERE tenant_id=$1 AND id=$2 LIMIT 1`,
+      const r = await tq(`SELECT * FROM ledger_batches WHERE tenant_id=$1 AND id=$2 LIMIT 1`,
         [tenantId, batchId]);
       return r.rows[0] || null;
     },
@@ -1617,7 +1671,7 @@ function buildRepos(pool) {
           debit_amount: e.credit_amount, credit_amount: e.debit_amount, currency: e.currency
         });
       }
-      await pool.query(
+      await tq(
         `UPDATE ledger_batches SET reverted_at=now(), reverted_by_batch_id=$3
           WHERE tenant_id=$1 AND id=$2`,
         [tenantId, batchId, revBatch.id]);
@@ -1630,7 +1684,7 @@ function buildRepos(pool) {
       if (dateFrom) { params.push(dateFrom); sql += ` AND created_at >= $${params.length}`; }
       if (dateTo)   { params.push(dateTo);   sql += ` AND created_at <= $${params.length}`; }
       sql += ` GROUP BY cost_center_id`;
-      const r = await pool.query(sql, params);
+      const r = await tq(sql, params);
       return r.rows.map((row) => ({ cost_center_id: row.cost_center_id,
         debit: Number(row.debit), credit: Number(row.credit) }));
     },
@@ -1641,7 +1695,7 @@ function buildRepos(pool) {
                   WHERE tenant_id=$1 AND property_id=$2 AND entry_type='INVOICE'`;
       if (dateFrom) { params.push(dateFrom); sql += ` AND created_at >= $${params.length}`; }
       if (dateTo)   { params.push(dateTo);   sql += ` AND created_at <= $${params.length}`; }
-      const r = await pool.query(sql, params);
+      const r = await tq(sql, params);
       return { total_revenue: Number(r.rows[0].total) };
     }
   };
@@ -1655,11 +1709,11 @@ function buildRepos(pool) {
         ON CONFLICT (property_id, year)
         DO UPDATE SET next_number = folio_counters.next_number + 1, updated_at = now()
         RETURNING next_number - 1 AS claimed`;
-      const r = await pool.query(sql, [tenantId, propertyId, year]);
+      const r = await tq(sql, [tenantId, propertyId, year]);
       return parseInt(r.rows[0].claimed, 10);
     },
     async insertFolio(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO folios (tenant_id, property_id, reservation_id, folio_number, status, currency,
               guest_id, business_date, created_by)
          VALUES ($1,$2,$3,$4,$5::folio_status,$6,$7,$8,$9) RETURNING *`,
@@ -1670,11 +1724,11 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async findFolioById(tenantId, id) {
-      const r = await pool.query(`SELECT * FROM folios WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
+      const r = await tq(`SELECT * FROM folios WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
       return r.rows[0] || null;
     },
     async listFoliosForReservation(tenantId, reservationId) {
-      const r = await pool.query(`SELECT * FROM folios WHERE tenant_id=$1 AND reservation_id=$2 ORDER BY opened_at`,
+      const r = await tq(`SELECT * FROM folios WHERE tenant_id=$1 AND reservation_id=$2 ORDER BY opened_at`,
         [tenantId, reservationId]);
       return r.rows;
     },
@@ -1685,11 +1739,11 @@ function buildRepos(pool) {
       if (opts.status) { params.push(opts.status); sql += ` AND status=$${params.length}::folio_status`; }
       if (opts.reservation_id) { params.push(opts.reservation_id); sql += ` AND reservation_id=$${params.length}`; }
       sql += ` ORDER BY opened_at DESC LIMIT 500`;
-      const r = await pool.query(sql, params);
+      const r = await tq(sql, params);
       return r.rows;
     },
     async insertFolioLine(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO folio_lines (tenant_id, folio_id, charge_type, description, quantity,
               unit_amount, amount, tax_amount, business_date, posted_by, source_module, source_ref, metadata)
          VALUES ($1,$2,$3::folio_charge_type,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
@@ -1699,7 +1753,7 @@ function buildRepos(pool) {
          rec.source_ref || null, rec.metadata || {}]
       );
       // Roll up folio totals in same transaction-equivalent (PG cheap to recompute).
-      await pool.query(
+      await tq(
         `UPDATE folios f SET
            total_charges  = (SELECT COALESCE(SUM(amount),0)
                                FROM folio_lines WHERE folio_id=f.id AND charge_type NOT IN ('PAYMENT','REFUND')),
@@ -1714,7 +1768,7 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async listFolioLines(tenantId, folioId) {
-      const r = await pool.query(
+      const r = await tq(
         `SELECT * FROM folio_lines WHERE tenant_id=$1 AND folio_id=$2 ORDER BY posted_at`,
         [tenantId, folioId]
       );
@@ -1722,7 +1776,7 @@ function buildRepos(pool) {
     },
     // ----- reservation groups (Phase 7 / C5) -----
     async insertReservationGroup(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO reservation_groups (tenant_id, property_id, group_type, code, name,
               holder_guest_id, arrival_date, departure_date, total_rooms, total_guests,
               cutoff_date, notes, created_by)
@@ -1736,12 +1790,12 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async findReservationGroupById(tenantId, id) {
-      const r = await pool.query(`SELECT * FROM reservation_groups WHERE tenant_id=$1 AND id=$2 LIMIT 1`,
+      const r = await tq(`SELECT * FROM reservation_groups WHERE tenant_id=$1 AND id=$2 LIMIT 1`,
         [tenantId, id]);
       return r.rows[0] || null;
     },
     async listReservationsInGroup(tenantId, groupId) {
-      const r = await pool.query(
+      const r = await tq(
         `SELECT r.*, rt.code AS room_type_code
            FROM reservations r
            JOIN room_types rt ON rt.id = r.room_type_id
@@ -1751,14 +1805,14 @@ function buildRepos(pool) {
       return r.rows;
     },
     async attachReservationToGroup(tenantId, reservationId, groupId) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE reservations SET group_id=$3, updated_at=now()
           WHERE tenant_id=$1 AND id=$2 RETURNING *`,
         [tenantId, reservationId, groupId]);
       return r.rows[0] || null;
     },
     async bumpGroupTotals(tenantId, groupId, { roomsDelta = 0, guestsDelta = 0 }) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE reservation_groups
             SET total_rooms = total_rooms + $3,
                 total_guests = total_guests + $4,
@@ -1770,7 +1824,7 @@ function buildRepos(pool) {
 
     // ----- vouchers (Phase 7 / C6) -----
     async insertVoucher(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO vouchers (tenant_id, property_id, voucher_number, agent_guest_id, contract_id,
               guest_name, arrival_date, departure_date, room_type_id, status, amount, currency,
               expires_at, payload, created_by)
@@ -1784,16 +1838,16 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async findVoucherById(tenantId, id) {
-      const r = await pool.query(`SELECT * FROM vouchers WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
+      const r = await tq(`SELECT * FROM vouchers WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
       return r.rows[0] || null;
     },
     async findVoucherByNumber(tenantId, propertyId, number) {
-      const r = await pool.query(`SELECT * FROM vouchers WHERE tenant_id=$1 AND property_id=$2 AND voucher_number=$3 LIMIT 1`,
+      const r = await tq(`SELECT * FROM vouchers WHERE tenant_id=$1 AND property_id=$2 AND voucher_number=$3 LIMIT 1`,
         [tenantId, propertyId, number]);
       return r.rows[0] || null;
     },
     async redeemVoucher(tenantId, id, reservationId) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE vouchers SET status='REDEEMED'::voucher_status,
                 redeemed_at=now(), redeemed_reservation_id=$3
           WHERE tenant_id=$1 AND id=$2 AND status='ISSUED'::voucher_status
@@ -1803,7 +1857,7 @@ function buildRepos(pool) {
       return r.rows[0] || null;
     },
     async cancelVoucher(tenantId, id, reason) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE vouchers SET status='CANCELLED'::voucher_status,
                 cancelled_at=now(), cancellation_reason=$3
           WHERE tenant_id=$1 AND id=$2 AND status='ISSUED'::voucher_status
@@ -1815,7 +1869,7 @@ function buildRepos(pool) {
 
     // ----- allocations lifecycle (Phase 7 / C7) -----
     async insertAllocation(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO allocations (tenant_id, property_id, contract_id, partner_guest_id,
               room_type_id, date_from, date_to, qty_blocked, qty_consumed,
               release_days, status, notes, created_by)
@@ -1828,12 +1882,12 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async findAllocationById(tenantId, id) {
-      const r = await pool.query(`SELECT * FROM allocations WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
+      const r = await tq(`SELECT * FROM allocations WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
       return r.rows[0] || null;
     },
     async consumeAllocation(tenantId, id, qty) {
       // Atomic check-and-bump; refuses to consume past qty_blocked.
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE allocations
             SET qty_consumed = qty_consumed + $3,
                 status = CASE WHEN (qty_consumed + $3) >= qty_blocked
@@ -1849,7 +1903,7 @@ function buildRepos(pool) {
       return r.rows[0] || null;
     },
     async decrementAllocationConsumption(tenantId, id, qty) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE allocations
             SET qty_consumed = GREATEST(0, qty_consumed - $3),
                 status = CASE WHEN status='EXHAUSTED'::allocation_status
@@ -1862,7 +1916,7 @@ function buildRepos(pool) {
       return r.rows[0] || null;
     },
     async releaseAllocation(tenantId, id) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE allocations
             SET status='RELEASED'::allocation_status, updated_at=now()
           WHERE tenant_id=$1 AND id=$2 AND status='ACTIVE'::allocation_status
@@ -1873,7 +1927,7 @@ function buildRepos(pool) {
     },
     async listAllocationsDueForRelease(asOfDate) {
       // ACTIVE allocations whose (date_from - release_days days) <= asOfDate.
-      const r = await pool.query(
+      const r = await tq(
         `SELECT * FROM allocations
           WHERE status='ACTIVE'::allocation_status
             AND (date_from - (release_days || ' days')::interval)::date <= $1::date`,
@@ -1890,11 +1944,11 @@ function buildRepos(pool) {
         ON CONFLICT (property_id, year)
         DO UPDATE SET next_number = invoice_counters.next_number + 1, updated_at = now()
         RETURNING next_number - 1 AS claimed`;
-      const r = await pool.query(sql, [tenantId, propertyId, year]);
+      const r = await tq(sql, [tenantId, propertyId, year]);
       return parseInt(r.rows[0].claimed, 10);
     },
     async insertInvoice(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO invoices (tenant_id, property_id, folio_id, invoice_number, status,
               currency, total_amount, tax_amount, balance, bill_to_guest_id, business_date,
               payload, cost_center_id, created_by)
@@ -1907,11 +1961,11 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async findInvoiceById(tenantId, id) {
-      const r = await pool.query(`SELECT * FROM invoices WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
+      const r = await tq(`SELECT * FROM invoices WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
       return r.rows[0] || null;
     },
     async findInvoiceByNumber(tenantId, propertyId, number) {
-      const r = await pool.query(`SELECT * FROM invoices WHERE tenant_id=$1 AND property_id=$2 AND invoice_number=$3 LIMIT 1`,
+      const r = await tq(`SELECT * FROM invoices WHERE tenant_id=$1 AND property_id=$2 AND invoice_number=$3 LIMIT 1`,
         [tenantId, propertyId, number]);
       return r.rows[0] || null;
     },
@@ -1920,11 +1974,11 @@ function buildRepos(pool) {
       let sql = `SELECT * FROM invoices WHERE tenant_id=$1 AND property_id=$2`;
       if (opts.status) { params.push(opts.status); sql += ` AND status=$${params.length}::invoice_status`; }
       sql += ` ORDER BY issued_at DESC LIMIT 500`;
-      const r = await pool.query(sql, params);
+      const r = await tq(sql, params);
       return r.rows;
     },
     async voidInvoice(tenantId, id, reason) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE invoices SET status='VOIDED'::invoice_status, voided_at=now(),
                 void_reason=$3, updated_at=now()
           WHERE tenant_id=$1 AND id=$2 AND status='ISSUED'::invoice_status
@@ -1936,7 +1990,7 @@ function buildRepos(pool) {
 
     // ----- payment allocations (Phase 7 / C8) -----
     async insertPaymentAllocation(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO payment_allocations
            (tenant_id, folio_id, payment_line_id, charge_line_id,
             amount_allocated, allocated_by, business_date)
@@ -1947,25 +2001,25 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async listAllocationsForPayment(tenantId, paymentLineId) {
-      const r = await pool.query(
+      const r = await tq(
         `SELECT * FROM payment_allocations WHERE tenant_id=$1 AND payment_line_id=$2 ORDER BY allocated_at`,
         [tenantId, paymentLineId]);
       return r.rows;
     },
     async listAllocationsForCharge(tenantId, chargeLineId) {
-      const r = await pool.query(
+      const r = await tq(
         `SELECT * FROM payment_allocations WHERE tenant_id=$1 AND charge_line_id=$2 ORDER BY allocated_at`,
         [tenantId, chargeLineId]);
       return r.rows;
     },
     async listAllocationsForFolio(tenantId, folioId) {
-      const r = await pool.query(
+      const r = await tq(
         `SELECT * FROM payment_allocations WHERE tenant_id=$1 AND folio_id=$2 ORDER BY allocated_at`,
         [tenantId, folioId]);
       return r.rows;
     },
     async findFolioLineById(tenantId, id) {
-      const r = await pool.query(
+      const r = await tq(
         `SELECT fl.* FROM folio_lines fl
            JOIN folios f ON f.id = fl.folio_id
           WHERE f.tenant_id=$1 AND fl.id=$2 LIMIT 1`, [tenantId, id]);
@@ -1973,7 +2027,7 @@ function buildRepos(pool) {
     },
 
     async closeFolio(tenantId, id) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE folios SET status='CLOSED'::folio_status, closed_at=now(), updated_at=now()
           WHERE tenant_id=$1 AND id=$2 RETURNING *`,
         [tenantId, id]
@@ -1985,7 +2039,7 @@ function buildRepos(pool) {
   // ---- housekeeping repo (Phase 5.5 readiness) ------------------------
   const housekeepingRepo = {
     async insertTask(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO housekeeping_tasks (tenant_id, property_id, room_id, reservation_id,
               task_type, status, priority, scheduled_for, notes, created_by)
          VALUES ($1,$2,$3,$4,$5::hk_task_type,$6::hk_task_status,$7,$8,$9,$10) RETURNING *`,
@@ -1996,11 +2050,11 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async findTaskById(tenantId, id) {
-      const r = await pool.query(`SELECT * FROM housekeeping_tasks WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
+      const r = await tq(`SELECT * FROM housekeeping_tasks WHERE tenant_id=$1 AND id=$2 LIMIT 1`, [tenantId, id]);
       return r.rows[0] || null;
     },
     async assignTask(tenantId, id, assigneeUserId) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE housekeeping_tasks SET status='ASSIGNED'::hk_task_status, assigned_to=$3, assigned_at=now(), updated_at=now()
           WHERE tenant_id=$1 AND id=$2 RETURNING *`,
         [tenantId, id, assigneeUserId]
@@ -2008,7 +2062,7 @@ function buildRepos(pool) {
       return r.rows[0] || null;
     },
     async completeTask(tenantId, id, { verifiedBy, notes } = {}) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE housekeeping_tasks
             SET status='COMPLETED'::hk_task_status, completed_at=now(),
                 verified_by=$3, verified_at=CASE WHEN $3 IS NULL THEN NULL ELSE now() END,
@@ -2024,7 +2078,7 @@ function buildRepos(pool) {
       if (opts.status) { params.push(opts.status); sql += ` AND status=$${params.length}::hk_task_status`; }
       if (opts.assigned_to) { params.push(opts.assigned_to); sql += ` AND assigned_to=$${params.length}`; }
       sql += ` ORDER BY priority, scheduled_for NULLS LAST, created_at LIMIT 500`;
-      const r = await pool.query(sql, params);
+      const r = await tq(sql, params);
       return r.rows;
     }
   };
@@ -2032,7 +2086,7 @@ function buildRepos(pool) {
   // ---- night audit repo (Phase 5.5) -----------------------------------
   const nightAuditRepo = {
     async insertRun(rec) {
-      const r = await pool.query(
+      const r = await tq(
         `INSERT INTO night_audit_runs (tenant_id, property_id, business_date, next_business_date,
               status, triggered_by, trigger_kind)
          VALUES ($1,$2,$3,$4,$5::night_audit_status,$6,$7) RETURNING *`,
@@ -2042,7 +2096,7 @@ function buildRepos(pool) {
       return r.rows[0];
     },
     async completeRun(tenantId, id, payload) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE night_audit_runs SET status='COMPLETED'::night_audit_status,
                 completed_at=now(),
                 duration_ms=EXTRACT(EPOCH FROM (now()-started_at))::int*1000,
@@ -2056,7 +2110,7 @@ function buildRepos(pool) {
       return r.rows[0] || null;
     },
     async failRun(tenantId, id, err) {
-      const r = await pool.query(
+      const r = await tq(
         `UPDATE night_audit_runs SET status='FAILED'::night_audit_status, completed_at=now(),
                 error=$3, duration_ms=EXTRACT(EPOCH FROM (now()-started_at))::int*1000
           WHERE tenant_id=$1 AND id=$2 RETURNING *`,
@@ -2065,7 +2119,7 @@ function buildRepos(pool) {
       return r.rows[0] || null;
     },
     async findLatestRun(tenantId, propertyId) {
-      const r = await pool.query(
+      const r = await tq(
         `SELECT * FROM night_audit_runs WHERE tenant_id=$1 AND property_id=$2
          ORDER BY started_at DESC LIMIT 1`,
         [tenantId, propertyId]
@@ -2074,7 +2128,7 @@ function buildRepos(pool) {
     },
     // Phase 21: night-audit run history (read).
     async listRuns(tenantId, propertyId, limit = 50) {
-      const r = await pool.query(
+      const r = await tq(
         `SELECT * FROM night_audit_runs WHERE tenant_id=$1 AND property_id=$2
          ORDER BY started_at DESC LIMIT $3`,
         [tenantId, propertyId, Math.min(Number(limit) || 50, 200)]
@@ -2082,14 +2136,14 @@ function buildRepos(pool) {
       return r.rows;
     },
     async setPropertyBusinessDateLocked(tenantId, propertyId, locked) {
-      await pool.query(
+      await tq(
         `UPDATE properties SET business_date_locked=$3, updated_at=now()
           WHERE tenant_id=$1 AND id=$2`,
         [tenantId, propertyId, !!locked]
       );
     },
     async advancePropertyBusinessDate(tenantId, propertyId, newBusinessDate) {
-      await pool.query(
+      await tq(
         `UPDATE properties SET current_business_date=$3, business_date_locked=false, updated_at=now()
           WHERE tenant_id=$1 AND id=$2`,
         [tenantId, propertyId, newBusinessDate]

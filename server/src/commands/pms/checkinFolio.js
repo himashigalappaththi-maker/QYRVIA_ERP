@@ -24,6 +24,35 @@ const { makeEvent } = require('../../core/event');
 
 function pad6(n) { const s = String(n); return s.length >= 6 ? s : '0'.repeat(6 - s.length) + s; }
 
+/**
+ * Phase 64 P1-7 — property isolation for operational PMS writes.
+ *
+ * RLS blocks cross-TENANT rows. Cross-PROPERTY access WITHIN a tenant is
+ * application-level (identityContext.js says so explicitly) — and it was not
+ * being enforced on this chain. `findReservationById` / `findFolioById` resolve
+ * by tenant only, so a user scoped to property A could check in, check out,
+ * post charges to, and close a folio belonging to property B of the same
+ * tenant — and check-in would then stamp the new folio with property A.
+ *
+ * The row is loaded inside the tenant transaction and verified BEFORE any
+ * mutation, so a mismatch changes nothing.
+ *
+ * There is deliberately no corporate bypass: a corporate user must switch into
+ * the target property context to perform an operational write. A silent bypass
+ * would make the check decorative.
+ *
+ * @returns {null|{ok:false,error:string}} null when access is allowed
+ */
+function propertyGuard(row, ctx, label) {
+  if (!ctx || !ctx.propertyId) {
+    return { ok: false, error: 'property_context_required', detail: label };
+  }
+  if (row && row.property_id && row.property_id !== ctx.propertyId) {
+    return { ok: false, error: 'property_access_denied', detail: label };
+  }
+  return null;
+}
+
 function makeCheckinFolioCommands({ pmsRepo, folioRepo, housekeepingRepo }) {
   if (!pmsRepo)         throw new Error('pmsRepo required');
   if (!folioRepo)       throw new Error('folioRepo required');
@@ -43,15 +72,21 @@ function makeCheckinFolioCommands({ pmsRepo, folioRepo, housekeepingRepo }) {
 
       const before = await pmsRepo.findReservationById(ctx.tenantId, input.reservation_id);
       if (!before) return { ok: false, error: 'reservation_not_found' };
+      // P1-7: verify property ownership BEFORE any mutation.
+      const denied = propertyGuard(before, ctx, 'reservation');
+      if (denied) return denied;
       if (before.status !== 'CONFIRMED') {
         return { ok: false, error: 'invalid_transition', detail: 'from ' + before.status };
       }
       const fromStatus = before.status;
 
-      // Optional assigned_room_id; if provided, verify ownership.
+      // Verify room ownership. Phase 64 (hazard H3): the guard used to run ONLY
+      // when the caller supplied assigned_room_id. When the room came from
+      // `before.assigned_room_id` it was skipped entirely — yet the room was
+      // still flipped to OCCUPIED. Any room we are about to mutate is checked.
       let assignedRoomId = input.assigned_room_id || before.assigned_room_id || null;
-      if (input.assigned_room_id) {
-        const room = await pmsRepo.findRoomById(ctx.tenantId, input.assigned_room_id);
+      if (assignedRoomId) {
+        const room = await pmsRepo.findRoomById(ctx.tenantId, assignedRoomId);
         if (!room || room.property_id !== ctx.propertyId) {
           return { ok: false, error: 'room_not_found' };
         }
@@ -107,6 +142,9 @@ function makeCheckinFolioCommands({ pmsRepo, folioRepo, housekeepingRepo }) {
 
       const before = await pmsRepo.findReservationById(ctx.tenantId, input.reservation_id);
       if (!before) return { ok: false, error: 'reservation_not_found' };
+      // P1-7: this handler previously did not even require ctx.propertyId.
+      const denied = propertyGuard(before, ctx, 'reservation');
+      if (denied) return denied;
       if (before.status !== 'CHECKED_IN') {
         return { ok: false, error: 'invalid_transition', detail: 'from ' + before.status };
       }
@@ -181,6 +219,8 @@ function makeCheckinFolioCommands({ pmsRepo, folioRepo, housekeepingRepo }) {
       if (!input.folio_id) return { ok: false, error: 'folio_id_required' };
       const folio = await folioRepo.findFolioById(ctx.tenantId, input.folio_id);
       if (!folio)          return { ok: false, error: 'folio_not_found' };
+      const denied = propertyGuard(folio, ctx, 'folio');   // P1-7
+      if (denied) return denied;
       if (folio.status !== 'OPEN') return { ok: false, error: 'folio_not_open' };
 
       const VALID_CT = ['ROOM','ROOM_TAX','PACKAGE','EXTRA_BED','MINIBAR','POS_CHARGE','LAUNDRY',
@@ -226,6 +266,8 @@ function makeCheckinFolioCommands({ pmsRepo, folioRepo, housekeepingRepo }) {
                  detail: 'tendered=' + input.tendered + ' due=' + input.amount };
       const folio = await folioRepo.findFolioById(ctx.tenantId, input.folio_id);
       if (!folio) return { ok: false, error: 'folio_not_found' };
+      const denied = propertyGuard(folio, ctx, 'folio');   // P1-7
+      if (denied) return denied;
       if (folio.status !== 'OPEN') return { ok: false, error: 'folio_not_open' };
       const change = Math.round((input.tendered - input.amount) * 100) / 100;
       // Payment lines store NEGATIVE amounts (per Phase 5.5 convention).
@@ -261,6 +303,8 @@ function makeCheckinFolioCommands({ pmsRepo, folioRepo, housekeepingRepo }) {
       if (!input.folio_id) return { ok: false, error: 'folio_id_required' };
       const f = await folioRepo.findFolioById(ctx.tenantId, input.folio_id);
       if (!f)              return { ok: false, error: 'folio_not_found' };
+      const denied = propertyGuard(f, ctx, 'folio');   // P1-7
+      if (denied) return denied;
       if (f.status !== 'OPEN') return { ok: false, error: 'folio_not_open' };
       if (Number(f.balance) !== 0 && !input.force) {
         return { ok: false, error: 'folio_has_balance', detail: 'balance=' + f.balance };

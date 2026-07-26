@@ -46,13 +46,35 @@ function buildNightAuditService({ nightAuditRepo, pmsRepo }) {
     // 1) lock the property's business date
     await nightAuditRepo.setPropertyBusinessDateLocked(tenantId, propertyId, true);
 
-    // 2) insert RUNNING row (PENDING then immediately runs)
-    const run = await nightAuditRepo.insertRun({
-      tenant_id: tenantId, property_id: propertyId,
-      business_date: businessDate, next_business_date: nextDate,
-      status: 'RUNNING', triggered_by: triggeredBy || null,
-      trigger_kind: triggerKind || (triggeredBy ? 'MANUAL' : 'AUTO')
-    });
+    // 2) insert RUNNING row (PENDING then immediately runs).
+    //
+    // Phase 63 P0-10: this insert sits BETWEEN acquiring the lock and the
+    // try/catch that releases it. `ux_night_audit_property_busdate` is UNIQUE
+    // on (property_id, business_date), so a second run for the same business
+    // date — a double-click, a scheduler retry, or a retry after a FAILED run
+    // — threw here with the lock already set and nothing to release it. No
+    // route or command can unlock a property, so every accounting-sensitive
+    // command (folio posting, cash payment, folio close, invoicing) was
+    // rejected for that property FOREVER. Release the lock we just took if we
+    // cannot even start.
+    let run;
+    try {
+      run = await nightAuditRepo.insertRun({
+        tenant_id: tenantId, property_id: propertyId,
+        business_date: businessDate, next_business_date: nextDate,
+        status: 'RUNNING', triggered_by: triggeredBy || null,
+        trigger_kind: triggerKind || (triggeredBy ? 'MANUAL' : 'AUTO')
+      });
+    } catch (startErr) {
+      try { await nightAuditRepo.setPropertyBusinessDateLocked(tenantId, propertyId, false); }
+      catch (_) { /* swallow - reporting startErr is the priority */ }
+      return {
+        ok: false,
+        error: 'night_audit_start_failed',
+        detail: String((startErr && startErr.message) || startErr),
+        run_id: null
+      };
+    }
 
     const stats = {
       reservations_arrived: 0,

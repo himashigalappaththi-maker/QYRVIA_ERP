@@ -22,6 +22,7 @@
 const fs   = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { buildDomainEventWriter } = require('../../src/core/eventStoreWriter');
 
 let Pool;
 try { ({ Pool } = require('pg')); } catch (_) { Pool = null; }
@@ -166,14 +167,10 @@ function realDbFacade(pool) {
         [ev.event_id, ev.event_type, ev.aggregate_type, ev.aggregate_id, ev.tenant_id,
          ev.property_id, ev.actor_id, ev.request_id, ev.payload, ev.occurred_at]);
     },
-    async insertDomainEvent(ev) {
-      await pool.query(
-        `INSERT INTO event_store (id, tenant_id, property_id, aggregate_type, aggregate_id,
-            event_type, event_version, payload_json, actor_id, request_id, occurred_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-        [ev.event_id, ev.tenant_id, ev.property_id, ev.aggregate_type, ev.aggregate_id,
-         ev.event_type, 1, ev.payload, ev.actor_id, ev.request_id, ev.occurred_at]);
-    }
+    // Phase 63 P0-1: use the SAME monotonic writer as production so DB tests
+    // exercise the real versioning path. The old harness hard-coded
+    // event_version = 1 and therefore reproduced (and hid) the production bug.
+    insertDomainEvent: buildDomainEventWriter(pool)
   };
 }
 

@@ -13,6 +13,7 @@ const db        = require('./db/client');
 const { buildRepos } = require('./db/repos');
 const commandBus = require('./core/commandBus');
 const { makeEvent } = require('./core/event');
+const { buildDomainEventWriter } = require('./core/eventStoreWriter');
 // Single shared event-bus handle. Declared here (not lazily lower down) so the
 // subscribers wired during boot can reference it without a temporal-dead-zone
 // crash.
@@ -36,35 +37,25 @@ try { observability.metrics.bindPool(db.pool); } catch (_) { /* telemetry only *
  *   - ping()                       : used by /api/health/ready
  *   - insertAuditEvent(event)      : used by eventBus.persistToAudit
  */
+// Phase 64 P0-11: audit_events and event_store are BOTH FORCE-RLS with an
+// app.tenant_id policy, so these writers can no longer use a bare pooled
+// connection. They now join the caller's tenant unit of work when one is open
+// (so a domain event commits with the state change it describes) and otherwise
+// open their own short tenant-bound transaction using the event's own trusted
+// tenant_id (so audit rows for a ROLLED-BACK command still survive).
+//
+// Phase 63 P0-1 remains: the per-aggregate event_version is computed
+// monotonically inside the INSERT rather than hard-coded to 1.
+const { buildTenantBoundEventWriters } = require('./db/tenantBoundEventWriters');
+const _eventWriters = buildTenantBoundEventWriters({
+  pool: obsPool,
+  domainEventWriter: buildDomainEventWriter
+});
+
 const dbFacade = {
   ping: db.ping,
-  async insertAuditEvent(ev) {
-    await obsPool.query(
-      `INSERT INTO audit_events
-         (event_id, event_type, aggregate_type, aggregate_id,
-          tenant_id, property_id, actor_id, request_id, payload, occurred_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [
-        ev.event_id, ev.event_type, ev.aggregate_type, ev.aggregate_id,
-        ev.tenant_id, ev.property_id, ev.actor_id, ev.request_id,
-        ev.payload, ev.occurred_at
-      ]
-    );
-  },
-  async insertDomainEvent(ev) {
-    // Phase 3 - canonical event store for domain events. version=1 always
-    // (per-aggregate versioning lands when PMS phases introduce aggregates).
-    await obsPool.query(
-      `INSERT INTO event_store
-         (id, tenant_id, property_id, aggregate_type, aggregate_id,
-          event_type, event_version, payload_json, actor_id, request_id, occurred_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-      [
-        ev.event_id, ev.tenant_id, ev.property_id, ev.aggregate_type, ev.aggregate_id,
-        ev.event_type, 1, ev.payload, ev.actor_id, ev.request_id, ev.occurred_at
-      ]
-    );
-  }
+  insertAuditEvent:  _eventWriters.insertAuditEvent,
+  insertDomainEvent: _eventWriters.insertDomainEvent
 };
 
 const {
@@ -113,11 +104,12 @@ const webhookService       = buildWebhookService({ repo: webhookRepo });
 
 // Phase 5 - PMS command + query registration
 const queryBus = require('./core/queryBus');
+const { asTenantScoped } = require('./commands/_tenantScoped');
 const { makeCommands: makePmsCommands } = require('./commands/pms');
 const { makeQueries:  makePmsQueries  } = require('./queries/pms');
 try {
-  for (const c of makePmsCommands({ pmsRepo })) commandBus.register(c);
-  for (const q of makePmsQueries ({ pmsRepo, folioRepo, housekeepingRepo, nightAuditRepo })) queryBus.register(q);
+  for (const c of asTenantScoped(makePmsCommands({ pmsRepo }))) commandBus.register(c);
+  for (const q of asTenantScoped(makePmsQueries ({ pmsRepo, folioRepo, housekeepingRepo, nightAuditRepo }), 'read')) queryBus.register(q);
 } catch (e) { logger.warn({ err: e }, '[boot] PMS register skipped (already registered?)'); }
 
 // Phase 21 - IAM read-only queries (users / roles) for the admin UI.
@@ -133,29 +125,29 @@ const nightAuditService = buildNightAuditService({ nightAuditRepo, pmsRepo });
 
 // Phase 6 / C4 - Meal Plan commands
 const { makeMealPlanCommands } = require('./commands/pms/mealPlans');
-try { for (const c of makeMealPlanCommands({ pmsRepo })) commandBus.register(c); }
+try { for (const c of asTenantScoped(makeMealPlanCommands({ pmsRepo }))) commandBus.register(c); }
 catch (e) { logger.warn({ err: e }, '[boot] meal plan register skipped'); }
 
 // Phase 7 / C8 - Payment Allocation
 const { buildPaymentAllocationService }    = require('./services/pms/paymentAllocation');
 const { makePaymentAllocationCommands }    = require('./commands/pms/paymentAllocation');
 const paymentAllocationService = buildPaymentAllocationService({ folioRepo, pmsRepo });
-try { for (const c of makePaymentAllocationCommands({ paymentAllocationService, ledgerService })) commandBus.register(c); }
+try { for (const c of asTenantScoped(makePaymentAllocationCommands({ paymentAllocationService, ledgerService, folioRepo }))) commandBus.register(c); }
 catch (e) { logger.warn({ err: e }, '[boot] payment allocation register skipped'); }
 
 // Phase 7 / C9 - Invoice aggregate (Phase 8: posts AR/Revenue ledger batch)
 const { makeInvoiceCommands } = require('./commands/pms/invoices');
-try { for (const c of makeInvoiceCommands({ folioRepo, pmsRepo, settingsService, ledgerService })) commandBus.register(c); }
+try { for (const c of asTenantScoped(makeInvoiceCommands({ folioRepo, pmsRepo, settingsService, ledgerService }))) commandBus.register(c); }
 catch (e) { logger.warn({ err: e }, '[boot] invoice register skipped'); }
 
 // Phase 7 / C6 - Vouchers (Phase 8: posts discount/agent-cost ledger batch on redeem)
 const { makeVoucherCommands } = require('./commands/pms/vouchers');
-try { for (const c of makeVoucherCommands({ pmsRepo, settingsService, ledgerService })) commandBus.register(c); }
+try { for (const c of asTenantScoped(makeVoucherCommands({ pmsRepo, settingsService, ledgerService }))) commandBus.register(c); }
 catch (e) { logger.warn({ err: e }, '[boot] voucher register skipped'); }
 
 // Phase 7 / C5 - Reservation Group lifecycle
 const { makeReservationGroupCommands } = require('./commands/pms/reservationGroups');
-try { for (const c of makeReservationGroupCommands({ pmsRepo, commandBus, settingsService })) commandBus.register(c); }
+try { for (const c of asTenantScoped(makeReservationGroupCommands({ pmsRepo, commandBus, settingsService }))) commandBus.register(c); }
 catch (e) { logger.warn({ err: e }, '[boot] reservation_group register skipped'); }
 
 // Phase 8 / C11 - Cost Centers
@@ -290,28 +282,6 @@ try {
   logger.info({ mode: channelOutboundSync.mode, realChannels: Array.from(channelOutboundSync.realChannels), http: channelOutboundSync.httpChannels }, '[boot] channel outbound sync');
 } catch (e) { logger.warn({ err: e }, '[boot] channel outbound sync init skipped'); }
 
-// Phase 24 B8-B4 - inbound webhook pipeline (idempotent booking_store -> PMS commandBus).
-// DI only; the route is mounted gated behind CHANNEL_WEBHOOK_ENABLED (default off).
-const { buildChannelInbound } = require('./channel-manager/inbound');
-let channelInbound = null;
-try {
-  // Phase 53 H1: inject ariAvailabilityProvider for OTA booking availability gate.
-  // Phase 53 H2: inject channelRegistry for kill-switch enforcement at inbound.
-  let _ariAvailabilityProvider;
-  try { if (ariService) _ariAvailabilityProvider = buildAriAvailabilityProvider({ ariService }); } catch (_) { /* optional */ }
-  channelInbound = buildChannelInbound({
-    registry:             channelOutboundSync && channelOutboundSync.registry,
-    bookingStore:         channelPersistence && channelPersistence.booking,
-    commandBus,
-    resolveSecret:        channelOutboundSync && channelOutboundSync.resolveSecret, // B8-B5: per-channel signing secret
-    requireSignature:     env.CHANNEL_WEBHOOK_REQUIRE_SIGNATURE !== 'false',
-    availabilityProvider: _ariAvailabilityProvider || null,  // H1: ARI gate (null = disabled)
-    channelRegistry:      channelRegistry || null,           // H2: kill-switch (null = disabled)
-    importLog:            channelPersistence && channelPersistence.importLog || null  // Fix 3: booking import log
-  });
-  logger.info('[boot] channel inbound pipeline ready');
-} catch (e) { logger.warn({ err: e }, '[boot] channel inbound init skipped'); }
-
 // Phase 52 D8 — ARI store + service boot. Wired from the DB pool; graceful on failure.
 // Boot order: DB pool -> ARI store -> ARI service -> inject into booking engine + routes.
 const { buildDbAriStore } = require('./ari/store/dbStore');
@@ -333,6 +303,28 @@ try {
   ariService = buildAriService({ store: ariDbStore });
   logger.info('[boot] ARI store + service ready');
 } catch (e) { logger.warn({ err: e }, '[boot] ARI init skipped'); }
+
+// Phase 24 B8-B4 - inbound webhook pipeline (idempotent booking_store -> PMS
+// commandBus). Build it only after ARI initialization so live OTA ingestion
+// receives the fail-closed availability provider.
+const { buildChannelInbound } = require('./channel-manager/inbound');
+let channelInbound = null;
+try {
+  const inboundAvailabilityProvider = ariService
+    ? buildAriAvailabilityProvider({ ariService })
+    : null;
+  channelInbound = buildChannelInbound({
+    registry:             channelOutboundSync && channelOutboundSync.registry,
+    bookingStore:         channelPersistence && channelPersistence.booking,
+    commandBus,
+    resolveSecret:        channelOutboundSync && channelOutboundSync.resolveSecret,
+    requireSignature:     env.CHANNEL_WEBHOOK_REQUIRE_SIGNATURE !== 'false',
+    availabilityProvider: inboundAvailabilityProvider,
+    channelRegistry:      channelRegistry || null,
+    importLog:            channelPersistence && channelPersistence.importLog || null
+  });
+  logger.info({ availabilityGuard: Boolean(inboundAvailabilityProvider) }, '[boot] channel inbound pipeline ready');
+} catch (e) { logger.warn({ err: e }, '[boot] channel inbound init skipped'); }
 
 // Phase 27.3 - AI Booking Confirmation. Default OFF. When enabled, builds the
 // confirmation service (deterministic templates, escalation decision tree, retry/DLQ
@@ -526,8 +518,17 @@ if (require('./config/env').CHANNEL_WORKER_ENABLED === 'true') {
     const { buildLeaseQueue } = require('./channel-manager/worker/leaseQueue');
     const { buildMockProcessor } = require('./channel-manager/worker/mockProcessor');
     const { buildChannelQueueWorker } = require('./channel-manager/worker/channelQueueWorker');
+    // Phase 63 P1-4: the worker used to be handed a BRAND-NEW buildLeaseQueue(),
+    // while the event spine above enqueues into channelPersistence.queue. The
+    // worker therefore polled an object nothing ever wrote to and processed
+    // zero jobs — silently, with no error and no dead-letter row. Bind it to
+    // the same queue the spine writes to.
+    const workerQueue = (channelPersistence && channelPersistence.queue) || buildLeaseQueue();
+    if (!(channelPersistence && channelPersistence.queue)) {
+      logger.warn('[boot] channel worker fell back to a private in-memory queue — the event spine queue is unavailable, so NO enqueued job will be processed');
+    }
     const channelWorker = buildChannelQueueWorker({
-      queue: buildLeaseQueue(),
+      queue: workerQueue,
       processor: buildMockProcessor(),
       deadLetterStore: channelPersistence && channelPersistence.deadLetter,
       enabled: true
@@ -542,7 +543,7 @@ if (require('./config/env').CHANNEL_WORKER_ENABLED === 'true') {
 const { buildAllocationService } = require('./services/pms/allocation');
 const { makeAllocationCommands } = require('./commands/pms/allocations');
 const allocationService = buildAllocationService({ pmsRepo, eventBus: require('./core/eventBus') });
-try { for (const c of makeAllocationCommands({ pmsRepo, allocationService })) commandBus.register(c); }
+try { for (const c of asTenantScoped(makeAllocationCommands({ pmsRepo, allocationService }))) commandBus.register(c); }
 catch (e) { logger.warn({ err: e }, '[boot] allocation register skipped'); }
 
 // Subscribers: reservation.created -> auto-consume allocation when payload.allocation_id present.
@@ -618,8 +619,8 @@ try {
 
 // Now register all Phase 5.5 + 6 commands (after scheduler is built).
 try {
-  for (const c of makeNightAuditCommands  ({ nightAuditService, nightAuditScheduler })) commandBus.register(c);
-  for (const c of makeCheckinFolioCommands({ pmsRepo, folioRepo, housekeepingRepo }))   commandBus.register(c);
+  for (const c of asTenantScoped(makeNightAuditCommands  ({ nightAuditService, nightAuditScheduler }))) commandBus.register(c);
+  for (const c of asTenantScoped(makeCheckinFolioCommands({ pmsRepo, folioRepo, housekeepingRepo })))   commandBus.register(c);
 } catch (e) { logger.warn({ err: e }, '[boot] Phase 5.5 register skipped (already registered?)'); }
 
 // Wire the webhook service to receive domain events
@@ -651,6 +652,46 @@ function makeAuthEvent(type, payload, req, user) {
     }
   });
 }
+
+// Phase 64 P0-11: install the tenant unit of work on BOTH buses.
+//
+// From here on, every command registered with `tenantScoped: true` runs inside
+// one tenant-bound transaction (one pooled client, app.tenant_id bound with
+// transaction-LOCAL scope, all repository statements sharing it), and every
+// query registered with `tenantScoped: true` runs inside a tenant-bound READ
+// ONLY transaction. Without this the PMS repositories query an unbound pooled
+// connection and FORCE RLS returns nothing — that is P0-11.
+//
+// This must be installed BEFORE the first dispatch. In production the buses
+// refuse a tenant-scoped command outright when it is missing, rather than
+// falling back to an unbound connection.
+{
+  const tenantUow = require('./db/tenantUnitOfWork');
+  const uow = {
+    pool: obsPool,
+    runWithTenantTransaction: tenantUow.runWithTenantTransaction,
+    runWithTenantRead:        tenantUow.runWithTenantRead
+  };
+  commandBus.setUnitOfWork(uow);
+  queryBus.setUnitOfWork(uow);
+  logger.info('[boot] tenant unit of work installed on commandBus + queryBus');
+}
+
+// Phase 63 P1-1: route domain-event persistence failures into observability.
+// A hole in the canonical event stream is an operational incident, not a debug
+// line — it must be countable and alertable, never silent.
+try {
+  commandBus.setEventPersistenceFailureHook(({ command, failures }) => {
+    try { observability.metrics.job('event_store_persist', 'failed'); } catch (_) { /* metrics only */ }
+    try {
+      observability.security.emit('event_store.persist_failed', {
+        command,
+        count: failures.length,
+        event_types: failures.map((f) => f.event_type).filter(Boolean)
+      });
+    } catch (_) { /* telemetry only */ }
+  });
+} catch (e) { logger.warn({ err: e }, '[boot] event persistence failure hook not installed'); }
 
 const app = createApp({
   db: dbFacade,
@@ -691,9 +732,43 @@ const app = createApp({
 // BIND_HOST: when set (e.g. '127.0.0.1') the server binds only to that
 // interface. Default (unset) binds to all interfaces — existing behaviour.
 const _bindHost = process.env.BIND_HOST || undefined;
-const server = app.listen(env.PORT, _bindHost, () => {
-  logger.info({ port: env.PORT, env: env.NODE_ENV }, '[qyrvia] listening');
-});
+
+// Phase 63 P0-2 — migration preflight BEFORE the listener opens.
+//
+// /health/ready only pings the connection, so it reports {db:"ok"} against a
+// stale schema and the orchestrator marks the instance healthy. Verifying
+// schema_migrations here means a drifted production container never opens a
+// port and therefore never receives traffic. Non-production only warns, so
+// local development and tests are unaffected.
+const { runMigrationPreflight } = require('./db/migrationPreflight');
+let server = null;
+
+(async () => {
+  try {
+    const { fatal } = await runMigrationPreflight({
+      queryable:    db.pool,
+      isProduction: env.NODE_ENV === 'production',
+      logger
+    });
+    if (fatal) {
+      logger.fatal('[qyrvia] boot aborted: database schema does not match this build');
+      try { await db.close(); } catch (_) { /* already failing */ }
+      process.exit(2);
+    }
+  } catch (err) {
+    // An unexpected preflight error is itself a reason not to serve traffic in
+    // production; elsewhere it must not block a developer.
+    if (env.NODE_ENV === 'production') {
+      logger.fatal({ err }, '[qyrvia] boot aborted: migration preflight errored');
+      process.exit(2);
+    }
+    logger.warn({ err }, '[preflight] migration preflight errored (non-production: continuing)');
+  }
+
+  server = app.listen(env.PORT, _bindHost, () => {
+    logger.info({ port: env.PORT, env: env.NODE_ENV }, '[qyrvia] listening');
+  });
+})();
 
 const { buildShutdown, safeErrMeta } = require('./lifecycle/shutdown');
 const { shutdown } = buildShutdown({

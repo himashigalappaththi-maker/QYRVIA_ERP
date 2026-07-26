@@ -76,7 +76,45 @@ function buildPaymentStateStoreDb({ db }) {
     await db.query('DELETE FROM booking_payment_state WHERE reservation_id = $1', [reservationId]);
   }
 
-  return { upsert, getByReservationId, findExpiredHolds, deleteByReservationId };
+  /**
+   * Phase 63 P0-8 — atomic compare-and-set out of 'pending_payment'.
+   *
+   * `upsert` is an unconditional ON CONFLICT DO UPDATE, so it is NOT a CAS.
+   * That let confirmBooking and the hold-expiry sweep both act on one hold:
+   * confirm read 'pending', the sweep flipped it to 'failed' and cancelled the
+   * PMS reservation, and confirm then verified (charged) the payment against a
+   * cancelled reservation — money taken, no room.
+   *
+   * The `WHERE payment_status = 'pending_payment'` predicate makes the
+   * transition single-winner at the database level. The loser gets null.
+   *
+   * @param {string} reservationId
+   * @param {'paid'|'failed'|'refunded'} toStatus
+   * @param {object} patch  optional timestamp/provider columns to set
+   * @param {object} ctx    must carry tenantId (explicit scope, not just RLS)
+   * @returns {Promise<object|null>} the updated row, or null if already claimed
+   */
+  async function transitionPending(reservationId, toStatus, patch = {}, ctx = {}) {
+    const tenantId = (ctx && ctx.tenantId) || null;
+    const params = [reservationId, toStatus,
+      patch.paid_at || null, patch.failed_at || null, patch.refunded_at || null, patch.provider_ref || null];
+    let sql = `
+      UPDATE booking_payment_state
+         SET payment_status = $2,
+             paid_at      = COALESCE($3::timestamptz, paid_at),
+             failed_at    = COALESCE($4::timestamptz, failed_at),
+             refunded_at  = COALESCE($5::timestamptz, refunded_at),
+             provider_ref = COALESCE($6::varchar, provider_ref),
+             updated_at   = now()
+       WHERE reservation_id = $1
+         AND payment_status = 'pending_payment'`;
+    if (tenantId) { sql += ` AND tenant_id = $7`; params.push(tenantId); }
+    sql += ` RETURNING *`;
+    const result = await db.query(sql, params);
+    return result.rows[0] || null;
+  }
+
+  return { upsert, getByReservationId, findExpiredHolds, deleteByReservationId, transitionPending };
 }
 
 module.exports = { buildPaymentStateStoreDb };

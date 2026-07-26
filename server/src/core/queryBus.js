@@ -79,10 +79,17 @@ async function execute(name, input, ctx) {
     }
   }
 
+  // Phase 64: a tenant-scoped query runs inside a tenant-bound READ ONLY
+  // transaction, so its repository statements can actually see rows under
+  // FORCE RLS — and PostgreSQL itself guarantees the "query" cannot mutate.
   let outcome;
   try {
-    outcome = await q.handler(input || {}, ctx);
+    outcome = await runQueryScoped(q, input || {}, ctx);
   } catch (err) {
+    if (err && typeof err.code === 'string' && err.code.startsWith('TENANT_')) {
+      logger.error({ err, query: name, code: err.code }, '[queryBus] tenant unit of work failed');
+      return { ok: false, error: 'tenant_context_failed', detail: err.code };
+    }
     return { ok: false, error: 'handler_threw', detail: String(err.message || err) };
   }
   if (!outcome || typeof outcome !== 'object' || typeof outcome.ok !== 'boolean') {
@@ -91,12 +98,58 @@ async function execute(name, input, ctx) {
   return outcome;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 64 — tenant-bound read unit of work
+// ---------------------------------------------------------------------------
+
+let _unitOfWork = null;
+let _warnedNoUnitOfWork = false;
+
+/** Install the tenant unit-of-work runner. Called once at boot (src/index.js). */
+function setUnitOfWork(uow) {
+  if (uow === null || uow === undefined) { _unitOfWork = null; return; }
+  if (!uow.pool || typeof uow.runWithTenantRead !== 'function') {
+    throw new Error('setUnitOfWork: { pool, runWithTenantRead } required');
+  }
+  _unitOfWork = uow;
+  _warnedNoUnitOfWork = false;
+}
+
+function hasUnitOfWork() { return Boolean(_unitOfWork); }
+
+async function runQueryScoped(q, input, ctx) {
+  if (q.tenantScoped !== true) return q.handler(input, ctx);
+
+  if (!_unitOfWork) {
+    // Same fail-closed rule as the command bus: production must never read
+    // tenant data through an unbound pooled connection.
+    if (process.env.NODE_ENV === 'production') {
+      logger.error({ query: q.name, code: 'tenant_unit_of_work_not_configured' },
+        '[queryBus] REFUSING a tenant-scoped query: no tenant unit of work is configured');
+      return { ok: false, error: 'tenant_unit_of_work_unavailable' };
+    }
+    if (!_warnedNoUnitOfWork) {
+      _warnedNoUnitOfWork = true;
+      logger.warn({ code: 'tenant_unit_of_work_not_configured' },
+        '[queryBus] tenant-scoped queries are running WITHOUT a tenant-bound transaction. ' +
+        'Valid only for in-memory tests.');
+    }
+    return q.handler(input, ctx);
+  }
+
+  return _unitOfWork.runWithTenantRead(_unitOfWork.pool, ctx.tenantId, () => q.handler(input, ctx));
+}
+
 function _summary(input) {
   if (input === null || input === undefined) return { _kind: typeof input };
   if (typeof input !== 'object') return { _kind: typeof input };
   return { _keys: Object.keys(input).slice(0, 32) };
 }
 
-function reset() { registry.clear(); }
+function reset() {
+  registry.clear();
+  _unitOfWork = null;
+  _warnedNoUnitOfWork = false;
+}
 
-module.exports = { register, unregister, list, execute, reset };
+module.exports = { register, unregister, list, execute, reset, setUnitOfWork, hasUnitOfWork };

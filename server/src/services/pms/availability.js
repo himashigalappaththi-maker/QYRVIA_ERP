@@ -21,7 +21,31 @@
  * board - it does not invent inventory.
  */
 
-const HOLD_STATUSES = ['CONFIRMED', 'OPTION'];
+/**
+ * Reservation statuses that CONSUME inventory.
+ *
+ * Phase 63 P0-6: PENDING_PAYMENT added. The two-phase Booking Engine parks a
+ * reservation here for the length of the payment hold; while it was excluded,
+ * every concurrent guest saw the same last room as free for the whole window.
+ * The value existed in the reservation_status enum (migration 0066) but nothing
+ * read or wrote it.
+ */
+const HOLD_STATUSES = ['CONFIRMED', 'OPTION', 'PENDING_PAYMENT'];
+
+/**
+ * Room statuses that CANNOT be sold.
+ *
+ * Phase 63 P0-7: the room loops filtered on `active` only, so a room marked
+ * OUT_OF_ORDER, OUT_OF_SERVICE or BLOCKED still counted towards `total` and was
+ * therefore sellable. Those rooms remain visible in the per-room list (the
+ * front desk needs to see them) but must not inflate availability.
+ */
+const NON_SELLABLE_ROOM_STATUSES = new Set(['OUT_OF_ORDER', 'OUT_OF_SERVICE', 'BLOCKED']);
+
+function isSellableRoom(room) {
+  if (!room || !room.active) return false;
+  return !NON_SELLABLE_ROOM_STATUSES.has(String(room.status || '').toUpperCase());
+}
 
 function _addDays(dateIso, n) {
   const d = new Date(dateIso + 'T00:00:00Z');
@@ -47,9 +71,12 @@ async function roomsByDate(repo, { tenantId, propertyId, date, roomTypeId }) {
     const key = r.room_type_id;
     if (!byType[key]) byType[key] = {
       room_type_id: key, room_type_code: r.room_type_code,
-      total: 0, occupied: 0, available: 0, rooms: []
+      total: 0, occupied: 0, available: 0, out_of_service: 0, rooms: []
     };
-    byType[key].total++;
+    // P0-7: an out-of-order / out-of-service / blocked room is still listed so
+    // the front desk can see it, but it is NOT sellable inventory.
+    if (isSellableRoom(r)) byType[key].total++;
+    else byType[key].out_of_service++;
     byType[key].rooms.push({ id: r.id, room_number: r.room_number, status: r.status });
   }
   // Apply reservation hold counts
@@ -78,7 +105,9 @@ async function inventoryByRange(repo, { tenantId, propertyId, dateFrom, dateTo, 
   // Inventory by room-type code
   const totalByType = {};
   for (const r of rooms) {
-    if (!r.active) continue;
+    // P0-7: exclude non-sellable rooms from the range inventory too, otherwise
+    // the calendar advertises rooms the property cannot let.
+    if (!isSellableRoom(r)) continue;
     const code = r.room_type_code;
     totalByType[code] = (totalByType[code] || 0) + 1;
   }
@@ -105,4 +134,7 @@ async function inventoryByRange(repo, { tenantId, propertyId, dateFrom, dateTo, 
 
 const calendar = inventoryByRange;
 
-module.exports = { roomsByDate, inventoryByRange, calendar, HOLD_STATUSES };
+module.exports = {
+  roomsByDate, inventoryByRange, calendar,
+  HOLD_STATUSES, NON_SELLABLE_ROOM_STATUSES, isSellableRoom
+};

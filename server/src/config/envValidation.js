@@ -91,4 +91,62 @@ function validateProductionEnv(env) {
   return { errors, warnings };
 }
 
-module.exports = { validateProductionEnv, looksLikePlaceholder, looksLikeLocalhost };
+/**
+ * Phase 63 P1-3 — close the "NODE_ENV was never set" hole.
+ *
+ * `validateProductionEnv` only runs when NODE_ENV === 'production', and
+ * NODE_ENV defaults to 'development'. A deployment that simply forgets to set
+ * NODE_ENV therefore boots with PAYMENT_PROVIDER=mock, APP_BASE_URL pointing at
+ * localhost, a 32-character JWT secret and no encryption-key check — silently,
+ * with no signal anywhere that the production gate was skipped.
+ *
+ * The one unambiguous, non-heuristic signal that a process is NOT a local
+ * development boot is a NON-LOCAL DATABASE_URL. Nobody points a laptop at a
+ * remote multi-tenant database by accident and expects development defaults.
+ *
+ * So: unvalidated boot + remote database = refuse. Local development, CI and
+ * the DB test runner (all loopback) are completely unaffected. The escape hatch
+ * is explicit and must be typed deliberately.
+ *
+ * @param {object} env       frozen config
+ * @param {object} processEnv raw process.env (to see whether NODE_ENV was set at all)
+ * @returns {{ block: boolean, reason: string|null, warnings: string[] }}
+ */
+function checkUnvalidatedRemoteBoot(env, processEnv = process.env) {
+  const warnings = [];
+
+  if (env.NODE_ENV === 'production') {
+    return { block: false, reason: null, warnings };
+  }
+
+  const nodeEnvWasExplicit = typeof processEnv.NODE_ENV === 'string' && processEnv.NODE_ENV.trim() !== '';
+  if (!nodeEnvWasExplicit) {
+    warnings.push(
+      'NODE_ENV is not set — defaulting to "development". The production environment ' +
+      'validation gate is NOT active for this boot.'
+    );
+  }
+
+  const dbIsLocal = looksLikeLocalhost(env.DATABASE_URL);
+  if (dbIsLocal) return { block: false, reason: null, warnings };
+
+  const override = String(processEnv.QYRVIA_ALLOW_UNVALIDATED_REMOTE_DB || '').toLowerCase() === 'true';
+  if (override) {
+    warnings.push(
+      'QYRVIA_ALLOW_UNVALIDATED_REMOTE_DB=true — booting against a NON-LOCAL database ' +
+      'with NODE_ENV=' + env.NODE_ENV + ' and no production validation. This is unsafe outside a deliberate test.'
+    );
+    return { block: false, reason: null, warnings };
+  }
+
+  return {
+    block: true,
+    warnings,
+    reason:
+      'NODE_ENV is "' + env.NODE_ENV + '" (not "production") but DATABASE_URL points at a NON-LOCAL host, ' +
+      'so the production environment validation gate was skipped for a deployment-like boot. ' +
+      'Set NODE_ENV=production, or set QYRVIA_ALLOW_UNVALIDATED_REMOTE_DB=true if this is deliberate.'
+  };
+}
+
+module.exports = { validateProductionEnv, looksLikePlaceholder, looksLikeLocalhost, checkUnvalidatedRemoteBoot };

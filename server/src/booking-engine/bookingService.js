@@ -28,6 +28,12 @@ function buildBookingService({
   holdEngine = null,
   findReservationByIdempotencyKey = null,
   confirmationDeliveryService = null,
+  // Phase 63 P0-3: payment-confirmation policy. Default TRUE — confirmBooking
+  // must never turn a reservation into CONFIRMED without positive payment
+  // evidence. Set false ONLY for a deployment that deliberately takes no
+  // payment at booking time (front-desk / pay-on-arrival), and say so in the
+  // deployment record.
+  requirePayment = true,
 } = {}) {
   if (!commandBus) throw new Error('bookingService: commandBus required');
   const av = availabilityEngine || buildAvailabilityEngine({});
@@ -43,11 +49,39 @@ function buildBookingService({
     try { const d = Math.round((new Date(input.departure) - new Date(input.arrival)) / 86400000); return d >= 1 ? d : 1; }
     catch (_) { return 1; }
   }
+  // Phase 63 P0-4 — the PMS create/update contract was only half-populated.
+  //
+  // `pms.reservation.create` requires BOTH holder_guest_id AND
+  // primary_adult_guest_id (src/commands/pms/index.js — both go through
+  // _strReq, which throws on a missing value and is caught as
+  // 'validation_failed'). mapInput never emitted primary_adult_guest_id at all,
+  // so every booking routed through the REAL command bus failed. Only the unit
+  // tests passed, because they all dispatch into a fake command bus.
+  //
+  // The same omission silently dropped:
+  //   rooms_count    -> repos.js defaults to 1, so a 3-room request booked 1 room
+  //   rate_plan_id   -> ARI pricing/availability cannot resolve the plan
+  //   child_policy_id / child_ages -> the occupancy + child capacity check in
+  //                     the create handler is gated on child_policy_id, so it
+  //                     never ran
+  //   reservation_type / notes / allocation / contract / group linkage
   function mapInput(input, pricing) {
     return {
       external_ref: input.external_ref || input.bookingId || null, room_type_id: input.room_type_id,
       arrival_date: input.arrival, departure_date: input.departure, adults: input.adults, children: input.children || 0,
       holder_guest_id: input.holder_guest_id || null,
+      // Fall back to the holder when a distinct primary adult is not supplied:
+      // for a direct single-guest booking the holder IS the primary adult.
+      primary_adult_guest_id: input.primary_adult_guest_id || input.holder_guest_id || null,
+      rooms_count:      input.rooms_count || 1,
+      rate_plan_id:     input.rate_plan_id || null,
+      child_policy_id:  input.child_policy_id || null,
+      child_ages:       Array.isArray(input.child_ages) ? input.child_ages : null,
+      reservation_type: input.reservation_type || null,
+      notes:            input.notes || null,
+      allocation_id:    input.allocation_id || null,
+      contract_id:      input.contract_id || null,
+      group_id:         input.group_id || null,
       guest_name: input.guest_name || null, amount: pricing ? pricing.total : null,
       currency: (pricing && pricing.currency) || input.currency || 'USD', source_channel: input.channel || 'DIRECT',
       idempotency_key: input.idempotency_key || null,
@@ -233,8 +267,20 @@ function buildBookingService({
       return { ok: false, reason: validation.reason, detail: validation.detail };
     }
 
-    // 5. PMS reservation create (INQUIRY status)
-    const pmsResult = await dispatch(cmds.create, mapInput(input, pricing), ctx);
+    // 5. PMS reservation create.
+    //
+    // Phase 63 P0-6: create it as PENDING_PAYMENT, not INQUIRY. The PMS
+    // availability engine only counts CONFIRMED/OPTION (and now
+    // PENDING_PAYMENT) as consuming inventory, so an INQUIRY row reduced
+    // nothing — N concurrent guests could each hold the SAME last room for the
+    // whole 15-minute payment window and all of them would be told it was
+    // available. PENDING_PAYMENT existed in the reservation_status enum
+    // (migration 0066) but no code ever wrote it.
+    const pmsResult = await dispatch(
+      cmds.create,
+      Object.assign(mapInput(input, pricing), { initial_status: 'PENDING_PAYMENT' }),
+      ctx
+    );
     if (!pmsResult || !pmsResult.ok) {
       return { ok: false, reason: (pmsResult && pmsResult.error) || 'pms_create_failed' };
     }
@@ -317,16 +363,46 @@ function buildBookingService({
     const tenantId = ctx && ctx.tenantId;
     const propertyId = (ctx && ctx.propertyId) || null;
 
+    // 0. Phase 63 P0-3 — FAIL CLOSED before anything else.
+    //
+    // Every gate below used to be written as `if (paymentState && ...)`, so a
+    // NULL payment state skipped all of them; `verifyResult` then defaulted to
+    // {ok:true,status:'paid'} and the reservation was confirmed with zero
+    // payment evidence. A missing state row is not "no opinion" — it is the
+    // absence of proof, and absence of proof must reject.
+    //
+    // The un-wired case matters just as much: src/index.js builds the provider,
+    // the state store and the attempt log inside ONE try/catch, so a single
+    // provider misconfiguration silently drops all three and every confirm
+    // would have sailed through.
+    if (requirePayment) {
+      if (!paymentStateStore || !paymentProvider) {
+        return { ok: false, reason: 'payment_subsystem_unavailable',
+                 detail: [{ store: Boolean(paymentStateStore), provider: Boolean(paymentProvider) }] };
+      }
+      if (!paymentId) {
+        return { ok: false, reason: 'payment_reference_required' };
+      }
+    }
+
     // 1. Check payment state
     let paymentState = null;
     if (paymentStateStore) {
       paymentState = await paymentStateStore.getByReservationId(reservationId, ctx);
+    }
+    if (requirePayment && !paymentState) {
+      return { ok: false, reason: 'payment_state_missing' };
     }
     if (paymentState && paymentState.payment_status !== 'pending_payment') {
       return { ok: false, reason: 'invalid_payment_state', detail: [{ state: paymentState.payment_status }] };
     }
 
     // 2. Check hold not expired
+    if (requirePayment && paymentState && !paymentState.hold_expires_at) {
+      // A pending_payment row with no expiry is an unbounded hold — reject
+      // rather than let it be confirmed at any future time.
+      return { ok: false, reason: 'payment_hold_missing_expiry' };
+    }
     if (paymentState && paymentState.hold_expires_at) {
       if (new Date(paymentState.hold_expires_at).getTime() < Date.now()) {
         if (paymentStateStore) {
@@ -336,8 +412,12 @@ function buildBookingService({
       }
     }
 
-    // 3. Verify payment
-    let verifyResult = { ok: true, status: 'paid' };
+    // 3. Verify payment.
+    // Phase 63 P0-3: the default is now UNVERIFIED, not "paid". Optimistic
+    // success here meant that any path which skipped the provider call (no
+    // provider wired, no paymentId supplied, provider threw) was read as a
+    // successful payment.
+    let verifyResult = requirePayment ? { ok: false, status: 'unverified' } : { ok: true, status: 'paid' };
     if (paymentProvider && paymentId) {
       try {
         verifyResult = await paymentProvider.verify({ paymentId });
@@ -367,10 +447,44 @@ function buildBookingService({
       return { ok: false, reason: 'payment_verification_failed', detail: [{ status: verifyResult.status }] };
     }
 
-    // 5. PMS confirm (INQUIRY -> CONFIRMED)
+    // 4b. Phase 63 P0-8 — CLAIM the hold atomically before touching the PMS.
+    //
+    // Previously confirm read the state, then (much later) wrote 'paid'. In the
+    // gap the hold-expiry sweep could flip the same row to 'failed' and cancel
+    // the reservation, so the guest was charged for a booking that had just
+    // been cancelled. A compare-and-set out of 'pending_payment' makes exactly
+    // one of {confirm, sweep} the winner.
+    if (paymentStateStore && typeof paymentStateStore.transitionPending === 'function') {
+      const claimed = await paymentStateStore.transitionPending(
+        reservationId, 'paid',
+        { paid_at: new Date().toISOString(), provider_ref: paymentId || null },
+        ctx
+      );
+      if (!claimed && requirePayment) {
+        // The sweep (or a concurrent confirm) already took this hold.
+        return { ok: false, reason: 'payment_hold_lost' };
+      }
+    }
+
+    // 5. PMS confirm (INQUIRY | PENDING_PAYMENT -> CONFIRMED)
     const pmsConfirm = await dispatch('pms.reservation.confirm', { reservation_id: reservationId }, ctx);
     if (!pmsConfirm || !pmsConfirm.ok) {
-      return { ok: false, reason: (pmsConfirm && pmsConfirm.error) || 'pms_confirm_failed' };
+      // The payment is already captured and the hold is claimed. Do NOT roll the
+      // state back to 'pending_payment' — that would re-open the sweep race.
+      // Surface it loudly instead so it lands in operator reconciliation.
+      try {
+        require('../config/logger').error(
+          { code: 'payment_captured_without_confirmation', tenantId, reservationId,
+            pms_error: pmsConfirm && pmsConfirm.error },
+          '[bookingService] payment captured but PMS confirm failed - MANUAL RECONCILIATION REQUIRED');
+      } catch (_) { /* logging must never mask the result */ }
+      emit('booking.payment_captured_without_confirmation', { tenantId, reservationId, reason: pmsConfirm && pmsConfirm.error });
+      return {
+        ok: false,
+        reason: (pmsConfirm && pmsConfirm.error) || 'pms_confirm_failed',
+        payment_captured: true,
+        requires_reconciliation: true
+      };
     }
 
     const confirmationNumber = (pmsConfirm.result && pmsConfirm.result.confirmation_number) || null;
@@ -382,8 +496,11 @@ function buildBookingService({
       } catch (_) {}
     }
 
-    // 7. Update payment state
-    if (paymentStateStore) {
+    // 7. Update payment state.
+    // With P0-8 the CAS in step 4b has already moved the row to 'paid'. This
+    // upsert remains only for stores that predate transitionPending (it is a
+    // no-op rewrite of the same values otherwise).
+    if (paymentStateStore && typeof paymentStateStore.transitionPending !== 'function') {
       await paymentStateStore.upsert({
         reservation_id: reservationId,
         payment_status: 'paid',

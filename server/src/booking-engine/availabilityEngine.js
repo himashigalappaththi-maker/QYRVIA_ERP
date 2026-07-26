@@ -18,6 +18,17 @@
  * real provider carries no reason -> the validator reports the existing 'unavailable'.
  */
 
+/**
+ * How many rooms this request needs. Anything absent, non-numeric, zero or
+ * negative means one room — never zero, which would make every request
+ * trivially satisfiable.
+ */
+function requestedRooms(input) {
+  const raw = (input && (input.rooms_count != null ? input.rooms_count : input.rooms));
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 1 ? n : 1;
+}
+
 function buildAvailabilityEngine({ availabilityProvider } = {}) {
   const hasProvider = typeof availabilityProvider === 'function';
   return {
@@ -33,9 +44,18 @@ function buildAvailabilityEngine({ availabilityProvider } = {}) {
         return { available: false, rooms: null, reason: (err && err.reason) || 'availability_unknown' };
       }
       if (!Number.isFinite(n)) return { available: false, rooms: null, reason: 'availability_unknown' };
-      return { available: n > 0, rooms: n };
+
+      // Phase 63 P0-5: honour the number of ROOMS requested.
+      // The rule used to be `n > 0` unconditionally, so a 3-room request was
+      // accepted against a single available room and then booked as 1 room
+      // (mapInput also dropped rooms_count). Compare against demand.
+      const requested = requestedRooms(input);
+      if (n > 0 && n < requested) {
+        return { available: false, rooms: n, requested, reason: 'insufficient_rooms_available' };
+      }
+      return { available: n >= requested, rooms: n, requested };
     }
   };
 }
 
-module.exports = { buildAvailabilityEngine };
+module.exports = { buildAvailabilityEngine, requestedRooms };
