@@ -23,8 +23,29 @@ const STATUS = Object.freeze({
   FAILED:     'FAILED'
 });
 
-function dedupeKey(reservation_id, action) {
-  return String(reservation_id) + '::' + String(action);
+/**
+ * PHASE 65 C3 — the dedupe key must include the CHANNEL (and the tenant).
+ *
+ * The key used to be `reservation_id::action`. With per-OTA fan-out that is
+ * catastrophic: one event fanning out to eight channels produces eight jobs
+ * that all collapse onto a single key, so seven channels are silently deduped
+ * away and never synced. The key must identify the job, and a job is
+ * (tenant, reservation, action, channel).
+ *
+ * `channel` and `tenant_id` are optional so the two-argument legacy call still
+ * produces a stable key; they widen the key rather than changing its meaning.
+ */
+function dedupeKey(reservation_id, action, channel, tenant_id) {
+  return [
+    tenant_id == null ? '*' : String(tenant_id),
+    String(reservation_id),
+    String(action),
+    channel == null ? '*' : String(channel)
+  ].join('::');
+}
+
+function keyOf(item) {
+  return dedupeKey(item.reservation_id, item.action, item.channel, item.tenant_id);
 }
 
 function buildChannelSyncQueue({ clock = () => Date.now(), idGen } = {}) {
@@ -40,11 +61,21 @@ function buildChannelSyncQueue({ clock = () => Date.now(), idGen } = {}) {
     if (!input || !input.reservation_id || !input.action) {
       return { accepted: false, reason: 'invalid' };
     }
-    const key = dedupeKey(input.reservation_id, input.action);
+    const key = dedupeKey(input.reservation_id, input.action, input.channel, input.tenant_id);
     if (pendingKeys.has(key)) return { accepted: false, deduped: true, key };
 
     const item = {
       id:             nextId(),
+      // Phase 65 C2: trusted identity travels with the job.
+      tenant_id:      input.tenant_id != null ? input.tenant_id : null,
+      property_id:    input.property_id != null ? input.property_id : null,
+      actor_id:       input.actor_id != null ? input.actor_id : null,
+      request_id:     input.request_id != null ? input.request_id : null,
+      event_id:       input.event_id != null ? input.event_id : null,
+      event_type:     input.event_type != null ? input.event_type : null,
+      aggregate_type: input.aggregate_type != null ? input.aggregate_type : null,
+      aggregate_id:   input.aggregate_id != null ? input.aggregate_id : null,
+      occurred_at:    input.occurred_at != null ? input.occurred_at : null,
       reservation_id: input.reservation_id,
       action:         input.action,
       channel:        input.channel != null ? input.channel : null,
@@ -63,7 +94,7 @@ function buildChannelSyncQueue({ clock = () => Date.now(), idGen } = {}) {
     const it = items.get(id);
     if (!it) return null;
     it.status = status;
-    if (status !== STATUS.PENDING) pendingKeys.delete(dedupeKey(it.reservation_id, it.action));
+    if (status !== STATUS.PENDING) pendingKeys.delete(keyOf(it));
     return clone(it);
   }
 

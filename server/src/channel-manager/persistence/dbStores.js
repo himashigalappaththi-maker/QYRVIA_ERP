@@ -126,10 +126,18 @@ function buildSyncQueueStoreDb({ db }) {
   return {
     async enqueue(item) {
       // Partial-unique (PENDING) enforces dedupe; ON CONFLICT DO NOTHING -> deduped.
+      //
+      // Phase 66A C3: the conflict target must match migration 0084's
+      // uq_csqs_pending_channel, which adds the CHANNEL to the key. The old
+      // three-column target collapsed a fan-out — eight jobs for eight OTAs all
+      // conflicted onto one row and seven channels were silently dropped. The
+      // COALESCE mirrors the index expression exactly (channel is nullable, and
+      // two NULLs are distinct for uniqueness, so historical channel-less rows
+      // would otherwise lose their dedupe entirely).
       const r = await db.query(
         `INSERT INTO channel_sync_queue_store (tenant_id, property_id, reservation_id, action, channel, payload_json, status)
          VALUES ($1,$2,$3,$4,$5,$6,'PENDING')
-         ON CONFLICT (tenant_id, reservation_id, action) WHERE status = 'PENDING'
+         ON CONFLICT (tenant_id, reservation_id, action, COALESCE(channel, '')) WHERE status = 'PENDING'
          DO NOTHING
          RETURNING *`,
         [item.tenant_id || null, item.property_id || null, item.reservation_id, item.action, item.channel || null, item.payload || item.payload_json || {}]

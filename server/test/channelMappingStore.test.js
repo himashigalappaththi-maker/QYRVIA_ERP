@@ -67,10 +67,19 @@ test('store API: deterministic link / external id / sync state with injected clo
 test('lifecycle integration: created -> CREATED, updated -> UPDATED, cancelled -> CANCELLED', async () => {
   const store = buildChannelMappingStore({ clock: () => 1 });
   const bus = fakeBus();
-  const unsub = buildChannelSubscriber({ eventBus: bus, store });
+  // PHASE 65 C1 — DELIBERATE TEST INVERSION.
+  //   OLD DEFECTIVE CONTRACT: the mapping store recorded the reservation's
+  //     channel as the literal 'channel-manager' — not an OTA, and unresolvable
+  //     by any provider.
+  //   NEW CORRECT CONTRACT: the channel comes from the ENABLED mappings the
+  //     caller resolves, and is a canonical CHANNELS code.
+  //   JUSTIFYING PRODUCTION CHANGE: ROUTE_TARGET removed from
+  //     channelEventRouter.js; buildChannelSubscriber now takes resolveChannels.
+  const resolveChannels = async () => ['BOOKING_COM'];
+  const unsub = buildChannelSubscriber({ eventBus: bus, store, resolveChannels });
   try {
     await bus.emit(ev('reservation.created', 'res-1', { status: 'CONFIRMED' }));
-    assert.equal(store.getChannel('res-1'), 'channel-manager', 'mapped on create');
+    assert.equal(store.getChannel('res-1'), 'BOOKING_COM', 'mapped on create');
     assert.equal(store.getSyncState('res-1'), 'CREATED');
 
     await bus.emit(ev('reservation.updated', 'res-1'));

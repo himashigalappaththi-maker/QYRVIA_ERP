@@ -508,8 +508,25 @@ if (require('./config/env').AI_AGENT_ENABLED === 'true' && bookingEngine && book
 // enqueue onto the mode-selected sync queue. memory/dual return synchronously (behavior
 // preserved); idempotent registration (no dup listeners).
 const { buildChannelSubscriber } = require('./channel-manager/services/channelSubscriber');
-try { buildChannelSubscriber({ eventBus: eventBusRef, queue: channelPersistence && channelPersistence.queue }); }
-catch (e) { logger.warn({ err: e }, '[boot] channel spine init skipped'); }
+// Phase 66A C5: give the spine a REAL enabled-channel resolver. Without it the
+// spine fans out to nothing (Phase 65 made that failure loud rather than
+// silent). The resolver runs its own tenant-bound READ ONLY unit of work,
+// because channel_registry is FORCE-RLS and a bare pooled read returns zero
+// rows — which would look exactly like "this property sells nowhere".
+const { buildEnabledChannelResolver } = require('./channel-manager/services/enabledChannelResolver');
+try {
+  const _uow = require('./db/tenantUnitOfWork');
+  const resolveChannels = buildEnabledChannelResolver({
+    pool: obsPool,
+    runWithTenantRead: _uow.runWithTenantRead
+  });
+  buildChannelSubscriber({
+    eventBus: eventBusRef,
+    queue: channelPersistence && channelPersistence.queue,
+    resolveChannels
+  });
+  logger.info('[boot] channel spine ready with registry-backed channel resolution');
+} catch (e) { logger.warn({ err: e }, '[boot] channel spine init skipped'); }
 
 // Phase 24 B6 - durable queue worker (MOCK processor, NO OTA). Default OFF: starts only
 // when CHANNEL_WORKER_ENABLED=true. Infrastructure only; not wired to real processing.
