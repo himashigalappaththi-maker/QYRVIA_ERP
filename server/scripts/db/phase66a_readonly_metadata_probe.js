@@ -200,11 +200,14 @@ const SQL_BEGIN_READ_ONLY = 'BEGIN READ ONLY';
 const SQL_ROLLBACK        = 'ROLLBACK';
 const SQL_SHOW_READ_ONLY  = 'SHOW transaction_read_only';
 
+/* host() strips the network mask. Casting inet straight to text keeps it, so a
+ * loopback server renders as 127.0.0.1/32 and can never equal ALLOWED_HOST.
+ * This normalises the representation only — the permitted host is unchanged. */
 const SQL_IDENTITY = `
   SELECT current_database()          AS database_name,
          current_user                AS current_user_name,
          session_user                AS session_user_name,
-         inet_server_addr()::text    AS server_host,
+         pg_catalog.host(pg_catalog.inet_server_addr()) AS server_host,
          inet_server_port()          AS server_port
 `;
 

@@ -247,6 +247,112 @@ test('acquires exactly one client from a single-connection pool', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Loopback normalisation (Phase 66A-B2B-C5)
+//
+// Casting `inet` to text preserves the network mask, so a loopback server
+// renders as 127.0.0.1/32 and can never equal the bare literal 127.0.0.1. The
+// probe therefore normalises with host() before comparing. These tests pin the
+// normalisation in place AND pin the policy that it must not widen: exactly one
+// host is permitted, and everything else is still refused.
+// ---------------------------------------------------------------------------
+
+/** The permitted-host predicate exactly as written at the probe's host guard:
+ *  `identity.server_host !== ALLOWED_HOST` -> throw. Mirrored here so the
+ *  accept/reject behaviour can be exercised without a database. */
+const hostRejected = (value) => value !== '127.0.0.1';
+
+test('the identity query normalises the server address with host()', () => {
+  const sql = sqlLiterals().find((l) => l.name === 'SQL_IDENTITY');
+  assert.ok(sql, 'SQL_IDENTITY must exist');
+  assert.ok(
+    sql.body.includes('pg_catalog.host(pg_catalog.inet_server_addr()) AS server_host'),
+    'server_host must be selected through host() so the /32 mask is stripped');
+});
+
+test('the masked inet text form is no longer selected anywhere', () => {
+  assert.ok(!/inet_server_addr\(\)::text/.test(CODE),
+    'casting inet straight to text reintroduces the mask and breaks the guard');
+  assert.equal(
+    (CODE.match(/pg_catalog\.host\(pg_catalog\.inet_server_addr\(\)\) AS server_host/g) || []).length,
+    1, 'the normalised expression must appear exactly once');
+});
+
+test('the permitted host is still exactly the IPv4 loopback literal', () => {
+  assert.match(CODE, /const ALLOWED_HOST = '127\.0\.0\.1';/,
+    'the allowlist must remain a single literal address');
+  const literals = new Set(CODE.match(/const ALLOWED_HOST = '[^']*'/g) || []);
+  assert.equal(literals.size, 1, 'only one ALLOWED_HOST definition may exist');
+});
+
+test('the host comparison is still strict inequality against ALLOWED_HOST', () => {
+  assert.match(CODE, /identity\.server_host !== ALLOWED_HOST/,
+    'the guard must remain an exact value comparison');
+});
+
+test('a rejected host still raises CONNECTED_HOST_NOT_ALLOWED', () => {
+  assert.match(CODE, /CONN_HOST:\s*'CONNECTED_HOST_NOT_ALLOWED'/);
+  const guard = CODE.slice(CODE.indexOf('identity.server_host !== ALLOWED_HOST'));
+  assert.match(guard.slice(0, 160), /ProbeError\(CAT\.CONNECT, ERR\.CONN_HOST, null\)/,
+    'the failure code must be unchanged');
+});
+
+test('the correction introduces no host-matching loophole', () => {
+  const guardArea = CODE.slice(CODE.indexOf('async function main'));
+  for (const loophole of ['startsWith', '.includes(', 'substring', 'indexOf(ALLOWED_HOST',
+                          'split(\'/\')', 'replace(']) {
+    assert.ok(!guardArea.includes(loophole),
+      'host acceptance must not be loosened with ' + loophole);
+  }
+  assert.ok(!/'localhost'/.test(CODE), 'localhost must not become acceptable');
+  assert.ok(!/'::1'/.test(CODE), 'the IPv6 loopback must not become acceptable');
+  assert.ok(!/\/(8|16|24|32)\b/.test(CODE.replace(/pg_catalog/g, '')),
+    'no CIDR or mask literal may enter the acceptance path');
+});
+
+test('a normalised IPv4 loopback address is accepted by the host guard', () => {
+  assert.equal(hostRejected('127.0.0.1'), false,
+    'the value host() returns for a loopback server must pass');
+});
+
+test('the masked form would still be rejected — proving normalisation is required', () => {
+  assert.equal(hostRejected('127.0.0.1/32'), true,
+    'the guard is exact-match, so the mask must be stripped before comparison');
+});
+
+test('non-loopback addresses remain rejected', () => {
+  for (const addr of ['10.0.0.5', '192.168.1.10', '172.16.0.1', '8.8.8.8',
+                      '127.0.0.2', '0.0.0.0']) {
+    assert.equal(hostRejected(addr), true, addr + ' must not be accepted');
+  }
+});
+
+test('NULL, empty and non-IPv4 loopback forms remain rejected', () => {
+  for (const v of [null, undefined, '', '::1', 'localhost', '127.0.0.1 ']) {
+    assert.equal(hostRejected(v), true, String(v) + ' must not be accepted');
+  }
+});
+
+test('the database and port assertions are untouched by the correction', () => {
+  assert.match(CODE, /identity\.database_name !== ALLOWED_DB/);
+  assert.match(CODE, /ProbeError\(CAT\.CONNECT, ERR\.CONN_DB, null\)/);
+  assert.match(CODE, /Number\(identity\.server_port\) !== ALLOWED_PORT/);
+  assert.match(CODE, /ProbeError\(CAT\.CONNECT, ERR\.CONN_PORT, null\)/);
+  const sql = sqlLiterals().find((l) => l.name === 'SQL_IDENTITY');
+  assert.ok(sql.body.includes('current_database()          AS database_name'));
+  assert.ok(sql.body.includes('inet_server_port()          AS server_port'));
+});
+
+test('read-only enforcement is untouched by the correction', () => {
+  assert.match(CODE, /const SQL_BEGIN_READ_ONLY = 'BEGIN READ ONLY'/);
+  assert.match(CODE, /const SQL_ROLLBACK        = 'ROLLBACK'/);
+  assert.match(CODE, /transaction_read_only\s*!==\s*'on'/);
+  assert.match(CODE, /'READ_ONLY_TRANSACTION_REQUIRED'/);
+  const main = CODE.slice(CODE.indexOf('async function main'));
+  assert.ok(main.indexOf('SQL_SHOW_READ_ONLY') < main.indexOf('SQL_IDENTITY'),
+    'read-only must still be verified before the identity query');
+});
+
+// ---------------------------------------------------------------------------
 // SQL surface
 // ---------------------------------------------------------------------------
 
