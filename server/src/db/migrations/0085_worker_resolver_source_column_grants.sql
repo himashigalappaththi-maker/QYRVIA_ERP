@@ -47,8 +47,22 @@
 -- precondition and postcondition checks below are re-evaluated on every run
 -- and leave no residue: the snapshot table used to prove table ownership is
 -- unchanged is a session-temporary table dropped automatically at COMMIT.
-
-BEGIN;
+--
+-- TRANSACTION OWNERSHIP
+-- ──────────────────────
+-- This file contains no BEGIN, COMMIT or ROLLBACK. Transaction ownership
+-- belongs to server/src/db/migrate.js. Its applyMigration() function already
+-- wraps the migration SQL AND the schema_migrations tracking insert in one
+-- atomic transaction — BEGIN, then this file's statements, then the tracking
+-- INSERT, then COMMIT, with ROLLBACK on any failure. A BEGIN or COMMIT in
+-- this file would not create a second, independent transaction; it would
+-- interact with the runner's own transaction on the same connection, and a
+-- COMMIT here would end the runner's transaction early, before its tracking
+-- insert runs. This file is written to run entirely inside a transaction it
+-- does not open and does not close: every RAISE EXCEPTION below propagates
+-- as a normal exception out of client.query(sql) in the runner, which is
+-- what triggers the runner's own ROLLBACK and undoes this file's statements
+-- in full, atomically, together with the tracking insert never having run.
 
 -- ── 1. Snapshot pre-grant table ownership, for the postcondition check below.
 --       A session-temporary table, not a permanent object; it never survives
@@ -355,5 +369,3 @@ BEGIN
   END IF;
 END;
 $$;
-
-COMMIT;

@@ -23,6 +23,9 @@ const MIGRATIONS_DIR = path.join(__dirname, '..', 'src', 'db', 'migrations');
 const MIGRATION_PATH = path.join(MIGRATIONS_DIR, '0085_worker_resolver_source_column_grants.sql');
 const SQL = fs.readFileSync(MIGRATION_PATH, 'utf8');
 
+const MIGRATE_JS_PATH = path.join(__dirname, '..', 'src', 'db', 'migrate.js');
+const MIGRATE_JS = fs.readFileSync(MIGRATE_JS_PATH, 'utf8');
+
 /** Statement text with `--` comments stripped, so prose cannot satisfy an assertion. */
 const CODE = SQL.split('\n')
   .map((l) => l.replace(/--.*$/, ''))
@@ -76,40 +79,56 @@ test('0084 remains the immediate predecessor on disk', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Transaction safety
+// Transaction ownership
 //
-// The migration's own transaction-control statements are distinguished from
-// plpgsql block delimiters by trailing punctuation: a transaction-control
-// statement is `BEGIN;` / `COMMIT;` alone on its own line; a plpgsql block
-// opens with bare `BEGIN` (no semicolon) after a DECLARE section.
+// This migration must NOT open or close its own transaction. Ownership
+// belongs to server/src/db/migrate.js, which already wraps the migration SQL
+// and the schema_migrations tracking insert in one atomic transaction (see
+// the "Migration runner" section below). A transaction-control statement
+// here would interact with the runner's own transaction on the same
+// connection rather than create an independent one — see migration 0085's
+// own header comment and Phase 66A-B2F-R1's report for the exact mechanism.
+//
+// A transaction-control BEGIN/COMMIT/ROLLBACK is distinguished from a
+// plpgsql block delimiter by trailing punctuation: transaction control is
+// `BEGIN;` / `COMMIT;` / `ROLLBACK;` alone on its own line (top-level SQL);
+// a plpgsql block opens with bare `BEGIN` (no semicolon) after a DECLARE
+// section, and closes with `END;` (not `COMMIT;`).
 // ---------------------------------------------------------------------------
 
 const TXN_BEGIN = /^BEGIN;\s*$/m;
 const TXN_COMMIT = /^COMMIT;\s*$/m;
+const TXN_ROLLBACK = /^ROLLBACK;\s*$/m;
 
-test('exactly one transaction-level BEGIN;', () => {
-  const hits = indexOfAll(CODE, TXN_BEGIN);
-  assert.equal(hits.length, 1);
+test('contains zero top-level BEGIN statements', () => {
+  assert.equal(indexOfAll(CODE, TXN_BEGIN).length, 0,
+    'transaction ownership belongs to migrate.js, not this file');
 });
 
-test('exactly one transaction-level COMMIT;', () => {
-  const hits = indexOfAll(CODE, TXN_COMMIT);
-  assert.equal(hits.length, 1);
+test('contains zero top-level COMMIT statements', () => {
+  assert.equal(indexOfAll(CODE, TXN_COMMIT).length, 0,
+    'transaction ownership belongs to migrate.js, not this file');
 });
 
-test('BEGIN; precedes every GRANT statement', () => {
-  const beginAt = CODE.search(TXN_BEGIN);
-  const grants = indexOfAll(CODE, /\bGRANT\s+SELECT\b/gi);
-  assert.ok(beginAt >= 0);
-  assert.ok(grants.length >= 2, 'expected at least the queue and jobs grants');
-  for (const g of grants) assert.ok(g > beginAt, 'a GRANT appears before BEGIN;');
+test('contains zero top-level ROLLBACK statements', () => {
+  assert.equal(indexOfAll(CODE, TXN_ROLLBACK).length, 0);
 });
 
-test('postcondition assertions precede COMMIT;', () => {
-  const commitAt = CODE.search(TXN_COMMIT);
-  const postconditionMarkers = indexOfAll(CODE, /phase66a_b2f postcondition failed/gi);
-  assert.ok(postconditionMarkers.length >= 5, 'expected multiple distinct postcondition checks');
-  for (const p of postconditionMarkers) assert.ok(p < commitAt, 'a postcondition check appears after COMMIT;');
+test('contains no SAVEPOINT or other transaction-control workaround', () => {
+  assert.ok(!/\bSAVEPOINT\b/i.test(CODE));
+  assert.ok(!/\bRELEASE\s+SAVEPOINT\b/i.test(CODE));
+  assert.ok(!/\bSET\s+TRANSACTION\b/i.test(CODE));
+  assert.ok(!/\bSTART\s+TRANSACTION\b/i.test(CODE));
+});
+
+test('the plpgsql DO blocks still delimit correctly with bare BEGIN and END;', () => {
+  // Confirms the transaction-control removal did not also strip the (still
+  // required) plpgsql block delimiters for the precondition/postcondition
+  // DO $$ ... $$ blocks.
+  const doBlocks = CODE.match(/\bDO\s*\$\$/gi) || [];
+  const plpgsqlBegin = CODE.match(/^BEGIN\s*$/gm) || [];
+  assert.equal(doBlocks.length, 2, 'expected exactly the precondition and postcondition DO blocks');
+  assert.equal(plpgsqlBegin.length, 2, 'each DO block must still open with bare BEGIN (no semicolon)');
 });
 
 test('precondition checks precede the grants, which precede the postcondition checks', () => {
@@ -123,12 +142,93 @@ test('no exception handler suppresses a failure inside this file', () => {
   assert.ok(!/EXCEPTION\s+WHEN/i.test(CODE), 'a WHEN clause here could swallow a RAISE EXCEPTION');
 });
 
+test('every RAISE EXCEPTION is free to propagate out of the file to the runner', () => {
+  // Nothing may catch or downgrade a RAISE EXCEPTION locally — every failure
+  // must reach client.query(sql) in migrate.js as a rejected promise, which
+  // is what triggers the runner's own ROLLBACK.
+  const raises = CODE.match(/\bRAISE\s+EXCEPTION\b/gi) || [];
+  assert.ok(raises.length >= 10, 'expected the full precondition + postcondition set of RAISE EXCEPTION calls');
+  assert.ok(!/EXCEPTION\s+WHEN/i.test(CODE));
+});
+
 test('the only DROP is the standard ON COMMIT DROP idiom for a session-temporary table', () => {
   const dropMatches = CODE.match(/\bDROP\b/gi) || [];
   const onCommitDrop = CODE.match(/\bON\s+COMMIT\s+DROP\b/gi) || [];
   assert.equal(dropMatches.length, onCommitDrop.length,
     'every DROP token must be part of ON COMMIT DROP on a TEMP table; no persistent object may be dropped');
   assert.ok(/\bCREATE\s+TEMP\s+TABLE\b/i.test(CODE), 'ON COMMIT DROP requires a temp table in the same statement');
+});
+
+// ---------------------------------------------------------------------------
+// Migration runner — statically prove migrate.js provides the atomicity this
+// migration now depends on, so a future edit to the runner cannot silently
+// break the guarantee this migration was corrected to rely on.
+// ---------------------------------------------------------------------------
+
+function fnBody(source, fnName) {
+  const start = source.indexOf('async function ' + fnName);
+  assert.ok(start >= 0, fnName + ' not found in migrate.js');
+  // Bounded to the next top-level `async function` (or EOF) — not a full
+  // parser, but sufficient to isolate one function body in this small file.
+  const rest = source.slice(start + 1);
+  const nextFn = rest.search(/\nasync function /);
+  return source.slice(start, nextFn === -1 ? source.length : start + 1 + nextFn);
+}
+
+const APPLY_MIGRATION = fnBody(MIGRATE_JS, 'applyMigration');
+
+test('migrate.js applyMigration obtains exactly one client for the whole operation', () => {
+  const connects = APPLY_MIGRATION.match(/\bpool\.connect\(\)/g) || [];
+  assert.equal(connects.length, 1);
+});
+
+test('migrate.js applyMigration issues BEGIN before running the migration SQL', () => {
+  const beginAt = APPLY_MIGRATION.search(/client\.query\(\s*['"]BEGIN['"]\s*\)/);
+  const sqlAt = APPLY_MIGRATION.search(/client\.query\(\s*sql\s*\)/);
+  assert.ok(beginAt >= 0, 'no client.query(\'BEGIN\') found');
+  assert.ok(sqlAt >= 0, 'no client.query(sql) found');
+  assert.ok(beginAt < sqlAt, 'BEGIN must precede the migration SQL');
+});
+
+test('migrate.js applyMigration inserts the schema_migrations tracking row after the migration SQL', () => {
+  const sqlAt = APPLY_MIGRATION.search(/client\.query\(\s*sql\s*\)/);
+  const insertAt = APPLY_MIGRATION.search(/INSERT\s+INTO\s+schema_migrations/i);
+  assert.ok(insertAt >= 0, 'no schema_migrations INSERT found');
+  assert.ok(sqlAt < insertAt, 'the tracking insert must run after the migration SQL, not before');
+});
+
+test('migrate.js applyMigration commits only after the tracking insert', () => {
+  const insertAt = APPLY_MIGRATION.search(/INSERT\s+INTO\s+schema_migrations/i);
+  const commitAt = APPLY_MIGRATION.search(/client\.query\(\s*['"]COMMIT['"]\s*\)/);
+  assert.ok(commitAt >= 0, 'no client.query(\'COMMIT\') found');
+  assert.ok(insertAt < commitAt, 'COMMIT must run after the tracking insert, proving the two are atomic together');
+});
+
+test('migrate.js applyMigration rolls back on the error path', () => {
+  const catchAt = APPLY_MIGRATION.search(/}\s*catch\s*\(/);
+  const rollbackAt = APPLY_MIGRATION.search(/client\.query\(\s*['"]ROLLBACK['"]\s*\)/);
+  assert.ok(catchAt >= 0, 'no catch block found');
+  assert.ok(rollbackAt >= 0, 'no client.query(\'ROLLBACK\') found');
+  assert.ok(rollbackAt > catchAt, 'ROLLBACK must be issued from inside the catch block');
+});
+
+test('migrate.js applyMigration releases the same client in finally, unconditionally', () => {
+  const finallyAt = APPLY_MIGRATION.search(/}\s*finally\s*{/);
+  const releaseAt = APPLY_MIGRATION.search(/client\.release\(\)/);
+  assert.ok(finallyAt >= 0, 'no finally block found');
+  assert.ok(releaseAt >= 0, 'no client.release() found');
+  assert.ok(releaseAt > finallyAt, 'client.release() must run from inside the finally block');
+});
+
+test('migrate.js applyMigration never commits before the schema_migrations insert', () => {
+  // Every occurrence of a bare COMMIT call in this function must come after
+  // every occurrence of the tracking insert — there is exactly one of each,
+  // so this also catches a hypothetical second, earlier COMMIT.
+  const commits = indexOfAll(APPLY_MIGRATION, /client\.query\(\s*['"]COMMIT['"]\s*\)/g);
+  const inserts = indexOfAll(APPLY_MIGRATION, /INSERT\s+INTO\s+schema_migrations/gi);
+  assert.equal(commits.length, 1);
+  assert.equal(inserts.length, 1);
+  assert.ok(commits[0] > inserts[0]);
 });
 
 // ---------------------------------------------------------------------------
