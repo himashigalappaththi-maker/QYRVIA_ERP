@@ -42,6 +42,21 @@ function stripComments(text) {
 }
 const CODE = stripComments(SRC);
 
+/** The OUTER catch — the last `catch {` before the top-level `finally {`.
+ *  A naive lastIndexOf would find the inner `catch { }` around Proc.Dispose. */
+function outerCatchBlock() {
+  const finAt = CODE.indexOf('finally {');
+  return CODE.slice(CODE.lastIndexOf('catch {', finAt), finAt);
+}
+
+/** The top-level finally block only — bounded at its closing brace, so the
+ *  statements that follow it are not mistaken for part of cleanup. */
+function finallyBlock() {
+  const start = CODE.indexOf('finally {');
+  const end = CODE.indexOf('\n}\n', start);
+  return CODE.slice(start, end === -1 ? CODE.length : end);
+}
+
 // ---------------------------------------------------------------------------
 // File identity and safety preamble
 // ---------------------------------------------------------------------------
@@ -96,9 +111,8 @@ test('no script-level parameter block exists, so nothing can be overridden', () 
   assert.ok(!/^param\s*\(/im.test(CODE), 'the script must accept no parameters at all');
   const paramBlocks = CODE.match(/param\([^)]*\)/g) || [];
   assert.deepEqual(paramBlocks, [
-    'param([string]$Token, [int]$Code)',
     'param([string]$Value)',
-  ], 'only the two internal function signatures may declare parameters');
+  ], 'only the argument-quoting helper may declare parameters');
   for (const forbidden of ['$Password', '$PlainPassword', '$Host =', '$Port =',
                            '$Database =', '$User =', '$Sql =', '$Query =']) {
     assert.ok(!CODE.includes(forbidden), 'no override parameter may exist: ' + forbidden);
@@ -124,14 +138,17 @@ test('the password is captured through the Windows credential dialog', () => {
 });
 
 test('a username other than postgres is refused without an auth attempt', () => {
-  assert.match(CODE, /\$credential\.UserName -ne \$TARGET_USER/);
-  const guard = CODE.slice(CODE.indexOf('$credential.UserName -ne $TARGET_USER'));
-  assert.match(guard.slice(0, 120), /SUPERUSER_AUTH_CANCELLED|\$TOKEN_CANCELLED/);
+  assert.match(CODE, /\$script:Credential\.UserName -ne \$TARGET_USER/);
+  const guard = CODE.slice(CODE.indexOf('$script:Credential.UserName -ne $TARGET_USER'));
+  assert.match(guard.slice(0, 120), /\$TOKEN_CANCELLED/,
+    'a wrong username must return the cancelled token, never attempt authentication');
 });
 
 test('a cancelled dialog yields only the fixed cancelled token', () => {
   assert.match(CODE, /\$TOKEN_CANCELLED\s*=\s*'SUPERUSER_AUTH_CANCELLED'/);
-  assert.match(CODE, /if \(\$null -eq \$credential\)/);
+  assert.match(CODE, /if \(\$null -eq \$script:Credential\) \{ return \$TOKEN_CANCELLED \}/);
+  assert.ok(/Get-Credential[\s\S]{0,300}?catch \{[\s\S]{0,300}?return \$TOKEN_CANCELLED/.test(CODE),
+    'a throwing credential prompt must map to CANCELLED, not to an internal error');
 });
 
 test('the password stays a SecureString until the last possible moment', () => {
@@ -160,10 +177,10 @@ test('the password is never printed, echoed or measured for output', () => {
 });
 
 test('the plaintext buffer is zeroed and released in finally', () => {
-  const fin = CODE.slice(CODE.indexOf('finally'));
+  const fin = finallyBlock();
   assert.ok(fin.includes('ZeroFreeBSTR'), 'the BSTR must be zeroed and freed');
-  assert.ok(/\$plain\s*=\s*\$null/.test(fin), 'the plaintext variable must be nulled');
-  assert.ok(/\$credential\s*=\s*\$null/.test(fin));
+  assert.ok(/\$script:Plain\s*=\s*\$null/.test(fin), 'the plaintext variable must be nulled');
+  assert.ok(/\$script:Credential\s*=\s*\$null/.test(fin));
 });
 
 test('no persistent credential store is ever written', () => {
@@ -191,20 +208,20 @@ test('the parent shell environment is never modified', () => {
 
 test('the child is launched through ProcessStartInfo, not a shell', () => {
   assert.match(CODE, /New-Object System\.Diagnostics\.ProcessStartInfo/);
-  assert.match(CODE, /\$psi\.UseShellExecute\s*=\s*\$false/);
-  assert.match(CODE, /\$psi\.CreateNoWindow\s*=\s*\$true/);
-  assert.match(CODE, /\[System\.Diagnostics\.Process\]::Start\(\$psi\)/);
+  assert.match(CODE, /\$script:Psi\.UseShellExecute\s*=\s*\$false/);
+  assert.match(CODE, /\$script:Psi\.CreateNoWindow\s*=\s*\$true/);
+  assert.match(CODE, /\[System\.Diagnostics\.Process\]::Start\(\$script:Psi\)/);
 });
 
 test('stdout and stderr are redirected and stdin is not', () => {
-  assert.match(CODE, /\$psi\.RedirectStandardOutput\s*=\s*\$true/);
-  assert.match(CODE, /\$psi\.RedirectStandardError\s*=\s*\$true/);
-  assert.match(CODE, /\$psi\.RedirectStandardInput\s*=\s*\$false/);
+  assert.match(CODE, /\$script:Psi\.RedirectStandardOutput\s*=\s*\$true/);
+  assert.match(CODE, /\$script:Psi\.RedirectStandardError\s*=\s*\$true/);
+  assert.match(CODE, /\$script:Psi\.RedirectStandardInput\s*=\s*\$false/);
 });
 
 test('the working directory is the repository server directory', () => {
-  assert.match(CODE, /\$psi\.WorkingDirectory\s*=/);
-  assert.match(CODE, /PSCriptRoot/i, 'the path must be derived from the script location');
+  assert.match(CODE, /\$script:Psi\.WorkingDirectory\s*=/);
+  assert.match(CODE, /PSScriptRoot/i, 'the path must be derived from the script location');
 });
 
 test('no shell, no nested interpreter and no constructed command is executed', () => {
@@ -227,7 +244,7 @@ test('ArgumentList is unavailable here, so an equivalent guarantee is enforced',
     'a double quote in any token must be rejected outright');
   assert.match(CODE, /if \(\$Value -match '\\\\'\) \{ throw 'unsafe-argument' \}/,
     'a backslash in any token must be rejected outright');
-  assert.match(CODE, /\$psi\.Arguments\s*=\s*\$commandLine/);
+  assert.match(CODE, /\$script:Psi\.Arguments\s*=\s*\$commandLine/);
   // and the command line is assembled only from that validated array
   assert.match(CODE, /foreach \(\$a in \$ARGV\) \{ ConvertTo-SafeArgument -Value \$a \}/);
 });
@@ -244,19 +261,19 @@ test('every psql argument is a literal, and the required flags are present', () 
 });
 
 test('the password reaches psql only through the child environment', () => {
-  assert.match(CODE, /\$psi\.Environment\['PGPASSWORD'\]\s*=\s*\$plain/);
+  assert.match(CODE, /\$script:Psi\.Environment\['PGPASSWORD'\]\s*=\s*\$script:Plain/);
   // Exactly three references in executable code: the child assignment, and the
   // ContainsKey/Remove pair that clears it in finally. Nothing else.
   assert.equal((CODE.match(/PGPASSWORD/g) || []).length, 3,
     'PGPASSWORD may appear only in the child assignment and its cleanup');
-  assert.equal((CODE.match(/\$psi\.Environment\['PGPASSWORD'\]\s*=/g) || []).length, 1,
+  assert.equal((CODE.match(/\$script:Psi\.Environment\['PGPASSWORD'\]\s*=/g) || []).length, 1,
     'exactly one assignment, on the child ProcessStartInfo only');
 });
 
 test('the child PGPASSWORD entry is removed during cleanup', () => {
-  const fin = CODE.slice(CODE.indexOf('finally'));
-  assert.match(fin, /\$psi\.Environment\.ContainsKey\('PGPASSWORD'\)/);
-  assert.match(fin, /\$psi\.Environment\.Remove\('PGPASSWORD'\)/);
+  const fin = finallyBlock();
+  assert.match(fin, /\$script:Psi\.Environment\.ContainsKey\('PGPASSWORD'\)/);
+  assert.match(fin, /\$script:Psi\.Environment\.Remove\('PGPASSWORD'\)/);
 });
 
 test('every PG override variable is stripped from the child environment', () => {
@@ -264,13 +281,13 @@ test('every PG override variable is stripped from the child environment', () => 
                    'PGDATABASE', 'PGUSER', 'DATABASE_URL', 'TEST_DATABASE_URL']) {
     assert.ok(CODE.includes("'" + v + "'"), 'must strip ' + v + ' from the child environment');
   }
-  assert.match(CODE, /\$psi\.Environment\.Remove\(\$v\)/);
+  assert.match(CODE, /\$script:Psi\.Environment\.Remove\(\$v\)/);
 });
 
 test('the process timeout is bounded at twenty seconds', () => {
   assert.match(CODE, /\$TIMEOUT_MS\s*=\s*20000/);
   assert.match(CODE, /WaitForExit\(\$TIMEOUT_MS\)/);
-  assert.match(CODE, /\$proc\.Kill\(\)/, 'a timed-out child must be terminated');
+  assert.match(CODE, /\$script:Proc\.Kill\(\)/, 'a timed-out child must be terminated');
 });
 
 test('exactly one process is started and there is no retry', () => {
@@ -347,11 +364,12 @@ test('the failure vocabulary is fixed and complete', () => {
   for (const t of ['SUPERUSER_AUTH_INVALID', 'SUPERUSER_AUTH_CANCELLED',
                    'SUPERUSER_AUTH_PSQL_NOT_FOUND', 'SUPERUSER_AUTH_PROCESS_START_FAILED',
                    'SUPERUSER_AUTH_TIMEOUT', 'SUPERUSER_AUTH_REJECTED',
-                   'SUPERUSER_AUTH_OUTPUT_INVALID', 'SUPERUSER_AUTH_CLEANUP_FAILED']) {
+                   'SUPERUSER_AUTH_OUTPUT_INVALID', 'SUPERUSER_AUTH_CLEANUP_FAILED',
+                   'SUPERUSER_AUTH_INTERNAL_ERROR']) {
     assert.ok(CODE.includes("'" + t + "'"), 'missing fixed token ' + t);
   }
   const tokens = new Set(CODE.match(/'SUPERUSER_AUTH_[A-Z_]+'/g) || []);
-  assert.equal(tokens.size, 9, 'exactly nine result tokens may exist');
+  assert.equal(tokens.size, 10, 'exactly ten result tokens may exist');
 });
 
 test('raw stdout is never emitted', () => {
@@ -374,23 +392,22 @@ test('no exception detail, message, stack or SQLSTATE can escape', () => {
   assert.ok(!/Write-Output[^\n]*\$_/.test(CODE));
   assert.ok(!/Write-Error/.test(CODE));
   assert.ok(!/SQLSTATE/i.test(CODE));
-  const cat = CODE.slice(CODE.indexOf('catch {'), CODE.indexOf('finally'));
-  assert.match(cat, /\$TOKEN_CLEANUP_FAILED/, 'the catch emits only a fixed token');
+  const cat = outerCatchBlock();
+  assert.ok(!/\$_/.test(cat), 'the outer catch must never touch the error record');
 });
 
-test('every output path writes exactly one fixed token', () => {
+test('exactly one stdout write exists in the whole helper', () => {
   const writes = CODE.match(/Write-Output\s+[^\n]*/g) || [];
-  for (const w of writes) {
-    assert.ok(/\$Token|\$TOKEN_[A-Z_]+/.test(w),
-      'every Write-Output must emit a fixed token variable, found: ' + w.trim());
-  }
+  assert.equal(writes.length, 1, 'the helper must emit one token, once');
+  assert.match(writes[0], /Write-Output \$result/,
+    'the single write must emit the validated result variable');
 });
 
 test('exit code 0 is reserved for successful superuser authentication', () => {
-  assert.match(CODE, /Write-Result \$TOKEN_VALID 0/);
-  const zeroExits = CODE.match(/Write-Result \$TOKEN_[A-Z_]+ 0/g) || [];
-  assert.deepEqual(zeroExits, ['Write-Result $TOKEN_VALID 0'],
-    'no other outcome may exit zero');
+  assert.match(CODE, /if \(\$result -eq \$TOKEN_VALID\) \{ exit 0 \}/);
+  assert.equal((CODE.match(/exit 0/g) || []).length, 1,
+    'exactly one exit-zero path may exist');
+  assert.match(CODE, /\nexit 1\s*$/, 'every other outcome must exit non-zero');
 });
 
 // ---------------------------------------------------------------------------
@@ -431,6 +448,116 @@ test('the helper contains no secret of any kind', () => {
   assert.ok(!/(password|passwd|pwd)\s*=\s*['"][^'"]+['"]/i.test(CODE), 'no password literal');
   assert.ok(!/BEGIN (RSA|OPENSSH|PRIVATE) KEY/.test(SRC));
   assert.ok(!/eyJ[A-Za-z0-9_-]{10}/.test(SRC), 'no embedded token');
+});
+
+// ---------------------------------------------------------------------------
+// Result-classification integrity (Phase 66A-B2C-E2)
+//
+// The first operator run returned SUPERUSER_AUTH_CLEANUP_FAILED. The cause was
+// not a cleanup problem at all: a single catch-all over the whole body emitted
+// the CLEANUP token for ANY failure, so a credential, process or stream error
+// was reported as a cleanup failure and the real outcome was destroyed. The
+// finally could also append a second token after a primary one.
+//
+// These tests pin the repair so neither defect can return.
+// ---------------------------------------------------------------------------
+
+test('the outer catch never reports an unexpected failure as a cleanup failure', () => {
+  const cat = outerCatchBlock();
+  assert.ok(!cat.includes('$TOKEN_CLEANUP_FAILED'),
+    'this was the root cause: a generic failure must not claim cleanup failed');
+  assert.match(cat, /\$result\s*=\s*\$TOKEN_INTERNAL_ERROR/,
+    'an unexpected failure must be reported as an internal error');
+});
+
+test('the internal-error token exists and is distinct from every other outcome', () => {
+  assert.match(CODE, /\$TOKEN_INTERNAL_ERROR\s*=\s*'SUPERUSER_AUTH_INTERNAL_ERROR'/);
+  assert.notEqual('SUPERUSER_AUTH_INTERNAL_ERROR', 'SUPERUSER_AUTH_CLEANUP_FAILED');
+});
+
+test('the cleanup token is reserved for a genuine failure to destroy the secret', () => {
+  const fin = finallyBlock();
+  assert.ok(!fin.includes('Write-Output'),
+    'the finally must not emit a token of its own — that produced two tokens');
+  // Only the two secret-destroying steps may raise the flag.
+  const flags = CODE.match(/\$secretCleanupFailed\s*=\s*\$true/g) || [];
+  assert.equal(flags.length, 2,
+    'exactly the PGPASSWORD removal and the BSTR free may flag a secret failure');
+  assert.match(CODE, /if \(\$secretCleanupFailed\) \{ \$result = \$TOKEN_CLEANUP_FAILED \}/,
+    'and only that may override the authentication outcome');
+});
+
+test('process disposal cannot mask the authentication result', () => {
+  const fin = finallyBlock();
+  assert.match(fin, /try \{ \$script:Proc\.Dispose\(\) \} catch \{ \}/,
+    'disposal is housekeeping, so its failure is swallowed');
+});
+
+test('the work returns a token instead of exiting mid-flight', () => {
+  assert.match(CODE, /function Invoke-AuthProbe/);
+  const fn = CODE.slice(CODE.indexOf('function Invoke-AuthProbe'),
+                        CODE.indexOf('$result              = $null'));
+  assert.ok(!/\bexit\b/.test(fn),
+    'the work function must never exit — the caller decides what is emitted');
+  const returns = fn.match(/return \$TOKEN_[A-Z_]+/g) || [];
+  assert.ok(returns.length >= 8, 'every outcome must be returned as a token');
+});
+
+test('both exit statements sit outside the try and finally', () => {
+  const finIdx = CODE.indexOf('finally {');
+  const finEnd = CODE.indexOf('\n}', finIdx);
+  for (const m of [...CODE.matchAll(/^exit \d|\{ exit \d/gm)]) {
+    assert.ok(m.index > finEnd,
+      'an exit inside try/finally is what let the token and the exit code disagree');
+  }
+});
+
+test('the emitted result is validated against the token allowlist first', () => {
+  assert.match(CODE, /\$ALL_TOKENS = @\(/);
+  assert.match(CODE, /\$ALL_TOKENS -notcontains \$result/,
+    'an unrecognised or contaminated result must become an internal error');
+  assert.match(CODE, /if \(\$null -eq \$result -or \$ALL_TOKENS -notcontains \$result\)/);
+});
+
+test('each cleanup step is independently guarded so one failure cannot skip the rest', () => {
+  const fin = finallyBlock();
+  assert.ok((fin.match(/try \{/g) || []).length >= 3,
+    'PGPASSWORD removal, BSTR free and disposal each need their own guard');
+  assert.match(fin, /if \(\$null -ne \$script:Psi\)/, 'null-guarded');
+  assert.match(fin, /if \(\$script:Bstr -ne \[IntPtr\]::Zero\)/, 'null-guarded');
+  assert.match(fin, /if \(\$null -ne \$script:Proc\)/, 'null-guarded');
+});
+
+test('the BSTR free is idempotent and cannot double-free', () => {
+  const fin = finallyBlock();
+  const freeIdx  = fin.indexOf('ZeroFreeBSTR');
+  const resetIdx = fin.indexOf('$script:Bstr = [IntPtr]::Zero');
+  assert.ok(freeIdx > -1 && resetIdx > freeIdx,
+    'the handle must be reset to zero immediately after being freed');
+});
+
+test('every stage maps to the token that actually describes it', () => {
+  const fn = CODE.slice(CODE.indexOf('function Invoke-AuthProbe'));
+  const stage = (anchor, token) => {
+    const at = fn.indexOf(anchor);
+    assert.ok(at > -1, 'missing stage anchor: ' + anchor);
+    assert.ok(fn.slice(at, at + 400).includes(token),
+      anchor + ' must classify as ' + token);
+  };
+  stage('Test-Path -LiteralPath $PSQL_PATH', '$TOKEN_PSQL_NOT_FOUND');
+  stage('ConvertTo-SafeArgument -Value $a',  '$TOKEN_START_FAILED');
+  stage('Get-Credential',                    '$TOKEN_CANCELLED');
+  stage('[System.Diagnostics.Process]::Start', '$TOKEN_START_FAILED');
+  stage('WaitForExit($TIMEOUT_MS)',          '$TOKEN_TIMEOUT');
+  stage('if ($exitCode -ne 0)',              '$TOKEN_REJECTED');
+  stage('$trimmed -eq $TOKEN_INVALID',       '$TOKEN_OUTPUT_INVALID');
+});
+
+test('a faulted output stream cannot be misclassified as a cleanup failure', () => {
+  assert.match(CODE, /try \{ \$stdout = \$stdoutTask\.Result \} catch \{ \$stdout = '' \}/,
+    'a faulted stdout task must degrade to empty output, then OUTPUT_INVALID');
+  assert.match(CODE, /try \{ \[void\]\$stderrTask\.Result \} catch \{ \}/,
+    'stderr is drained best-effort and never inspected');
 });
 
 // ---------------------------------------------------------------------------
