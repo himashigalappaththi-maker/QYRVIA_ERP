@@ -51,7 +51,8 @@ function buildRepos(pool) {
   // rollup, payment allocation + ledger post) became atomic as a direct
   // consequence — that is P1-5, P1-6 and P1-8.
   const {
-    getTenantClient, getTenantId, hasTenantContext, runWithTenantRead
+    getTenantClient, getTenantId, hasTenantContext, runWithTenantRead,
+    runWithTenantTransaction
   } = require('./tenantUnitOfWork');
   function tq(text, params) {
     return getTenantClient('repos').query(text, params);
@@ -544,25 +545,99 @@ function buildRepos(pool) {
       );
       return r.rowCount > 0;
     },
+    /**
+     * Phase 66A-B2H (P0-14) — tenant-bound claiming.
+     *
+     * scheduled_jobs is ENABLE + FORCE ROW LEVEL SECURITY, keyed on
+     * app.tenant_id (0007_scheduler.sql). A bare pool.query — which is what
+     * this method used to be — carries no app.tenant_id, so under the
+     * non-superuser / NOBYPASSRLS role this project's own guard mandates
+     * (test/db/_rlsGuard.js), current_setting('app.tenant_id', true) is NULL,
+     * the RLS predicate is NULL (not TRUE), and FORCE RLS hides every row:
+     * the scheduler silently claimed nothing. That is P0-14.
+     *
+     * The fix is two steps, matching the split the worker-resolver bootstrap
+     * was built for:
+     *
+     *   1. DISCOVERY — ask which tenants have due work by calling the
+     *      installed SECURITY DEFINER resolver, worker_resolvers.
+     *      due_scheduler_tenants(limit). It runs as qyrvia_auth_resolver
+     *      (BYPASSRLS), so it alone may see across the tenant boundary, and
+     *      it is built to return tenant_id ONLY — no job id, no payload — so
+     *      this step cannot leak job content across tenants even in
+     *      principle. This call runs directly on the pool: there is no
+     *      tenant context yet, and none is needed for it, exactly like the
+     *      pre-auth resolver calls documented at the top of this file.
+     *
+     *   2. CLAIM — for each distinct due tenant, open a tenant-bound unit of
+     *      work (runWithTenantTransaction) and run the ORIGINAL claim SQL,
+     *      unchanged, inside it. RLS then does the tenant scoping for us —
+     *      the query never needed an explicit tenant_id predicate, because
+     *      FORCE RLS supplies it once app.tenant_id is correctly bound. Each
+     *      tenant gets its own client and its own transaction, so a failure
+     *      claiming for one tenant cannot commit another tenant's rows under
+     *      the wrong context, and does not roll back tenants already
+     *      committed earlier in this same tick.
+     *
+     * LIMIT: due_scheduler_tenants enforces 1..1000 itself (bootstrap script,
+     * mirrored here) and this project has no separate app-side batch-size
+     * convention (nothing like MAX_BATCH_SIZE exists elsewhere), so the same
+     * caller-supplied limit is clamped into that range and reused both as
+     * the max number of tenants considered this tick and as the per-tenant
+     * job LIMIT. A single global LIMIT across all tenants, strictly ordered
+     * by run_at, is not obtainable from a non-BYPASSRLS role in the first
+     * place — that was exactly the defect this phase closes — so applying
+     * the limit per tenant (oldest-run_at-first WITHIN each tenant) is the
+     * only correct option available under RLS, and can only claim as many or
+     * more due jobs than the old, non-functional global query ever actually
+     * did in production.
+     *
+     * A resolver failure propagates — there is no fallback to a global
+     * scan. The existing callers (index.js's setInterval, and
+     * POST /api/jobs/run) already .catch()/try-catch executeDueJobs, so this
+     * surfaces through the same paths that already handled a claim failure.
+     */
     async claimDueJobs({ workerId, limit }) {
-      const r = await pool.query(
-        `WITH due AS (
-           SELECT id FROM scheduled_jobs
-            WHERE status='pending' AND run_at <= now()
-            ORDER BY run_at
-            LIMIT $1
-            FOR UPDATE SKIP LOCKED
-         )
-         UPDATE scheduled_jobs sj
-            SET status='running'::scheduled_job_status,
-                locked_by=$2, locked_at=now(), started_at=now(),
-                attempts=sj.attempts+1
-           FROM due
-          WHERE sj.id = due.id
-       RETURNING sj.*`,
-        [limit, workerId]
+      const MIN_RESOLVER_LIMIT = 1;
+      const MAX_RESOLVER_LIMIT = 1000; // matches the bootstrap's own p_limit bound
+      const requested = Number.isInteger(limit) && limit > 0 ? limit : 25;
+      const safeLimit = Math.max(MIN_RESOLVER_LIMIT, Math.min(MAX_RESOLVER_LIMIT, requested));
+
+      const discovery = await pool.query(
+        'SELECT tenant_id FROM worker_resolvers.due_scheduler_tenants($1)',
+        [safeLimit]
       );
-      return r.rows;
+      // Defensive dedup only — due_scheduler_tenants already returns
+      // DISTINCT tenant_id in deterministic ORDER BY tenant_id order, so this
+      // changes nothing today; it only guards this call site against a
+      // future change to the resolver's own contract.
+      const tenantIds = [...new Set(discovery.rows.map((row) => row.tenant_id))];
+
+      const claimed = [];
+      for (const tenantId of tenantIds) {
+        const rows = await runWithTenantTransaction(pool, tenantId, async (client) => {
+          const r = await client.query(
+            `WITH due AS (
+               SELECT id FROM scheduled_jobs
+                WHERE status='pending' AND run_at <= now()
+                ORDER BY run_at
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+             )
+             UPDATE scheduled_jobs sj
+                SET status='running'::scheduled_job_status,
+                    locked_by=$2, locked_at=now(), started_at=now(),
+                    attempts=sj.attempts+1
+               FROM due
+              WHERE sj.id = due.id
+           RETURNING sj.*`,
+            [safeLimit, workerId]
+          );
+          return r.rows;
+        });
+        claimed.push(...rows);
+      }
+      return claimed;
     },
     async markJobCompleted(id) {
       await pool.query(
