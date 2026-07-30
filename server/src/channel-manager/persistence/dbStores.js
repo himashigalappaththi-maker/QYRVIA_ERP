@@ -11,7 +11,28 @@
  * tenant-scoped client (client.js withTenant -> SET app.tenant_id) so RLS
  * applies. This module keeps the raw-query interface so it is unit-testable with
  * a fake client; the tenant-scoping adapter is wired at activation time.
+ *
+ * Phase 66A-B2I (P0-12 queue-claiming prerequisite): the tenant-scoping
+ * adapter this note above anticipated is dequeuePendingAcrossTenants(),
+ * below. buildSyncQueueStoreDb({db}).dequeue() itself is UNCHANGED in shape —
+ * it still takes no arguments and still returns one claimed row or null, and
+ * still runs on whatever `db` handle its caller supplies (a raw pool, or a
+ * tenant-bound client, exactly as every existing caller — production and
+ * test — already relies on). What changed is that dequeue()'s own WHERE
+ * clause now also excludes a row that is backing off (next_retry_at in the
+ * future) or has exhausted its retries (retry_count >= max_retries), using
+ * the identical predicate worker_resolvers.pending_channel_tenants already
+ * enforces (scripts/db/phase66a_worker_resolvers_bootstrap.sql). Before this
+ * phase dequeue() checked status='PENDING' only — proven absent by direct
+ * inspection, not assumed — so a tenant that the resolver correctly excluded
+ * from "has due work" could still have one of its backing-off/exhausted rows
+ * claimed by an unchanged dequeue(). Every existing caller of dequeue() is
+ * unaffected: none of them ever sets next_retry_at, next_run_at or
+ * retry_count away from their column defaults (NULL, NULL, 0), and those
+ * defaults satisfy the added predicate exactly as before.
  */
+
+const { runWithTenantTransaction } = require('../../db/tenantUnitOfWork');
 
 function need(db) {
   if (!db || typeof db.query !== 'function') throw new Error('dbStores: db.query required');
@@ -146,9 +167,24 @@ function buildSyncQueueStoreDb({ db }) {
       return { accepted: true, item: r.rows[0] };
     },
     async dequeue() {
+      // The bracketed predicate mirrors worker_resolvers.pending_channel_tenants'
+      // own due-ness check exactly (status, next_retry_at, next_run_at,
+      // retry_count/max_retries) so a tenant discovered as "has due work" by
+      // the resolver is never left unable to claim anything by a stricter
+      // resolver / looser claim mismatch. See the Phase 66A-B2I header note
+      // above for why this is safe for every existing caller.
       const r = await db.query(
         `UPDATE channel_sync_queue_store SET status = 'PROCESSING', updated_at = now()
-         WHERE id = (SELECT id FROM channel_sync_queue_store WHERE status = 'PENDING' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED)
+         WHERE id = (
+           SELECT id FROM channel_sync_queue_store
+            WHERE status = 'PENDING'
+              AND (next_retry_at IS NULL OR next_retry_at <= now())
+              AND (next_run_at   IS NULL OR next_run_at   <= now())
+              AND retry_count < max_retries
+            ORDER BY created_at
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED
+         )
          RETURNING *`, []);
       return r.rows[0] || null;
     },
@@ -165,6 +201,99 @@ function buildSyncQueueStoreDb({ db }) {
     async size() { const r = await db.query('SELECT count(*)::int AS n FROM channel_sync_queue_store', []); return r.rows[0] ? r.rows[0].n : 0; },
     async clear() { await db.query('DELETE FROM channel_sync_queue_store', []); }
   };
+}
+
+/**
+ * Phase 66A-B2I (P0-12 queue-claiming prerequisite) — tenant-bound
+ * discovery + claim across the whole application, mirroring the fix already
+ * applied to the scheduler (Phase 66A-B2H, server/src/db/repos.js
+ * claimDueJobs). buildSyncQueueStoreDb({db}).dequeue() above is unchanged in
+ * its own single-tenant contract; THIS function is the new orchestration
+ * layer that makes it safe to call across every tenant that actually has
+ * work, without ever scanning channel_sync_queue_store globally.
+ *
+ * channel_sync_queue_store is ENABLE + FORCE ROW LEVEL SECURITY, keyed on
+ * app.tenant_id (0045_channel_persistence.sql). Calling dequeue() on a bare
+ * pool — which is what every production caller of this table did before
+ * this phase — carries no app.tenant_id, so under the non-superuser /
+ * NOBYPASSRLS role this project's own guard mandates
+ * (test/db/_rlsGuard.js), current_setting('app.tenant_id', true) is NULL,
+ * the RLS predicate is NULL (not TRUE), and FORCE RLS hides every row.
+ *
+ * The fix is the same two steps used for the scheduler:
+ *
+ *   1. DISCOVERY — ask which tenants have pending channel-sync work by
+ *      calling the installed SECURITY DEFINER resolver,
+ *      worker_resolvers.pending_channel_tenants(limit). It runs as
+ *      qyrvia_auth_resolver (BYPASSRLS) and returns tenant_id ONLY — no
+ *      queue row id, no payload — so this step cannot leak queue content
+ *      across tenants even in principle. Runs directly on the pool: no
+ *      tenant context exists yet, and none is needed for it.
+ *
+ *   2. CLAIM — for each distinct pending tenant, open a tenant-bound unit
+ *      of work (runWithTenantTransaction) and call the ORIGINAL, unchanged
+ *      dequeue() on a store bound to that tenant-scoped client. RLS then
+ *      does the tenant scoping — dequeue()'s own SQL never needed an
+ *      explicit tenant_id predicate, because FORCE RLS supplies it once
+ *      app.tenant_id is correctly bound. Each tenant gets its own client and
+ *      its own transaction, so a failure claiming for one tenant cannot
+ *      commit (or half-commit) another tenant's row under the wrong
+ *      context, and does not roll back tenants already committed earlier in
+ *      this same call.
+ *
+ * dequeue() itself claims at most one row per call (LIMIT 1 — this was
+ * never parameterized, unlike the scheduler's claimDueJobs, and this phase
+ * does not add batching that never existed). This function therefore claims
+ * at most ONE row per discovered tenant per call, returned as an array —
+ * the same "one attempt per tenant" shape claimDueJobs already established,
+ * scaled down to dequeue()'s own pre-existing one-row contract rather than
+ * inventing a new per-tenant batch size.
+ *
+ * LIMIT: pending_channel_tenants enforces 1..1000 itself (bootstrap script)
+ * and this project has no separate app-side batch-size convention for
+ * tenant discovery (see the identical note in repos.js claimDueJobs), so the
+ * caller-supplied limit is clamped into that range before being sent to the
+ * resolver. It bounds only how many TENANTS are considered this call — each
+ * one still yields at most the one row dequeue() has always returned.
+ *
+ * A resolver failure propagates — there is no fallback to a global scan.
+ * This function has no existing production caller today (dequeue() itself
+ * is not yet wired into channelQueueWorker.js — a separate, pre-existing
+ * interface mismatch unrelated to tenant scoping, documented in this
+ * phase's report and explicitly out of scope here), so there is nothing to
+ * preserve error-handling compatibility with yet; whichever future phase
+ * wires this into the worker loop inherits a plain rejected promise on
+ * failure, exactly like claimDueJobs already hands its callers.
+ */
+async function dequeuePendingAcrossTenants({ pool, limit } = {}) {
+  need(pool);
+  if (typeof pool.connect !== 'function') {
+    throw new Error('dequeuePendingAcrossTenants: pool.connect() is required (runWithTenantTransaction needs a real pool)');
+  }
+
+  const MIN_RESOLVER_LIMIT = 1;
+  const MAX_RESOLVER_LIMIT = 1000; // matches the bootstrap's own p_limit bound
+  const requested = Number.isInteger(limit) && limit > 0 ? limit : 25;
+  const safeLimit = Math.max(MIN_RESOLVER_LIMIT, Math.min(MAX_RESOLVER_LIMIT, requested));
+
+  const discovery = await pool.query(
+    'SELECT tenant_id FROM worker_resolvers.pending_channel_tenants($1)',
+    [safeLimit]
+  );
+  // Defensive dedup only — pending_channel_tenants already returns DISTINCT
+  // tenant_id in deterministic ORDER BY tenant_id order, so this changes
+  // nothing today; it only guards this call site against a future change to
+  // the resolver's own contract.
+  const tenantIds = [...new Set(discovery.rows.map((row) => row.tenant_id))];
+
+  const claimed = [];
+  for (const tenantId of tenantIds) {
+    const row = await runWithTenantTransaction(pool, tenantId, (client) =>
+      buildSyncQueueStoreDb({ db: client }).dequeue()
+    );
+    if (row) claimed.push(row);
+  }
+  return claimed;
 }
 
 // ---- channel_dead_letter_store --------------------------------------------
@@ -273,6 +402,7 @@ module.exports = {
   buildBookingStoreDb,
   buildChannelMappingStoreDb,
   buildSyncQueueStoreDb,
+  dequeuePendingAcrossTenants,
   buildDeadLetterStoreDb,
   buildSyncStateStoreDb,
   buildSyncLockStoreDb,
