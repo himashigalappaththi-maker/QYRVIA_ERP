@@ -531,6 +531,14 @@ try {
 // Phase 24 B6 - durable queue worker (MOCK processor, NO OTA). Default OFF: starts only
 // when CHANNEL_WORKER_ENABLED=true. Infrastructure only; not wired to real processing.
 //
+// Phase 66A-B2K: CHANNEL_WORKER_ENABLED only gates whether the polling loop
+// starts. A second, independent, fail-closed switch — CHANNEL_QUEUE_
+// DISPATCH_ENABLED, default 'false' — now gates whether a running tick may
+// claim anything at all. isDispatchEnabled below reads the frozen, already-
+// validated env config fresh on every call (never cached), so only the
+// exact string 'true' at read time ever permits a claim; missing, 'false',
+// or any other value fails closed inside channelQueueWorker.js itself.
+//
 // Phase 66A-B2J repair: the worker used to be handed either
 // channelPersistence.queue (whose methods it never actually matched — see
 // channelQueueWorker.js's own header) or a brand-new, disconnected
@@ -573,13 +581,18 @@ if (require('./config/env').CHANNEL_WORKER_ENABLED === 'true') {
     }
 
     if (workerQueueAdapter) {
+      const isDispatchEnabled = () => require('./config/env').CHANNEL_QUEUE_DISPATCH_ENABLED === 'true';
       const channelWorker = buildChannelQueueWorker({
         queue: workerQueueAdapter,
         processor: buildMockProcessor(),
+        isDispatchEnabled,
         enabled: true
       });
       channelWorker.start();
-      logger.info({ mode: channelPersistence && channelPersistence.mode }, '[boot] channel queue worker ready');
+      logger.info({
+        mode: channelPersistence && channelPersistence.mode,
+        dispatchEnabled: isDispatchEnabled()
+      }, '[boot] channel queue worker ready');
     }
   } catch (e) { logger.warn({ err: e }, '[boot] channel worker init skipped'); }
 } else {

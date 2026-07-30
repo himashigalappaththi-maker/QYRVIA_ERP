@@ -53,6 +53,18 @@ const config = Object.freeze({
   CHANNEL_PERSISTENCE:    getOptional('CHANNEL_PERSISTENCE', 'memory'),
   // Phase 24 B6: durable queue worker. Default OFF; worker starts only when 'true'.
   CHANNEL_WORKER_ENABLED: getOptional('CHANNEL_WORKER_ENABLED', 'false'),
+  // Phase 66A-B2K: independent, fail-closed master dispatch kill switch for the
+  // reservation-action queue worker. CHANNEL_WORKER_ENABLED only gates whether
+  // the polling loop STARTS; this gates whether a running tick may CLAIM any
+  // queue row at all. Default OFF. Only the literal string 'true' enables it —
+  // missing, 'false', or any other value (a typo, a stray space, a non-string)
+  // all read as not-'true' and therefore fail closed, exactly like every other
+  // boolean flag in this file (CHANNEL_WORKER_ENABLED, AI_AGENT_ENABLED, ...).
+  // Deliberately its own setting: reusing CHANNEL_WORKER_ENABLED would remove
+  // the ability to run the polling loop (recovery/metrics groundwork) with
+  // dispatch itself still held off, and CHANNEL_WORKER_REAL is a separate,
+  // still-unimplemented switch for a real processor this phase does not wire.
+  CHANNEL_QUEUE_DISPATCH_ENABLED: getOptional('CHANNEL_QUEUE_DISPATCH_ENABLED', 'false'),
   // Phase 24 B8-B1: encryption key for the local SecretProvider (32-byte: 64-hex,
   // base64-32, or passphrase). Empty default => no provider (credential subsystem dormant).
   CHANNEL_CREDENTIAL_KEY: getOptional('CHANNEL_CREDENTIAL_KEY', ''),

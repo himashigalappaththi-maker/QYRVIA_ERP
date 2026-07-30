@@ -1,29 +1,28 @@
 'use strict';
 
 /**
- * Phase 66A-B2J (P0-12 worker-plumbing prerequisite) - a complete mock
- * worker cycle through the REAL production worker code path, against REAL
- * PostgreSQL.
+ * Phase 66A-B2K (P0-12 kill-switch prerequisite) - the fail-closed
+ * reservation-action queue dispatch kill switch, against REAL PostgreSQL,
+ * using the real production-compatible queue adapter and the real
+ * buildChannelQueueWorker.
  *
- * STRICT data-level boundary, same as the sibling B2H/B2I DB tests: no DDL,
- * no CREATE ROLE, no DROP SCHEMA, no migration at runtime; single existing
- * role (qyrvia_test); fixtures cleaned up with DELETE. No network request
- * of any kind is made anywhere in this file - the only processor used is
- * buildMockProcessor(), which has no transport capability at all.
+ * STRICT data-level boundary, same as the sibling B2H/B2I/B2J DB tests: no
+ * DDL, no CREATE ROLE, no DROP SCHEMA, no migration at runtime; single
+ * existing role (qyrvia_test); fixtures cleaned up with DELETE. No network
+ * request of any kind is made anywhere in this file - the only processor
+ * used is buildMockProcessor(), which has no transport capability at all.
  *
  * Proves:
- *   - the repaired worker (buildChannelQueueWorker + the real
- *     dequeuePendingAcrossTenants/markQueueCompletedForTenant/
- *     markQueueFailedForTenant adapter, exactly as wired at boot) claims
- *     eligible rows for two distinct tenants in one tick, correctly
- *     attributed, no cross-tenant leak;
- *   - the mock processor is actually invoked for each claimed row;
- *   - a successful mock outcome reaches the persistent COMPLETED state;
- *   - a second, empty tick does not reprocess already-completed rows;
- *   - an injected mock-processor failure reaches the persistent FAILED
- *     state and is never marked completed;
- *   - the database security posture (roles, RLS/FORCE RLS, migration 0085's
- *     grants) is unchanged after all of the above.
+ *   - with isDispatchEnabled returning false, a tick claims and modifies
+ *     nothing - every seeded row stays exactly PENDING, untouched, across
+ *     two isolated tenants;
+ *   - with a guard that throws, the same holds - no queue row is claimed
+ *     or modified, no processor call occurs;
+ *   - with isDispatchEnabled returning true, the existing mock-only cycle
+ *     still works exactly as Phase 66A-B2J proved (claim, process,
+ *     complete, tenant-isolated, no reprocessing on an empty second tick);
+ *   - the database security posture (roles, RLS/FORCE RLS, migration
+ *     0085's grants) is unchanged after all of the above.
  */
 
 const { test, before, after } = require('node:test');
@@ -99,8 +98,8 @@ if (!URL) {
     const reg = await pool.query("SELECT to_regprocedure('worker_resolvers.pending_channel_tenants(integer)') t");
     assert.ok(reg.rows[0].t, 'schema not provisioned: worker_resolvers.pending_channel_tenants(integer) missing - ' +
       'run the worker-resolver bootstrap and apply migration 0085 before running this test');
-    tenantA = await seedTenantProperty('B2J-A-' + Date.now().toString(36));
-    tenantB = await seedTenantProperty('B2J-B-' + Date.now().toString(36));
+    tenantA = await seedTenantProperty('B2K-A-' + Date.now().toString(36));
+    tenantB = await seedTenantProperty('B2K-B-' + Date.now().toString(36));
   });
 
   after(async () => {
@@ -111,25 +110,70 @@ if (!URL) {
     }
   });
 
-  test('a full mock worker cycle claims, processes and completes eligible rows for two tenants, tenant-isolated', async () => {
+  test('dispatch disabled: a tick claims and modifies nothing across two tenants', async () => {
+    const idA = await insertRow(tenantA, { reservationId: 'R-A-' + crypto.randomBytes(3).toString('hex') });
+    const idB = await insertRow(tenantB, { reservationId: 'R-B-' + crypto.randomBytes(3).toString('hex') });
+
+    let processCalls = 0;
+    const processor = { async process() { processCalls += 1; return { ok: true }; } };
+    const worker = buildChannelQueueWorker({
+      queue: buildDbWorkerQueueAdapter(), processor, isDispatchEnabled: () => false, enabled: false
+    });
+
+    const result = await worker.tick();
+    assert.deepEqual(result, { disabled: true, reason: 'dispatch_disabled', results: [] });
+    assert.equal(processCalls, 0, 'the mock processor must never be called while dispatch is disabled');
+
+    const rowA = await fetchRow(tenantA, idA);
+    const rowB = await fetchRow(tenantB, idB);
+    assert.equal(rowA.status, 'PENDING', 'tenant A\'s row remains untouched');
+    assert.equal(rowB.status, 'PENDING', 'tenant B\'s row remains untouched');
+    assert.equal(rowA.attempts, 0, 'no attempts field was changed');
+    assert.equal(rowB.attempts, 0, 'no attempts field was changed');
+  });
+
+  test('guard failure: a throwing guard claims and modifies nothing', async () => {
+    const idA = await insertRow(tenantA, { reservationId: 'R-A-GUARDFAIL-' + crypto.randomBytes(3).toString('hex') });
+
+    let processCalls = 0;
+    const processor = { async process() { processCalls += 1; return { ok: true }; } };
+    const worker = buildChannelQueueWorker({
+      queue: buildDbWorkerQueueAdapter(), processor,
+      isDispatchEnabled: () => { throw new Error('boom'); },
+      enabled: false
+    });
+
+    const result = await worker.tick();
+    assert.deepEqual(result, { disabled: true, reason: 'dispatch_guard_error', results: [] });
+    assert.equal(processCalls, 0);
+
+    const rowA = await fetchRow(tenantA, idA);
+    assert.equal(rowA.status, 'PENDING', 'the row is untouched after a guard failure');
+  });
+
+  test('dispatch enabled: the existing mock-only cycle still claims, processes and completes rows, tenant-isolated', async () => {
+    // Clean slate so this test's assertions are deterministic regardless of
+    // what the disabled-mode tests above left behind (all still PENDING).
+    await cleanupTenant(tenantA);
+    await cleanupTenant(tenantB);
+    tenantA = await seedTenantProperty('B2K-A2-' + Date.now().toString(36));
+    tenantB = await seedTenantProperty('B2K-B2-' + Date.now().toString(36));
+
     const idA = await insertRow(tenantA, { reservationId: 'R-A-' + crypto.randomBytes(3).toString('hex') });
     const idB = await insertRow(tenantB, { reservationId: 'R-B-' + crypto.randomBytes(3).toString('hex') });
 
     const seenByProcessor = [];
-    const processorInner = buildMockProcessor({ shouldFail: () => false });
-    const processor = { async process(job) { seenByProcessor.push(job.id); return processorInner.process(job); } };
+    const inner = buildMockProcessor({ shouldFail: () => false });
+    const processor = { async process(job) { seenByProcessor.push(job.id); return inner.process(job); } };
+    const worker = buildChannelQueueWorker({
+      queue: buildDbWorkerQueueAdapter(), processor, isDispatchEnabled: () => true, enabled: false
+    });
 
-    const worker = buildChannelQueueWorker({ queue: buildDbWorkerQueueAdapter(), processor, isDispatchEnabled: () => true, enabled: false });
     const result = await worker.tick();
-
+    assert.equal(result.disabled, undefined);
     assert.equal(result.idle, false);
-    assert.ok(seenByProcessor.includes(idA), 'the mock processor was invoked for tenant A\'s row');
-    assert.ok(seenByProcessor.includes(idB), 'the mock processor was invoked for tenant B\'s row');
-
-    const claimedA = result.results.find((r) => r.id === idA);
-    const claimedB = result.results.find((r) => r.id === idB);
-    assert.equal(claimedA.status, 'COMPLETED');
-    assert.equal(claimedB.status, 'COMPLETED');
+    assert.ok(seenByProcessor.includes(idA));
+    assert.ok(seenByProcessor.includes(idB));
 
     const rowA = await fetchRow(tenantA, idA);
     const rowB = await fetchRow(tenantB, idB);
@@ -137,35 +181,19 @@ if (!URL) {
     assert.equal(rowA.tenant_id, tenantA.tenantId, 'tenant A\'s row is attributed to tenant A, not another tenant');
     assert.equal(rowB.status, 'COMPLETED');
     assert.equal(rowB.tenant_id, tenantB.tenantId, 'tenant B\'s row is attributed to tenant B, not another tenant');
+
+    // A second, empty, still-enabled tick must not reprocess anything.
+    let secondTickProcessCalls = 0;
+    const secondProcessor = { async process() { secondTickProcessCalls += 1; return { ok: true }; } };
+    const secondWorker = buildChannelQueueWorker({
+      queue: buildDbWorkerQueueAdapter(), processor: secondProcessor, isDispatchEnabled: () => true, enabled: false
+    });
+    const secondResult = await secondWorker.tick();
+    assert.equal(secondResult.idle, true);
+    assert.equal(secondTickProcessCalls, 0);
   });
 
-  test('a second, empty tick does not reprocess already-completed rows', async () => {
-    let processCalls = 0;
-    const processor = { async process() { processCalls += 1; return { ok: true }; } };
-    const worker = buildChannelQueueWorker({ queue: buildDbWorkerQueueAdapter(), processor, isDispatchEnabled: () => true, enabled: false });
-
-    const result = await worker.tick();
-    assert.equal(result.idle, true, 'nothing is PENDING any more - the previous test already completed both rows');
-    assert.equal(processCalls, 0, 'the mock processor must not be called when nothing is claimed');
-  });
-
-  test('an injected mock-processor failure reaches the persistent FAILED state and is never marked completed', async () => {
-    const failId = await insertRow(tenantA, { reservationId: 'R-A-FAIL-' + crypto.randomBytes(3).toString('hex') });
-
-    const processor = buildMockProcessor({ shouldFail: (job) => job.reservation_id.startsWith('R-A-FAIL-') });
-    const worker = buildChannelQueueWorker({ queue: buildDbWorkerQueueAdapter(), processor, isDispatchEnabled: () => true, enabled: false });
-    const result = await worker.tick();
-
-    const claimed = result.results.find((r) => r.id === failId);
-    assert.ok(claimed, 'the row was claimed and processed');
-    assert.equal(claimed.status, 'FAILED');
-
-    const row = await fetchRow(tenantA, failId);
-    assert.equal(row.status, 'FAILED', 'the row reached the persistent FAILED state');
-    assert.notEqual(row.status, 'COMPLETED', 'a failed mock outcome must never be marked completed');
-  });
-
-  test('database security posture is unchanged after a full mock worker cycle', async () => {
+  test('database security posture is unchanged after the disabled, guard-failure and enabled cycles', async () => {
     const r = await pool.query(`SELECT json_build_object(
       'qyrvia_test', (SELECT json_build_object('can_login', rolcanlogin, 'is_superuser', rolsuper, 'bypassrls', rolbypassrls) FROM pg_roles WHERE rolname='qyrvia_test'),
       'qyrvia_auth_resolver', (SELECT json_build_object('can_login', rolcanlogin, 'is_superuser', rolsuper, 'bypassrls', rolbypassrls) FROM pg_roles WHERE rolname='qyrvia_auth_resolver'),

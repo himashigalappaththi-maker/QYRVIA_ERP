@@ -32,10 +32,16 @@ const REALPROC_PATH = path.join(__dirname, '..', 'src', 'channel-manager', 'work
 const WORKER_SOURCE = fs.readFileSync(WORKER_PATH, 'utf8');
 const INDEX_SOURCE  = fs.readFileSync(INDEX_PATH, 'utf8');
 
-/** Statement text with `/* */` block comments and `//` line comments stripped, so prose in a comment cannot satisfy an assertion. */
+/**
+ * Statement text with `/* *\/` block comments and `//` line comments
+ * stripped, so prose in a comment cannot satisfy an assertion. CRLF-safe:
+ * on a Windows checkout each split line can end in a bare `\r`, and `$`
+ * does not anchor before a lone `\r` (only before a final `\n`), so the
+ * anchor is dropped — `.` already stops at the `\r` on its own.
+ */
 function stripComments(src) {
   const noBlocks = src.replace(/\/\*[\s\S]*?\*\//g, '');
-  return noBlocks.split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+  return noBlocks.split('\n').map((l) => l.replace(/\/\/.*/, '')).join('\n');
 }
 const WORKER_CODE = stripComments(WORKER_SOURCE);
 const INDEX_CODE  = stripComments(INDEX_SOURCE);

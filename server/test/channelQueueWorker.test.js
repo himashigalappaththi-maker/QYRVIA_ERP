@@ -1,7 +1,8 @@
 'use strict';
 
 /**
- * Phase 24 B6 / repaired Phase 66A-B2J - channel queue worker.
+ * Phase 24 B6 / repaired Phase 66A-B2J / kill switch Phase 66A-B2K -
+ * channel queue worker.
  *
  * Tests 1, 2 and 10 exercise leaseQueue.js and workerRetryPolicy.js directly
  * — both modules are unmodified by the Phase 66A-B2J repair and remain
@@ -10,13 +11,14 @@
  * never construct a worker.
  *
  * Every other test exercises buildChannelQueueWorker() itself, against a
- * small fake matching its NEW three-method contract
+ * small fake matching its three-method queue contract
  * (dequeuePendingAcrossTenants / markCompleted / markFailed) — the same
  * contract server/src/channel-manager/persistence/dbStores.js's
  * dequeuePendingAcrossTenants + markQueueCompletedForTenant +
  * markQueueFailedForTenant satisfy in db-persistence mode, and the memory
- * queue adapter built in src/index.js satisfies in memory mode. No database
- * connection is opened anywhere in this file.
+ * queue adapter built in src/index.js satisfies in memory mode — plus the
+ * Phase 66A-B2K isDispatchEnabled guard, now a required constructor
+ * argument. No database connection is opened anywhere in this file.
  */
 
 process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://test:test@127.0.0.1:5432/test_db';
@@ -30,8 +32,11 @@ const { buildMockProcessor } = require('../src/channel-manager/worker/mockProces
 const { buildChannelQueueWorker } = require('../src/channel-manager/worker/channelQueueWorker');
 const { buildWorkerRetryPolicy, BACKOFF_MS } = require('../src/channel-manager/worker/workerRetryPolicy');
 
+/** The guard nearly every non-kill-switch test uses: dispatch always permitted. */
+const alwaysEnabled = () => true;
+
 // ---------------------------------------------------------------------------
-// A fake matching channelQueueWorker's new three-method queue contract.
+// A fake matching channelQueueWorker's three-method queue contract.
 // `batches` is an array of arrays; each dequeuePendingAcrossTenants() call
 // consumes (shifts) the next one, or returns [] once exhausted — modelling
 // "this many rows were due across however many tenants, this poll".
@@ -84,7 +89,7 @@ test('lease expiry recovery: expired PROCESSING returns to PENDING and is re-lea
 test('successful mock processing marks the claimed row completed', async () => {
   const queue = fakeQueue([[row('a')]]);
   const processor = buildMockProcessor({ shouldFail: () => false });
-  const worker = buildChannelQueueWorker({ queue, processor, enabled: false });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
 
   const r = await worker.tick();
   assert.equal(r.idle, false);
@@ -97,7 +102,7 @@ test('successful mock processing marks the claimed row completed', async () => {
 test('failed mock processing uses markFailed, and completion is never called', async () => {
   const queue = fakeQueue([[row('b')]]);
   const processor = buildMockProcessor({ shouldFail: () => true });
-  const worker = buildChannelQueueWorker({ queue, processor, enabled: false });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
 
   const r = await worker.tick();
   assert.deepEqual(r.results, [{ id: 'b', status: 'FAILED' }]);
@@ -108,7 +113,7 @@ test('failed mock processing uses markFailed, and completion is never called', a
 test('a processor that throws is treated as a failure, not an unhandled rejection', async () => {
   const queue = fakeQueue([[row('c')]]);
   const processor = buildMockProcessor({ shouldFail: () => 'throw' });
-  const worker = buildChannelQueueWorker({ queue, processor, enabled: false });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
 
   const r = await worker.tick();
   assert.deepEqual(r.results, [{ id: 'c', status: 'FAILED' }]);
@@ -120,7 +125,7 @@ test('an empty dequeue result produces no processor call and reports idle', asyn
   let processCalls = 0;
   const queue = fakeQueue([[]]);
   const processor = { async process() { processCalls += 1; return { ok: true }; } };
-  const worker = buildChannelQueueWorker({ queue, processor, enabled: false });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
 
   const r = await worker.tick();
   assert.equal(r.idle, true);
@@ -132,7 +137,7 @@ test('multiple claimed rows (across tenants) are each processed exactly once, in
   const seen = [];
   const queue = fakeQueue([[row('x', 'tenantA'), row('y', 'tenantB'), row('z', 'tenantA')]]);
   const processor = { async process(job) { seen.push(job.id); return { ok: true }; } };
-  const worker = buildChannelQueueWorker({ queue, processor, enabled: false });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
 
   const r = await worker.tick();
   assert.deepEqual(seen, ['x', 'y', 'z']);
@@ -149,7 +154,7 @@ test('an overlapping tick is skipped, not double-processed', async () => {
   let processCalls = 0;
   const queue = fakeQueue([[row('a')], [row('b')]], { dequeueDelayMs: 20 });
   const processor = { async process(job) { processCalls += 1; return { ok: true }; } };
-  const worker = buildChannelQueueWorker({ queue, processor, enabled: false });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
 
   const [r1, r2] = await Promise.all([worker.tick(), worker.tick()]);
   const outcomes = [r1, r2].sort((a, b) => (a.skipped ? 1 : 0) - (b.skipped ? 1 : 0));
@@ -167,14 +172,14 @@ test('an overlapping tick is skipped, not double-processed', async () => {
 // ---- 8 & 9. worker disabled / enabled modes --------------------------------
 test('worker disabled mode: start() is a no-op', () => {
   const queue = fakeQueue([[]]);
-  const w = buildChannelQueueWorker({ queue, processor: buildMockProcessor(), enabled: false });
+  const w = buildChannelQueueWorker({ queue, processor: buildMockProcessor(), isDispatchEnabled: alwaysEnabled, enabled: false });
   assert.equal(w.start(), false);
   assert.equal(w.isRunning(), false);
 });
 
 test('worker enabled mode: start()/stop() manage the loop', () => {
   const queue = fakeQueue([[]]);
-  const w = buildChannelQueueWorker({ queue, processor: buildMockProcessor(), enabled: true, pollMs: 10000 });
+  const w = buildChannelQueueWorker({ queue, processor: buildMockProcessor(), isDispatchEnabled: alwaysEnabled, enabled: true, pollMs: 10000 });
   assert.equal(w.start(), true);
   assert.equal(w.isRunning(), true);
   assert.equal(w.start(), true, 'calling start() again while already running is idempotent, not a second timer');
@@ -183,28 +188,186 @@ test('worker enabled mode: start()/stop() manage the loop', () => {
 });
 
 // ---- metrics ----------------------------------------------------------------
-test('metrics: processed / completed / failed session counters', async () => {
+test('metrics: processed / completed / failed / disabledTicks session counters', async () => {
   const queue = fakeQueue([[row('ok1'), row('bad')]]);
   const processor = { async process(job) { return { ok: job.id !== 'bad' }; } };
-  const worker = buildChannelQueueWorker({ queue, processor, enabled: false });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
 
   await worker.tick();
   const m = worker.metrics();
   assert.equal(m.processed, 2);
   assert.equal(m.completed, 1);
   assert.equal(m.failed, 1);
+  assert.equal(m.disabledTicks, 0);
 });
 
 // ---- constructor validation --------------------------------------------------
-test('buildChannelQueueWorker requires the new three-method queue contract', () => {
-  assert.throws(() => buildChannelQueueWorker({ queue: {}, processor: buildMockProcessor() }),
+test('buildChannelQueueWorker requires the three-method queue contract and isDispatchEnabled', () => {
+  assert.throws(() => buildChannelQueueWorker({ queue: {}, processor: buildMockProcessor(), isDispatchEnabled: alwaysEnabled }),
     /dequeuePendingAcrossTenants/);
-  assert.throws(() => buildChannelQueueWorker({ queue: { dequeuePendingAcrossTenants: async () => [] }, processor: buildMockProcessor() }),
-    /markCompleted/);
+  assert.throws(() => buildChannelQueueWorker({
+    queue: { dequeuePendingAcrossTenants: async () => [] }, processor: buildMockProcessor(), isDispatchEnabled: alwaysEnabled
+  }), /markCompleted/);
   assert.throws(() => buildChannelQueueWorker({
     queue: { dequeuePendingAcrossTenants: async () => [], markCompleted: async () => {} },
-    processor: buildMockProcessor()
+    processor: buildMockProcessor(), isDispatchEnabled: alwaysEnabled
   }), /markFailed/);
+  assert.throws(() => buildChannelQueueWorker({
+    queue: fakeQueue([[]]), processor: buildMockProcessor()
+    // isDispatchEnabled omitted entirely
+  }), /isDispatchEnabled/);
+});
+
+// ---------------------------------------------------------------------------
+// Phase 66A-B2K — fail-closed dispatch kill switch
+// ---------------------------------------------------------------------------
+
+test('a disabled guard (false) returns the stable disabled result and claims nothing', async () => {
+  const queue = fakeQueue([[row('a')]]);
+  const worker = buildChannelQueueWorker({
+    queue, processor: buildMockProcessor(), isDispatchEnabled: () => false, enabled: false
+  });
+  const r = await worker.tick();
+  assert.deepEqual(r, { disabled: true, reason: 'dispatch_disabled', results: [] });
+  assert.equal(queue.dequeueCallCount, 0, 'dequeuePendingAcrossTenants must never be called while disabled');
+  assert.deepEqual(queue.completedCalls, []);
+  assert.deepEqual(queue.failedCalls, []);
+});
+
+test('a disabled guard never calls processor.process', async () => {
+  let processCalls = 0;
+  const queue = fakeQueue([[row('a')]]);
+  const processor = { async process() { processCalls += 1; return { ok: true }; } };
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: () => false, enabled: false });
+  await worker.tick();
+  assert.equal(processCalls, 0);
+});
+
+test('missing/undefined guard return value fails closed', async () => {
+  const queue = fakeQueue([[row('a')]]);
+  const worker = buildChannelQueueWorker({
+    queue, processor: buildMockProcessor(), isDispatchEnabled: () => undefined, enabled: false
+  });
+  const r = await worker.tick();
+  assert.equal(r.disabled, true);
+  assert.equal(queue.dequeueCallCount, 0);
+});
+
+test('a non-boolean truthy guard value (1, "true", an object) does not enable dispatch', async () => {
+  for (const truthy of [1, 'true', {}, [], 'yes']) {
+    const queue = fakeQueue([[row('a')]]);
+    const worker = buildChannelQueueWorker({
+      queue, processor: buildMockProcessor(), isDispatchEnabled: () => truthy, enabled: false
+    });
+    const r = await worker.tick();
+    assert.equal(r.disabled, true, 'truthy value ' + JSON.stringify(truthy) + ' must not enable dispatch');
+    assert.equal(queue.dequeueCallCount, 0);
+  }
+});
+
+test('a guard that throws synchronously fails closed and claims nothing', async () => {
+  const queue = fakeQueue([[row('a')]]);
+  const worker = buildChannelQueueWorker({
+    queue, processor: buildMockProcessor(),
+    isDispatchEnabled: () => { throw new Error('boom'); },
+    enabled: false
+  });
+  const r = await worker.tick();
+  assert.deepEqual(r, { disabled: true, reason: 'dispatch_guard_error', results: [] });
+  assert.equal(queue.dequeueCallCount, 0);
+});
+
+test('a guard that returns a rejected promise fails closed and claims nothing', async () => {
+  const queue = fakeQueue([[row('a')]]);
+  const worker = buildChannelQueueWorker({
+    queue, processor: buildMockProcessor(),
+    isDispatchEnabled: () => Promise.reject(new Error('async boom')),
+    enabled: false
+  });
+  const r = await worker.tick();
+  assert.deepEqual(r, { disabled: true, reason: 'dispatch_guard_error', results: [] });
+  assert.equal(queue.dequeueCallCount, 0);
+});
+
+test('the disabled-tick result never includes tenant, row or environment detail', async () => {
+  const queue = fakeQueue([[row('secret-id', 'secret-tenant')]]);
+  const worker = buildChannelQueueWorker({
+    queue, processor: buildMockProcessor(), isDispatchEnabled: () => false, enabled: false
+  });
+  const r = await worker.tick();
+  const serialized = JSON.stringify(r);
+  assert.ok(!serialized.includes('secret-id'));
+  assert.ok(!serialized.includes('secret-tenant'));
+});
+
+test('an enabled guard preserves the existing mock-success path', async () => {
+  const queue = fakeQueue([[row('ok')]]);
+  const processor = buildMockProcessor({ shouldFail: () => false });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: () => true, enabled: false });
+  const r = await worker.tick();
+  assert.deepEqual(r.results, [{ id: 'ok', status: 'COMPLETED' }]);
+});
+
+test('an enabled guard preserves the existing mock-failure path', async () => {
+  const queue = fakeQueue([[row('bad')]]);
+  const processor = buildMockProcessor({ shouldFail: () => true });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: () => true, enabled: false });
+  const r = await worker.tick();
+  assert.deepEqual(r.results, [{ id: 'bad', status: 'FAILED' }]);
+});
+
+test('the guard is re-evaluated on every tick — changing it between ticks changes behavior without reconstructing the worker', async () => {
+  let dispatchState = false;
+  const queue = fakeQueue([[row('a')], [row('b')]]);
+  const processor = buildMockProcessor({ shouldFail: () => false });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: () => dispatchState, enabled: false });
+
+  const r1 = await worker.tick();
+  assert.equal(r1.disabled, true, 'still disabled on the first tick');
+  assert.equal(queue.dequeueCallCount, 0);
+
+  dispatchState = true;
+  const r2 = await worker.tick();
+  assert.equal(r2.disabled, undefined, 'now enabled, same worker instance, no reconstruction');
+  assert.deepEqual(r2.results, [{ id: 'a', status: 'COMPLETED' }]);
+  assert.equal(queue.dequeueCallCount, 1);
+
+  dispatchState = false;
+  const r3 = await worker.tick();
+  assert.equal(r3.disabled, true, 'disabled again on the very next tick, no caching of the earlier enabled state');
+  assert.equal(queue.dequeueCallCount, 1, 'no further dequeue attempted while disabled again');
+});
+
+test('an overlapping tick remains protected even when the guard is disabled', async () => {
+  const queue = fakeQueue([[]]);
+  let guardCalls = 0;
+  const isDispatchEnabled = async () => { guardCalls += 1; await new Promise((r) => setTimeout(r, 20)); return false; };
+  const worker = buildChannelQueueWorker({ queue, processor: buildMockProcessor(), isDispatchEnabled, enabled: false });
+
+  const [r1, r2] = await Promise.all([worker.tick(), worker.tick()]);
+  const skippedCount = [r1, r2].filter((r) => r.skipped).length;
+  assert.equal(skippedCount, 1, 'exactly one of the two concurrent ticks is skipped by the overlap guard');
+  assert.equal(guardCalls, 1, 'the skipped tick never even reached the dispatch guard');
+});
+
+test('an empty, enabled tick still reports idle (not disabled)', async () => {
+  const queue = fakeQueue([[]]);
+  const worker = buildChannelQueueWorker({ queue, processor: buildMockProcessor(), isDispatchEnabled: () => true, enabled: false });
+  const r = await worker.tick();
+  assert.equal(r.idle, true);
+  assert.equal(r.disabled, undefined);
+});
+
+test('disabledTicks metric increments only while disabled, and stops incrementing once enabled', async () => {
+  let dispatchState = false;
+  const queue = fakeQueue([[], []]);
+  const worker = buildChannelQueueWorker({ queue, processor: buildMockProcessor(), isDispatchEnabled: () => dispatchState, enabled: false });
+
+  await worker.tick();
+  assert.equal(worker.metrics().disabledTicks, 1);
+  dispatchState = true;
+  await worker.tick();
+  assert.equal(worker.metrics().disabledTicks, 1, 'an enabled idle tick does not count as a disabled tick');
 });
 
 // ---- 10. retry policy unit (workerRetryPolicy.js directly, unaffected) -----

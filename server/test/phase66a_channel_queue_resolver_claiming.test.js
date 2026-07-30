@@ -32,9 +32,15 @@ const path = require('node:path');
 const STORES_PATH = path.join(__dirname, '..', 'src', 'channel-manager', 'persistence', 'dbStores.js');
 const SOURCE = fs.readFileSync(STORES_PATH, 'utf8');
 
-/** Statement text with `//` line comments stripped, so prose in a comment cannot satisfy an assertion. */
+/**
+ * Statement text with `//` line comments stripped, so prose in a comment
+ * cannot satisfy an assertion. CRLF-safe: on a Windows checkout each split
+ * line can end in a bare `\r`, and `$` does not anchor before a lone `\r`
+ * (only before a final `\n`), so the anchor is dropped — `.` already stops
+ * at the `\r` on its own, giving the same result without the dead anchor.
+ */
 const CODE = SOURCE.split('\n')
-  .map((l) => l.replace(/\/\/.*$/, ''))
+  .map((l) => l.replace(/\/\/.*/, ''))
   .join('\n');
 
 function fnBody(name, nextMarker) {

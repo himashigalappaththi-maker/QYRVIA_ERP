@@ -67,12 +67,27 @@
  * ever calls; nothing here imports or references realProcessor.js,
  * CHANNEL_WORKER_REAL, fetch/axios/http(s).request, or channelRegistry.
  * Default OFF: start() is a no-op unless `enabled`.
+ *
+ * PHASE 66A-B2K — FAIL-CLOSED DISPATCH KILL SWITCH
+ * ──────────────────────────────────────────────────
+ * `isDispatchEnabled` is a required, injected guard — sync or async —
+ * re-evaluated at the START of every tick, after the overlap guard but
+ * BEFORE queue.dequeuePendingAcrossTenants is ever called. Only an EXACT
+ * `true` return value permits a tick to claim anything; any other value
+ * (false, undefined, a truthy non-boolean, a thrown error, a rejected
+ * promise) fails closed: zero rows are claimed, zero rows are modified,
+ * processor.process is never called. A guard failure is swallowed here —
+ * its message/stack is never surfaced — so a broken guard cannot leak
+ * environment or queue detail through a log line; it can only ever narrow
+ * behaviour toward "claim nothing", never widen it toward "claim
+ * everything". This is independent of, and evaluated in addition to,
+ * `enabled` (which only gates whether the polling loop starts at all).
  */
 
 const logger = require('../../config/logger');
 
 function buildChannelQueueWorker({
-  queue, processor,
+  queue, processor, isDispatchEnabled,
   pollMs = 1000, limit = 25, enabled = false
 } = {}) {
   if (!queue) throw new Error('channelQueueWorker: queue required');
@@ -86,6 +101,9 @@ function buildChannelQueueWorker({
     throw new Error('channelQueueWorker: queue.markFailed(tenantId, id) required');
   }
   if (!processor) throw new Error('channelQueueWorker: processor required');
+  if (typeof isDispatchEnabled !== 'function') {
+    throw new Error('channelQueueWorker: isDispatchEnabled() required');
+  }
 
   let _timer = null;
   // Non-overlapping tick guard: a slow tick (real DB round trips, one
@@ -94,12 +112,28 @@ function buildChannelQueueWorker({
   // under interleaved async execution. A second concurrent tick() call is a
   // deliberate no-op ({ skipped: true }), never a queued/duplicate run.
   let _ticking = false;
-  const stats = { processed: 0, completed: 0, failures: 0 };
+  const stats = { processed: 0, completed: 0, failures: 0, disabledTicks: 0 };
 
   async function tick() {
     if (_ticking) return { skipped: true };
     _ticking = true;
     try {
+      // Re-evaluated every tick — never cached across calls, never decided
+      // once at construction time. Any outcome other than the exact boolean
+      // `true` fails closed: no dequeue, no claim, no row modified.
+      let dispatchOk = false;
+      let guardFailed = false;
+      try {
+        dispatchOk = await isDispatchEnabled();
+      } catch (_err) {
+        guardFailed = true;
+        dispatchOk = false;
+      }
+      if (dispatchOk !== true) {
+        stats.disabledTicks += 1;
+        return { disabled: true, reason: guardFailed ? 'dispatch_guard_error' : 'dispatch_disabled', results: [] };
+      }
+
       const claimed = await queue.dequeuePendingAcrossTenants({ limit });
       if (!claimed || !claimed.length) return { idle: true, results: [] };
 
@@ -150,7 +184,10 @@ function buildChannelQueueWorker({
    * rather than simulated.
    */
   function metrics() {
-    return { processed: stats.processed, completed: stats.completed, failed: stats.failures };
+    return {
+      processed: stats.processed, completed: stats.completed, failed: stats.failures,
+      disabledTicks: stats.disabledTicks
+    };
   }
 
   return { tick, start, stop, isRunning, metrics, stats, enabled };
