@@ -46,7 +46,11 @@ function fnBody(name, nextMarker) {
 }
 
 const DEQUEUE_BODY = fnBody('async dequeue()', 'async markProcessing(id)');
-const ACROSS_TENANTS_BODY = fnBody('async function dequeuePendingAcrossTenants', 'function buildDeadLetterStoreDb(');
+// Bounded at the next sibling function (Phase 66A-B2J added
+// markQueueCompletedForTenant/markQueueFailedForTenant directly after this
+// one, before buildDeadLetterStoreDb) so this body contains only
+// dequeuePendingAcrossTenants's own statements, not its neighbours'.
+const ACROSS_TENANTS_BODY = fnBody('async function dequeuePendingAcrossTenants', 'async function markQueueCompletedForTenant');
 
 // ---------------------------------------------------------------------------
 // dequeue() itself — unchanged signature, aligned due-ness predicate

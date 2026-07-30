@@ -296,6 +296,37 @@ async function dequeuePendingAcrossTenants({ pool, limit } = {}) {
   return claimed;
 }
 
+/**
+ * Phase 66A-B2J (P0-12 worker-plumbing prerequisite) — tenant-bound
+ * completion/failure for a row claimed via dequeuePendingAcrossTenants.
+ *
+ * That function's own per-tenant transaction already commits as soon as a
+ * row is claimed (status='PROCESSING'), so by the time a caller has the
+ * claimed row in hand to process it, no tenant context is open any more.
+ * channel_sync_queue_store is still FORCE RLS, so a later by-id UPDATE with
+ * no app.tenant_id bound would again silently affect zero rows — the same
+ * defect class dequeuePendingAcrossTenants itself was built to fix. These
+ * two functions open a fresh, single-purpose tenant-bound unit of work and
+ * call the ORIGINAL, unchanged markCompleted(id) / markFailed(id) inside
+ * it, exactly mirroring how dequeuePendingAcrossTenants reuses dequeue().
+ *
+ * The caller must already know the row's tenant_id (it is present on every
+ * row dequeue() ever returned) — these functions never infer or guess it.
+ */
+async function markQueueCompletedForTenant({ pool, tenantId, id }) {
+  need(pool);
+  return runWithTenantTransaction(pool, tenantId, (client) =>
+    buildSyncQueueStoreDb({ db: client }).markCompleted(id)
+  );
+}
+
+async function markQueueFailedForTenant({ pool, tenantId, id }) {
+  need(pool);
+  return runWithTenantTransaction(pool, tenantId, (client) =>
+    buildSyncQueueStoreDb({ db: client }).markFailed(id)
+  );
+}
+
 // ---- channel_dead_letter_store --------------------------------------------
 function buildDeadLetterStoreDb({ db }) {
   need(db);
@@ -403,6 +434,8 @@ module.exports = {
   buildChannelMappingStoreDb,
   buildSyncQueueStoreDb,
   dequeuePendingAcrossTenants,
+  markQueueCompletedForTenant,
+  markQueueFailedForTenant,
   buildDeadLetterStoreDb,
   buildSyncStateStoreDb,
   buildSyncLockStoreDb,

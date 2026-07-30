@@ -530,27 +530,57 @@ try {
 
 // Phase 24 B6 - durable queue worker (MOCK processor, NO OTA). Default OFF: starts only
 // when CHANNEL_WORKER_ENABLED=true. Infrastructure only; not wired to real processing.
+//
+// Phase 66A-B2J repair: the worker used to be handed either
+// channelPersistence.queue (whose methods it never actually matched — see
+// channelQueueWorker.js's own header) or a brand-new, disconnected
+// buildLeaseQueue() fallback. Both meant every tick() threw and the worker
+// processed zero jobs, silently. It is now handed a small adapter exposing
+// exactly the three methods channelQueueWorker.js depends on
+// (dequeuePendingAcrossTenants/markCompleted/markFailed). In 'db' persistence
+// mode this adapter routes through the tenant-bound
+// dequeuePendingAcrossTenants / markQueueCompletedForTenant /
+// markQueueFailedForTenant functions (dbStores.js, Phase 66A-B2I/B2J), which
+// discover due tenants via the verified SECURITY DEFINER resolver and claim/
+// complete/fail strictly inside each tenant's own RLS transaction. In every
+// other mode (memory, the default; or dual, memory-backed for reads) there is
+// no FORCE RLS to satisfy, so the adapter simply calls the existing memory
+// queue's own dequeue()/markCompleted(id)/markFailed(id) directly.
 if (require('./config/env').CHANNEL_WORKER_ENABLED === 'true') {
   try {
-    const { buildLeaseQueue } = require('./channel-manager/worker/leaseQueue');
     const { buildMockProcessor } = require('./channel-manager/worker/mockProcessor');
     const { buildChannelQueueWorker } = require('./channel-manager/worker/channelQueueWorker');
-    // Phase 63 P1-4: the worker used to be handed a BRAND-NEW buildLeaseQueue(),
-    // while the event spine above enqueues into channelPersistence.queue. The
-    // worker therefore polled an object nothing ever wrote to and processed
-    // zero jobs — silently, with no error and no dead-letter row. Bind it to
-    // the same queue the spine writes to.
-    const workerQueue = (channelPersistence && channelPersistence.queue) || buildLeaseQueue();
-    if (!(channelPersistence && channelPersistence.queue)) {
-      logger.warn('[boot] channel worker fell back to a private in-memory queue — the event spine queue is unavailable, so NO enqueued job will be processed');
+    const dbm = require('./channel-manager/persistence/dbStores');
+
+    const isDbBacked = !!(channelPersistence && channelPersistence.mode === 'db');
+    const memoryQueue = channelPersistence && channelPersistence.queue;
+
+    let workerQueueAdapter = null;
+    if (isDbBacked) {
+      workerQueueAdapter = {
+        dequeuePendingAcrossTenants: ({ limit } = {}) => dbm.dequeuePendingAcrossTenants({ pool: db.pool, limit }),
+        markCompleted: (tenantId, id) => dbm.markQueueCompletedForTenant({ pool: db.pool, tenantId, id }),
+        markFailed:    (tenantId, id) => dbm.markQueueFailedForTenant({ pool: db.pool, tenantId, id })
+      };
+    } else if (memoryQueue) {
+      workerQueueAdapter = {
+        dequeuePendingAcrossTenants: async () => { const row = await memoryQueue.dequeue(); return row ? [row] : []; },
+        markCompleted: (_tenantId, id) => memoryQueue.markCompleted(id),
+        markFailed:    (_tenantId, id) => memoryQueue.markFailed(id)
+      };
+    } else {
+      logger.warn('[boot] channel worker skipped — no channel persistence queue available');
     }
-    const channelWorker = buildChannelQueueWorker({
-      queue: workerQueue,
-      processor: buildMockProcessor(),
-      deadLetterStore: channelPersistence && channelPersistence.deadLetter,
-      enabled: true
-    });
-    channelWorker.start();
+
+    if (workerQueueAdapter) {
+      const channelWorker = buildChannelQueueWorker({
+        queue: workerQueueAdapter,
+        processor: buildMockProcessor(),
+        enabled: true
+      });
+      channelWorker.start();
+      logger.info({ mode: channelPersistence && channelPersistence.mode }, '[boot] channel queue worker ready');
+    }
   } catch (e) { logger.warn({ err: e }, '[boot] channel worker init skipped'); }
 } else {
   logger.info('[boot] channel queue worker disabled (CHANNEL_WORKER_ENABLED=false)');
