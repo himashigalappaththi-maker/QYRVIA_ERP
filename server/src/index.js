@@ -561,10 +561,12 @@ try {
 // dequeuePendingAcrossTenants / markQueueCompletedForTenant /
 // markQueueFailedForTenant functions (dbStores.js, Phase 66A-B2I/B2J), which
 // discover due tenants via the verified SECURITY DEFINER resolver and claim/
-// complete/fail strictly inside each tenant's own RLS transaction. In every
-// other mode (memory, the default; or dual, memory-backed for reads) there is
-// no FORCE RLS to satisfy, so the adapter simply calls the existing memory
-// queue's own dequeue()/markCompleted(id)/markFailed(id) directly.
+// complete/retry/dead-letter strictly inside each tenant's own RLS
+// transaction. In every other mode (memory, the default; or dual,
+// memory-backed for reads) there is no FORCE RLS to satisfy, so the adapter
+// simply calls the existing memory queue's own dequeue()/markCompleted(id)/
+// markFailed(id) directly (Phase 66A-B2M: the memory store has no retry/
+// dead-letter model, so both new transitions degrade to markFailed there).
 if (require('./config/env').CHANNEL_WORKER_ENABLED === 'true') {
   try {
     const { buildMockProcessor } = require('./channel-manager/worker/mockProcessor');
@@ -579,13 +581,24 @@ if (require('./config/env').CHANNEL_WORKER_ENABLED === 'true') {
       workerQueueAdapter = {
         dequeuePendingAcrossTenants: ({ limit } = {}) => dbm.dequeuePendingAcrossTenants({ pool: db.pool, limit }),
         markCompleted: (tenantId, id) => dbm.markQueueCompletedForTenant({ pool: db.pool, tenantId, id }),
-        markFailed:    (tenantId, id) => dbm.markQueueFailedForTenant({ pool: db.pool, tenantId, id })
+        // Phase 66A-B2M: markRetryScheduled/markDeadLetter replace markFailed
+        // as the worker's normal failure routing (durable retry + dead-letter
+        // handling under FORCE RLS — see channelQueueWorker.js's own header).
+        markRetryScheduled: (tenantId, id, nextRetryAt) => dbm.markQueueRetryScheduledForTenant({ pool: db.pool, tenantId, id, nextRetryAt }),
+        markDeadLetter:     (tenantId, id) => dbm.markQueueDeadLetterForTenant({ pool: db.pool, tenantId, id })
       };
     } else if (memoryQueue) {
+      // The in-memory queue store (channelSyncQueue.js) has no retry_count/
+      // next_retry_at persistence model at all — it was never the durable
+      // path this track builds out. Both new transitions degrade to the
+      // store's existing terminal markFailed(id), unchanged behavior for
+      // this already-out-of-scope fallback mode, disclosed rather than
+      // silently left broken.
       workerQueueAdapter = {
         dequeuePendingAcrossTenants: async () => { const row = await memoryQueue.dequeue(); return row ? [row] : []; },
         markCompleted: (_tenantId, id) => memoryQueue.markCompleted(id),
-        markFailed:    (_tenantId, id) => memoryQueue.markFailed(id)
+        markRetryScheduled: (_tenantId, id) => memoryQueue.markFailed(id),
+        markDeadLetter:     (_tenantId, id) => memoryQueue.markFailed(id)
       };
     } else {
       logger.warn('[boot] channel worker skipped — no channel persistence queue available');

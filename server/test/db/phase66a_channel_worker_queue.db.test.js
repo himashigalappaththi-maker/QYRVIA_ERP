@@ -13,15 +13,16 @@
  *
  * Proves:
  *   - the repaired worker (buildChannelQueueWorker + the real
- *     dequeuePendingAcrossTenants/markQueueCompletedForTenant/
- *     markQueueFailedForTenant adapter, exactly as wired at boot) claims
- *     eligible rows for two distinct tenants in one tick, correctly
- *     attributed, no cross-tenant leak;
+ *     dequeuePendingAcrossTenants/markQueueCompletedForTenant adapter,
+ *     exactly as wired at boot) claims eligible rows for two distinct
+ *     tenants in one tick, correctly attributed, no cross-tenant leak;
  *   - the mock processor is actually invoked for each claimed row;
  *   - a successful mock outcome reaches the persistent COMPLETED state;
  *   - a second, empty tick does not reprocess already-completed rows;
- *   - an injected mock-processor failure reaches the persistent FAILED
- *     state and is never marked completed;
+ *   - an injected mock-processor failure (Phase 66A-B2M: retryable by
+ *     default, budget remaining) schedules a durable retry — status
+ *     returns to PENDING with a future next_retry_at, retry_count
+ *     incremented exactly once — and is never marked completed;
  *   - the database security posture (roles, RLS/FORCE RLS, migration 0085's
  *     grants) is unchanged after all of the above.
  */
@@ -90,7 +91,10 @@ if (!URL) {
     return {
       dequeuePendingAcrossTenants: ({ limit } = {}) => dbm.dequeuePendingAcrossTenants({ pool, limit }),
       markCompleted: (tenantId, id) => dbm.markQueueCompletedForTenant({ pool, tenantId, id }),
-      markFailed:    (tenantId, id) => dbm.markQueueFailedForTenant({ pool, tenantId, id })
+      // Phase 66A-B2M: markRetryScheduled/markDeadLetter replace markFailed
+      // as the required contract.
+      markRetryScheduled: (tenantId, id, nextRetryAt) => dbm.markQueueRetryScheduledForTenant({ pool, tenantId, id, nextRetryAt }),
+      markDeadLetter:     (tenantId, id) => dbm.markQueueDeadLetterForTenant({ pool, tenantId, id })
     };
   }
 
@@ -149,7 +153,7 @@ if (!URL) {
     assert.equal(processCalls, 0, 'the mock processor must not be called when nothing is claimed');
   });
 
-  test('an injected mock-processor failure reaches the persistent FAILED state and is never marked completed', async () => {
+  test('an injected mock-processor failure (Phase 66A-B2M: retryable by default, budget remaining) schedules a durable retry and is never marked completed', async () => {
     const failId = await insertRow(tenantA, { reservationId: 'R-A-FAIL-' + crypto.randomBytes(3).toString('hex') });
 
     const processor = buildMockProcessor({ shouldFail: (job) => job.reservation_id.startsWith('R-A-FAIL-') });
@@ -158,11 +162,15 @@ if (!URL) {
 
     const claimed = result.results.find((r) => r.id === failId);
     assert.ok(claimed, 'the row was claimed and processed');
-    assert.equal(claimed.status, 'FAILED');
+    assert.equal(claimed.status, 'PENDING');
+    assert.equal(claimed.retryScheduled, true);
 
     const row = await fetchRow(tenantA, failId);
-    assert.equal(row.status, 'FAILED', 'the row reached the persistent FAILED state');
+    assert.equal(row.status, 'PENDING', 'the row returned to PENDING with a future next_retry_at (see migration 0086 header)');
+    assert.equal(row.retry_count, 1, 'retry_count incremented exactly once');
+    assert.ok(row.next_retry_at instanceof Date && row.next_retry_at.getTime() > Date.now(), 'next_retry_at is set in the future');
     assert.notEqual(row.status, 'COMPLETED', 'a failed mock outcome must never be marked completed');
+    assert.notEqual(row.status, 'DEAD_LETTER', 'a fresh row (retry_count=0) with budget remaining must not be dead-lettered');
   });
 
   test('database security posture is unchanged after a full mock worker cycle', async () => {

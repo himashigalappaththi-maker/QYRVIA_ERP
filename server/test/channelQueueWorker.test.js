@@ -1,24 +1,26 @@
 'use strict';
 
 /**
- * Phase 24 B6 / repaired Phase 66A-B2J / kill switch Phase 66A-B2K -
- * channel queue worker.
+ * Phase 24 B6 / repaired Phase 66A-B2J / kill switch Phase 66A-B2K / registry
+ * gate Phase 66A-B2L / durable retry & dead-letter Phase 66A-B2M — channel
+ * queue worker.
  *
- * Tests 1, 2 and 10 exercise leaseQueue.js and workerRetryPolicy.js directly
- * — both modules are unmodified by the Phase 66A-B2J repair and remain
- * correct, standalone in-memory utilities; they are just no longer the
- * queue channelQueueWorker.js depends on in production, so these tests
- * never construct a worker.
+ * Tests 1, 2 exercise leaseQueue.js directly — unmodified, standalone, no
+ * longer the queue channelQueueWorker.js depends on in production, so they
+ * never construct a worker. The retry-policy unit test near the end exercises
+ * workerRetryPolicy.js directly — also unmodified; channelQueueWorker.js now
+ * uses it as its DEFAULT retryPolicy (still fully overridable via the
+ * constructor for deterministic tests below).
  *
  * Every other test exercises buildChannelQueueWorker() itself, against a
- * small fake matching its three-method queue contract
- * (dequeuePendingAcrossTenants / markCompleted / markFailed) — the same
- * contract server/src/channel-manager/persistence/dbStores.js's
- * dequeuePendingAcrossTenants + markQueueCompletedForTenant +
- * markQueueFailedForTenant satisfy in db-persistence mode, and the memory
- * queue adapter built in src/index.js satisfies in memory mode — plus the
- * Phase 66A-B2K isDispatchEnabled guard, now a required constructor
- * argument. No database connection is opened anywhere in this file.
+ * small fake matching its Phase 66A-B2M FOUR-method queue contract
+ * (dequeuePendingAcrossTenants / markCompleted / markRetryScheduled /
+ * markDeadLetter) — the same contract server/src/channel-manager/persistence/
+ * dbStores.js's dequeuePendingAcrossTenants + markQueueCompletedForTenant +
+ * markQueueRetryScheduledForTenant + markQueueDeadLetterForTenant satisfy in
+ * db-persistence mode. markFailed is NO LONGER part of this contract — see
+ * channelQueueWorker.js's own header for why. No database connection is
+ * opened anywhere in this file.
  */
 
 process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://test:test@127.0.0.1:5432/test_db';
@@ -34,17 +36,21 @@ const { buildWorkerRetryPolicy, BACKOFF_MS } = require('../src/channel-manager/w
 
 /** The guard nearly every non-kill-switch test uses: dispatch always permitted. */
 const alwaysEnabled = () => true;
+/** A deterministic clock so next_retry_at math is exactly predictable. */
+const FIXED_NOW = 1_700_000_000_000;
+const fixedClock = () => FIXED_NOW;
 
 // ---------------------------------------------------------------------------
-// A fake matching channelQueueWorker's three-method queue contract.
-// `batches` is an array of arrays; each dequeuePendingAcrossTenants() call
-// consumes (shifts) the next one, or returns [] once exhausted — modelling
-// "this many rows were due across however many tenants, this poll".
+// A fake matching channelQueueWorker's Phase 66A-B2M four-method queue
+// contract. `batches` is an array of arrays; each dequeuePendingAcrossTenants()
+// call consumes (shifts) the next one, or returns [] once exhausted —
+// modelling "this many rows were due across however many tenants, this poll".
 // ---------------------------------------------------------------------------
 function fakeQueue(batches, { dequeueDelayMs = 0 } = {}) {
   const remaining = batches.map((b) => b.slice());
   const completedCalls = [];
-  const failedCalls = [];
+  const retryScheduledCalls = [];
+  const deadLetterCalls = [];
   let dequeueCalls = 0;
   return {
     async dequeuePendingAcrossTenants() {
@@ -53,14 +59,21 @@ function fakeQueue(batches, { dequeueDelayMs = 0 } = {}) {
       return remaining.length ? remaining.shift() : [];
     },
     async markCompleted(tenantId, id) { completedCalls.push({ tenantId, id }); return { id, status: 'COMPLETED' }; },
-    async markFailed(tenantId, id)    { failedCalls.push({ tenantId, id }); return { id, status: 'FAILED' }; },
-    completedCalls, failedCalls,
+    async markRetryScheduled(tenantId, id, nextRetryAt) {
+      retryScheduledCalls.push({ tenantId, id, nextRetryAt });
+      return { id, status: 'PENDING', next_retry_at: nextRetryAt };
+    },
+    async markDeadLetter(tenantId, id) {
+      deadLetterCalls.push({ tenantId, id });
+      return { id, status: 'DEAD_LETTER' };
+    },
+    completedCalls, retryScheduledCalls, deadLetterCalls,
     get dequeueCallCount() { return dequeueCalls; }
   };
 }
 
-const row = (id, tenantId = 't1', action = 'CREATE_BOOKING') =>
-  ({ id, tenant_id: tenantId, reservation_id: 'r-' + id, action, payload_json: {} });
+const row = (id, tenantId = 't1', { action = 'CREATE_BOOKING', retryCount = 0 } = {}) =>
+  ({ id, tenant_id: tenantId, reservation_id: 'r-' + id, action, payload_json: {}, retry_count: retryCount, max_retries: 4 });
 
 // ---- 1. lease acquisition (leaseQueue.js directly, unaffected) -------------
 test('lease acquisition: leaseNext claims one PENDING job; no double lease', () => {
@@ -95,30 +108,83 @@ test('successful mock processing marks the claimed row completed', async () => {
   assert.equal(r.idle, false);
   assert.deepEqual(r.results, [{ id: 'a', status: 'COMPLETED' }]);
   assert.deepEqual(queue.completedCalls, [{ tenantId: 't1', id: 'a' }]);
-  assert.deepEqual(queue.failedCalls, []);
+  assert.deepEqual(queue.retryScheduledCalls, []);
+  assert.deepEqual(queue.deadLetterCalls, []);
 });
 
-// ---- 4. failed mock processing uses the persistent failure path -----------
-test('failed mock processing uses markFailed, and completion is never called', async () => {
-  const queue = fakeQueue([[row('b')]]);
-  const processor = buildMockProcessor({ shouldFail: () => true });
-  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
+// ---- 4. a retryable failure with retries remaining schedules a retry ------
+test('failed mock processing with retries remaining schedules a retry, and completion/dead-letter are never called', async () => {
+  const queue = fakeQueue([[row('b', 't1', { retryCount: 0 })]]);
+  const processor = buildMockProcessor({ shouldFail: () => true }); // error: 'mock_failure' — not in the non-retryable whitelist
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false, clock: fixedClock });
 
   const r = await worker.tick();
-  assert.deepEqual(r.results, [{ id: 'b', status: 'FAILED' }]);
-  assert.deepEqual(queue.failedCalls, [{ tenantId: 't1', id: 'b' }]);
+  assert.deepEqual(r.results, [{ id: 'b', status: 'PENDING', retryScheduled: true }]);
+  assert.equal(queue.retryScheduledCalls.length, 1);
+  assert.equal(queue.retryScheduledCalls[0].tenantId, 't1');
+  assert.equal(queue.retryScheduledCalls[0].id, 'b');
+  assert.equal(queue.retryScheduledCalls[0].nextRetryAt.getTime(), FIXED_NOW + BACKOFF_MS[0]);
   assert.deepEqual(queue.completedCalls, [], 'completion must never be called after a processor failure');
+  assert.deepEqual(queue.deadLetterCalls, [], 'a retryable failure with budget remaining must not dead-letter');
 });
 
-test('a processor that throws is treated as a failure, not an unhandled rejection', async () => {
-  const queue = fakeQueue([[row('c')]]);
-  const processor = buildMockProcessor({ shouldFail: () => 'throw' });
-  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
+test('a retryable failure at the final allowed attempt is dead-lettered, not rescheduled again', async () => {
+  // BACKOFF_MS has length 4 (default max_retries): retry_count=4 means the
+  // resolver's own retry_count < max_retries filter would already treat this
+  // row as exhausted, so the worker must not schedule a 5th attempt.
+  const queue = fakeQueue([[row('b2', 't1', { retryCount: 4 })]]);
+  const processor = buildMockProcessor({ shouldFail: () => true });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false, clock: fixedClock });
 
   const r = await worker.tick();
-  assert.deepEqual(r.results, [{ id: 'c', status: 'FAILED' }]);
-  assert.deepEqual(queue.completedCalls, []);
+  assert.deepEqual(r.results, [{ id: 'b2', status: 'DEAD_LETTER' }]);
+  assert.deepEqual(queue.retryScheduledCalls, []);
+  assert.equal(queue.deadLetterCalls.length, 1);
+  assert.equal(queue.deadLetterCalls[0].id, 'b2');
 });
+
+test('a processor that throws is treated as a retryable failure (stable fallback classification), not an unhandled rejection', async () => {
+  const queue = fakeQueue([[row('c', 't1', { retryCount: 0 })]]);
+  const processor = buildMockProcessor({ shouldFail: () => 'throw' }); // error: 'mock_processor_threw'
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false, clock: fixedClock });
+
+  const r = await worker.tick();
+  assert.deepEqual(r.results, [{ id: 'c', status: 'PENDING', retryScheduled: true }]);
+  assert.deepEqual(queue.completedCalls, []);
+  assert.deepEqual(queue.deadLetterCalls, []);
+});
+
+// ---- unknown_action / no_provider_for_channel are non-retryable ------------
+test('a non-retryable failure code (unknown_action) is dead-lettered immediately, even on the very first attempt', async () => {
+  const queue = fakeQueue([[row('nr1', 't1', { retryCount: 0 })]]);
+  const processor = { async process() { return { ok: false, error: 'unknown_action' }; } };
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false, clock: fixedClock });
+
+  const r = await worker.tick();
+  assert.deepEqual(r.results, [{ id: 'nr1', status: 'DEAD_LETTER' }]);
+  assert.deepEqual(queue.retryScheduledCalls, [], 'a non-retryable failure must not consume a retry cycle');
+});
+
+for (const code of ['unknown_action', 'channel_required', 'tenant_required', 'no_provider_for_channel']) {
+  test(`non-retryable code ${code} dead-letters immediately`, async () => {
+    const queue = fakeQueue([[row('nr-' + code, 't1', { retryCount: 0 })]]);
+    const processor = { async process() { return { ok: false, error: code }; } };
+    const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false, clock: fixedClock });
+    const r = await worker.tick();
+    assert.equal(r.results[0].status, 'DEAD_LETTER');
+  });
+}
+
+for (const code of ['channel_disabled', 'transport_disabled', 'qtcn_dispatch_error', 'transport_error', 'mock_failure', 'some_uncategorized_error']) {
+  test(`retryable-by-default code ${code} schedules a retry when budget remains`, async () => {
+    const queue = fakeQueue([[row('rt-' + code, 't1', { retryCount: 0 })]]);
+    const processor = { async process() { return { ok: false, error: code }; } };
+    const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false, clock: fixedClock });
+    const r = await worker.tick();
+    assert.equal(r.results[0].status, 'PENDING');
+    assert.equal(r.results[0].retryScheduled, true);
+  });
+}
 
 // ---- 5. empty dequeue produces no processor call ---------------------------
 test('an empty dequeue result produces no processor call and reports idle', async () => {
@@ -188,21 +254,22 @@ test('worker enabled mode: start()/stop() manage the loop', () => {
 });
 
 // ---- metrics ----------------------------------------------------------------
-test('metrics: processed / completed / failed / disabledTicks session counters', async () => {
-  const queue = fakeQueue([[row('ok1'), row('bad')]]);
+test('metrics: processed / completed / retried / deadLettered / disabledTicks session counters', async () => {
+  const queue = fakeQueue([[row('ok1'), row('bad', 't1', { retryCount: 4 })]]);
   const processor = { async process(job) { return { ok: job.id !== 'bad' }; } };
-  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false, clock: fixedClock });
 
   await worker.tick();
   const m = worker.metrics();
   assert.equal(m.processed, 2);
   assert.equal(m.completed, 1);
-  assert.equal(m.failed, 1);
+  assert.equal(m.deadLettered, 1, 'the "bad" job was already at retry_count=4 (exhausted), so it dead-letters');
+  assert.equal(m.retried, 0);
   assert.equal(m.disabledTicks, 0);
 });
 
 // ---- constructor validation --------------------------------------------------
-test('buildChannelQueueWorker requires the three-method queue contract and isDispatchEnabled', () => {
+test('buildChannelQueueWorker requires the four-method queue contract and isDispatchEnabled', () => {
   assert.throws(() => buildChannelQueueWorker({ queue: {}, processor: buildMockProcessor(), isDispatchEnabled: alwaysEnabled }),
     /dequeuePendingAcrossTenants/);
   assert.throws(() => buildChannelQueueWorker({
@@ -211,7 +278,14 @@ test('buildChannelQueueWorker requires the three-method queue contract and isDis
   assert.throws(() => buildChannelQueueWorker({
     queue: { dequeuePendingAcrossTenants: async () => [], markCompleted: async () => {} },
     processor: buildMockProcessor(), isDispatchEnabled: alwaysEnabled
-  }), /markFailed/);
+  }), /markRetryScheduled/);
+  assert.throws(() => buildChannelQueueWorker({
+    queue: {
+      dequeuePendingAcrossTenants: async () => [], markCompleted: async () => {},
+      markRetryScheduled: async () => {}
+    },
+    processor: buildMockProcessor(), isDispatchEnabled: alwaysEnabled
+  }), /markDeadLetter/);
   assert.throws(() => buildChannelQueueWorker({
     queue: fakeQueue([[]]), processor: buildMockProcessor()
     // isDispatchEnabled omitted entirely
@@ -231,7 +305,8 @@ test('a disabled guard (false) returns the stable disabled result and claims not
   assert.deepEqual(r, { disabled: true, reason: 'dispatch_disabled', results: [] });
   assert.equal(queue.dequeueCallCount, 0, 'dequeuePendingAcrossTenants must never be called while disabled');
   assert.deepEqual(queue.completedCalls, []);
-  assert.deepEqual(queue.failedCalls, []);
+  assert.deepEqual(queue.retryScheduledCalls, []);
+  assert.deepEqual(queue.deadLetterCalls, []);
 });
 
 test('a disabled guard never calls processor.process', async () => {
@@ -308,12 +383,12 @@ test('an enabled guard preserves the existing mock-success path', async () => {
   assert.deepEqual(r.results, [{ id: 'ok', status: 'COMPLETED' }]);
 });
 
-test('an enabled guard preserves the existing mock-failure path', async () => {
+test('an enabled guard preserves the retryable-failure path', async () => {
   const queue = fakeQueue([[row('bad')]]);
   const processor = buildMockProcessor({ shouldFail: () => true });
-  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: () => true, enabled: false });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: () => true, enabled: false, clock: fixedClock });
   const r = await worker.tick();
-  assert.deepEqual(r.results, [{ id: 'bad', status: 'FAILED' }]);
+  assert.deepEqual(r.results, [{ id: 'bad', status: 'PENDING', retryScheduled: true }]);
 });
 
 test('the guard is re-evaluated on every tick — changing it between ticks changes behavior without reconstructing the worker', async () => {
@@ -380,48 +455,60 @@ test('retry policy: backoff schedule then stop', () => {
 
 // -----------------------------------------------------------------------------
 // Phase 66A-B2L: registry-denied ({ ok:false, skipped:true }) result routing.
-// The worker's own queue transition is UNCHANGED — a registry-denied result
-// still goes through the same, already-proven-safe markFailed() path as any
-// other { ok:false } result (see the file header). These tests prove only
-// that it is (a) never mistaken for success and (b) separately observable in
-// metrics from a genuine processor/transport failure.
+// Phase 66A-B2M changed WHAT queue transition a failure uses (retry-scheduled
+// or dead-lettered instead of a one-shot terminal FAILED), but a registry
+// denial is still classified retryable-by-default (see channelQueueWorker.js's
+// header) and is still separately observable via stats.registryDenied,
+// regardless of which of the two new transitions it ends up using.
 // -----------------------------------------------------------------------------
 
-test('a registry-denied ({ ok:false, skipped:true }) result uses markFailed, never markCompleted', async () => {
-  const queue = fakeQueue([[row('d')]]);
+test('a registry-denied ({ ok:false, skipped:true }) result with budget remaining schedules a retry, never marks completed', async () => {
+  const queue = fakeQueue([[row('d', 't1', { retryCount: 0 })]]);
   const processor = { async process() { return { ok: false, error: 'channel_disabled', skipped: true }; } };
-  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false, clock: fixedClock });
 
   const r = await worker.tick();
-  assert.deepEqual(r.results, [{ id: 'd', status: 'FAILED', skipped: true }]);
-  assert.deepEqual(queue.failedCalls, [{ tenantId: 't1', id: 'd' }]);
+  assert.deepEqual(r.results, [{ id: 'd', status: 'PENDING', retryScheduled: true, skipped: true }]);
+  assert.equal(queue.retryScheduledCalls.length, 1);
   assert.deepEqual(queue.completedCalls, [], 'registry-denied work must never be marked completed');
 });
 
-test('a registry-denied result increments stats.registryDenied, not stats.failures', async () => {
-  const queue = fakeQueue([[row('e')]]);
+test('a registry-denied result exhausted at max_retries is dead-lettered, still counted as registryDenied', async () => {
+  const queue = fakeQueue([[row('d2', 't1', { retryCount: 4 })]]);
   const processor = { async process() { return { ok: false, error: 'channel_disabled', skipped: true }; } };
-  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false, clock: fixedClock });
+
+  const r = await worker.tick();
+  assert.equal(r.results[0].status, 'DEAD_LETTER');
+  assert.equal(queue.deadLetterCalls.length, 1);
+  assert.equal(worker.metrics().registryDenied, 1);
+});
+
+test('a registry-denied result increments stats.registryDenied AND stats.retried when budget remains', async () => {
+  const queue = fakeQueue([[row('e', 't1', { retryCount: 0 })]]);
+  const processor = { async process() { return { ok: false, error: 'channel_disabled', skipped: true }; } };
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false, clock: fixedClock });
 
   await worker.tick();
   const m = worker.metrics();
   assert.equal(m.registryDenied, 1);
-  assert.equal(m.failed, 0);
+  assert.equal(m.retried, 1);
+  assert.equal(m.deadLettered, 0);
 });
 
-test('a genuine processor failure (ok:false, no skipped flag) increments stats.failures, not stats.registryDenied', async () => {
-  const queue = fakeQueue([[row('f')]]);
+test('a genuine retryable processor failure (ok:false, no skipped flag) increments stats.retried, not stats.registryDenied', async () => {
+  const queue = fakeQueue([[row('f', 't1', { retryCount: 0 })]]);
   const processor = { async process() { return { ok: false, error: 'transport_error' }; } };
-  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false, clock: fixedClock });
 
   await worker.tick();
   const m = worker.metrics();
-  assert.equal(m.failed, 1);
+  assert.equal(m.retried, 1);
   assert.equal(m.registryDenied, 0);
 });
 
-test('a mix of success, genuine failure and registry-denied rows is routed and counted independently', async () => {
-  const queue = fakeQueue([[row('ok'), row('bad'), row('denied')]]);
+test('a mix of success, genuine retryable failure and registry-denied rows is routed and counted independently', async () => {
+  const queue = fakeQueue([[row('ok', 't1', { retryCount: 0 }), row('bad', 't1', { retryCount: 0 }), row('denied', 't1', { retryCount: 0 })]]);
   const processor = {
     async process(job) {
       if (job.id === 'ok') return { ok: true, result: { mocked: true } };
@@ -429,19 +516,77 @@ test('a mix of success, genuine failure and registry-denied rows is routed and c
       return { ok: false, error: 'channel_disabled', skipped: true };
     }
   };
-  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false, clock: fixedClock });
 
   await worker.tick();
   const m = worker.metrics();
   assert.equal(m.completed, 1);
-  assert.equal(m.failed, 1);
+  assert.equal(m.retried, 2, 'both the genuine failure and the registry denial were retryable with budget remaining');
   assert.equal(m.registryDenied, 1);
   assert.deepEqual(queue.completedCalls, [{ tenantId: 't1', id: 'ok' }]);
-  assert.deepEqual(queue.failedCalls, [{ tenantId: 't1', id: 'bad' }, { tenantId: 't1', id: 'denied' }]);
+  assert.equal(queue.retryScheduledCalls.length, 2);
 });
 
-test('metrics() exposes registryDenied alongside processed/completed/failed/disabledTicks, starting at zero', () => {
+test('metrics() exposes registryDenied alongside processed/completed/retried/deadLettered/disabledTicks, starting at zero', () => {
   const queue = fakeQueue([[]]);
   const worker = buildChannelQueueWorker({ queue, processor: buildMockProcessor(), isDispatchEnabled: alwaysEnabled, enabled: false });
-  assert.equal(worker.metrics().registryDenied, 0);
+  const m = worker.metrics();
+  assert.equal(m.registryDenied, 0);
+  assert.equal(m.retried, 0);
+  assert.equal(m.deadLettered, 0);
+});
+
+// -----------------------------------------------------------------------------
+// Phase 66A-B2M: backoff computation and injected clock
+// -----------------------------------------------------------------------------
+
+test('next_retry_at is computed from the injected clock plus the retry policy\'s delayMs for the pre-increment retry_count', async () => {
+  // Only retry_count 0, 1, 2 still have budget remaining under max_retries=4
+  // ((retry_count+1) < max_retries) — retry_count=3 would dead-letter (see
+  // the dedicated exhaustion test above), not schedule a 4th attempt.
+  const queue = fakeQueue([[row('bo0', 't1', { retryCount: 0 }), row('bo1', 't1', { retryCount: 1 }), row('bo2', 't1', { retryCount: 2 })]]);
+  const processor = { async process() { return { ok: false, error: 'transport_error' }; } };
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false, clock: fixedClock });
+
+  await worker.tick();
+  assert.equal(queue.retryScheduledCalls.length, 3);
+  assert.equal(queue.retryScheduledCalls[0].nextRetryAt.getTime(), FIXED_NOW + BACKOFF_MS[0]);
+  assert.equal(queue.retryScheduledCalls[1].nextRetryAt.getTime(), FIXED_NOW + BACKOFF_MS[1]);
+  assert.equal(queue.retryScheduledCalls[2].nextRetryAt.getTime(), FIXED_NOW + BACKOFF_MS[2]);
+  assert.equal(queue.deadLetterCalls.length, 0);
+});
+
+test('a max_retries larger than the retryPolicy\'s own backoff schedule reuses the longest configured delay instead of a null delayMs', async () => {
+  // retryPolicy's default backoff has length 4 (indices 0-3); max_retries=6
+  // means budget is still open at retry_count=4, past the policy's own array
+  // bounds — the capped-index defense must reuse BACKOFF_MS[3], not crash.
+  const jobRow = { id: 'cap', tenant_id: 't1', reservation_id: 'r-cap', action: 'CREATE_BOOKING', payload_json: {}, retry_count: 4, max_retries: 6 };
+  const capQueue = fakeQueue([[jobRow]]);
+  const processor = { async process() { return { ok: false, error: 'transport_error' }; } };
+  const worker = buildChannelQueueWorker({ queue: capQueue, processor, isDispatchEnabled: alwaysEnabled, enabled: false, clock: fixedClock });
+
+  await worker.tick();
+  assert.equal(capQueue.retryScheduledCalls.length, 1);
+  assert.equal(capQueue.retryScheduledCalls[0].nextRetryAt.getTime(), FIXED_NOW + BACKOFF_MS[BACKOFF_MS.length - 1]);
+});
+
+test('a custom injected retryPolicy is honored instead of the default workerRetryPolicy', async () => {
+  const queue = fakeQueue([[row('custom', 't1', { retryCount: 0 })]]);
+  const processor = { async process() { return { ok: false, error: 'transport_error' }; } };
+  const customPolicy = { next: (n) => (n < 1 ? { retry: true, delayMs: 5000, attempt: n + 1 } : { retry: false, delayMs: null, attempt: n + 1 }) };
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false, clock: fixedClock, retryPolicy: customPolicy });
+
+  await worker.tick();
+  assert.equal(queue.retryScheduledCalls[0].nextRetryAt.getTime(), FIXED_NOW + 5000);
+});
+
+test('no retry ever sleeps — a full backoff cycle across several rows resolves synchronously fast', async () => {
+  const queue = fakeQueue([[row('s0', 't1', { retryCount: 0 }), row('s1', 't1', { retryCount: 1 }), row('s2', 't1', { retryCount: 2 })]]);
+  const processor = { async process() { return { ok: false, error: 'transport_error' }; } };
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false, clock: fixedClock });
+
+  const start = Date.now();
+  await worker.tick();
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 1000, 'a backoff of up to 60 minutes must never be spent actually sleeping (elapsed=' + elapsed + 'ms)');
 });

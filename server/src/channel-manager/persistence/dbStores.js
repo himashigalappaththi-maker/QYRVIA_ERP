@@ -191,6 +191,36 @@ function buildSyncQueueStoreDb({ db }) {
     async markProcessing(id) { const r = await db.query("UPDATE channel_sync_queue_store SET status='PROCESSING', updated_at=now() WHERE id=$1 RETURNING *", [id]); return r.rows[0] || null; },
     async markCompleted(id)  { const r = await db.query("UPDATE channel_sync_queue_store SET status='COMPLETED', updated_at=now() WHERE id=$1 RETURNING *", [id]); return r.rows[0] || null; },
     async markFailed(id)     { const r = await db.query("UPDATE channel_sync_queue_store SET status='FAILED', attempts=attempts+1, updated_at=now() WHERE id=$1 RETURNING *", [id]); return r.rows[0] || null; },
+    // Phase 66A-B2M: only a PROCESSING row may transition — a completed,
+    // dead-lettered or already-rescheduled row is never touched. Returns to
+    // PENDING (not a distinct RETRY_WAIT status — see migration 0086's own
+    // header for why) with next_retry_at in the future; the existing
+    // resolver/dequeue due-time predicates already exclude it until due.
+    async markRetryScheduled(id, nextRetryAt) {
+      const r = await db.query(
+        `UPDATE channel_sync_queue_store
+            SET status = 'PENDING', retry_count = retry_count + 1,
+                attempts = attempts + 1, next_retry_at = $2, updated_at = now()
+          WHERE id = $1 AND status = 'PROCESSING'
+        RETURNING *`,
+        [id, nextRetryAt]
+      );
+      return r.rows[0] || null;
+    },
+    // Terminal: retry_count is preserved exactly as-is (the number of retries
+    // already scheduled before this exhausting/non-retryable failure);
+    // next_retry_at is cleared since no further attempt will ever be made.
+    async markDeadLetter(id) {
+      const r = await db.query(
+        `UPDATE channel_sync_queue_store
+            SET status = 'DEAD_LETTER', attempts = attempts + 1,
+                next_retry_at = NULL, updated_at = now()
+          WHERE id = $1 AND status = 'PROCESSING'
+        RETURNING *`,
+        [id]
+      );
+      return r.rows[0] || null;
+    },
     async get(id) { const r = await db.query('SELECT * FROM channel_sync_queue_store WHERE id = $1', [id]); return r.rows[0] || null; },
     async list(status) {
       const r = status
@@ -327,6 +357,26 @@ async function markQueueFailedForTenant({ pool, tenantId, id }) {
   );
 }
 
+/**
+ * Phase 66A-B2M — tenant-bound retry-scheduling and dead-letter transitions,
+ * mirroring markQueueCompletedForTenant/markQueueFailedForTenant exactly: a
+ * fresh, single-purpose tenant-bound unit of work calling the ORIGINAL,
+ * unchanged markRetryScheduled(id, nextRetryAt) / markDeadLetter(id).
+ */
+async function markQueueRetryScheduledForTenant({ pool, tenantId, id, nextRetryAt }) {
+  need(pool);
+  return runWithTenantTransaction(pool, tenantId, (client) =>
+    buildSyncQueueStoreDb({ db: client }).markRetryScheduled(id, nextRetryAt)
+  );
+}
+
+async function markQueueDeadLetterForTenant({ pool, tenantId, id }) {
+  need(pool);
+  return runWithTenantTransaction(pool, tenantId, (client) =>
+    buildSyncQueueStoreDb({ db: client }).markDeadLetter(id)
+  );
+}
+
 // ---- channel_dead_letter_store --------------------------------------------
 function buildDeadLetterStoreDb({ db }) {
   need(db);
@@ -436,6 +486,8 @@ module.exports = {
   dequeuePendingAcrossTenants,
   markQueueCompletedForTenant,
   markQueueFailedForTenant,
+  markQueueRetryScheduledForTenant,
+  markQueueDeadLetterForTenant,
   buildDeadLetterStoreDb,
   buildSyncStateStoreDb,
   buildSyncLockStoreDb,

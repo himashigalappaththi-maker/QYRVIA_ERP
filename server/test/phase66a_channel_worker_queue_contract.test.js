@@ -50,10 +50,11 @@ const INDEX_CODE  = stripComments(INDEX_SOURCE);
 // The repaired worker's own contract
 // ---------------------------------------------------------------------------
 
-test('channelQueueWorker requires queue.dequeuePendingAcrossTenants, markCompleted and markFailed', () => {
+test('channelQueueWorker requires queue.dequeuePendingAcrossTenants, markCompleted, markRetryScheduled and markDeadLetter (Phase 66A-B2M: markFailed dropped from the required contract)', () => {
   assert.match(WORKER_CODE, /typeof queue\.dequeuePendingAcrossTenants !== 'function'/);
   assert.match(WORKER_CODE, /typeof queue\.markCompleted !== 'function'/);
-  assert.match(WORKER_CODE, /typeof queue\.markFailed !== 'function'/);
+  assert.match(WORKER_CODE, /typeof queue\.markRetryScheduled !== 'function'/);
+  assert.match(WORKER_CODE, /typeof queue\.markDeadLetter !== 'function'/);
 });
 
 test('tick() calls queue.dequeuePendingAcrossTenants exactly once per invocation', () => {
@@ -64,21 +65,28 @@ test('tick() calls queue.dequeuePendingAcrossTenants exactly once per invocation
   assert.equal(calls.length, 1);
 });
 
-test('tick() calls queue.markCompleted on success and queue.markFailed on failure', () => {
+test('tick() calls queue.markCompleted on success, queue.markRetryScheduled on a bounded retryable failure, and queue.markDeadLetter on exhaustion/non-retryable failure', () => {
   assert.match(WORKER_CODE, /queue\.markCompleted\(job\.tenant_id, job\.id\)/);
-  assert.match(WORKER_CODE, /queue\.markFailed\(job\.tenant_id, job\.id\)/);
+  assert.match(WORKER_CODE, /queue\.markRetryScheduled\(job\.tenant_id, job\.id, nextRetryAt\)/);
+  assert.match(WORKER_CODE, /queue\.markDeadLetter\(job\.tenant_id, job\.id\)/);
+  assert.ok(!/queue\.markFailed\(/.test(WORKER_CODE), 'markFailed must no longer be this worker\'s failure routing target (Phase 66A-B2M)');
 });
 
-test('no incompatible leaseQueue-only method is called anywhere in the worker', () => {
-  for (const removed of ['recoverExpired', 'leaseNext', 'markFailedRetry', 'markDeadLetter', 'counts']) {
+test('no incompatible leaseQueue-only method (lease/count tracking) is called anywhere in the worker', () => {
+  // markDeadLetter is now a legitimate, intentional part of this worker's own
+  // Phase 66A-B2M contract (dbStores.js's markDeadLetter/markQueueDeadLetterForTenant) —
+  // it is deliberately excluded from this forbidden list, unlike the
+  // lease-tracking-only methods below, which still have no compatible
+  // persistence implementation.
+  for (const removed of ['recoverExpired', 'leaseNext', 'markFailedRetry', 'counts']) {
     assert.ok(!new RegExp('queue\\.' + removed + '\\b').test(WORKER_CODE),
       'queue.' + removed + '() must not be called — no compatible persistence implementation exists');
   }
 });
 
-test('the worker no longer requires leaseQueue.js, workerRetryPolicy.js or a deadLetterStore dependency', () => {
+test('the worker no longer requires leaseQueue.js or a deadLetterStore dependency; it now uses workerRetryPolicy.js as its default backoff policy (Phase 66A-B2M)', () => {
   assert.ok(!/require\(['"]\.\/leaseQueue['"]\)/.test(WORKER_CODE));
-  assert.ok(!/require\(['"]\.\/workerRetryPolicy['"]\)/.test(WORKER_CODE));
+  assert.match(WORKER_CODE, /require\(['"]\.\/workerRetryPolicy['"]\)/);
   assert.ok(!/deadLetterStore/.test(WORKER_CODE));
 });
 
@@ -135,16 +143,18 @@ test('the boot path selects buildMockProcessor by default; buildRealProcessor is
   assert.ok(realCtorIdx > realGateIdx, 'buildRealProcessor must only be constructed after the real-mode gate');
 });
 
-test('the boot path builds a queue adapter exposing exactly the three required methods', () => {
+test('the boot path builds a queue adapter exposing exactly the four required methods (Phase 66A-B2M: markRetryScheduled/markDeadLetter replace markFailed)', () => {
   assert.match(BOOT_BLOCK, /dequeuePendingAcrossTenants:/);
   assert.match(BOOT_BLOCK, /markCompleted:/);
-  assert.match(BOOT_BLOCK, /markFailed:/);
+  assert.match(BOOT_BLOCK, /markRetryScheduled:/);
+  assert.match(BOOT_BLOCK, /markDeadLetter:/);
 });
 
 test('the db-mode adapter routes through the tenant-bound dbStores functions, not a bare pool call', () => {
   assert.match(BOOT_BLOCK, /dbm\.dequeuePendingAcrossTenants\(\{ pool: db\.pool, limit \}\)/);
   assert.match(BOOT_BLOCK, /dbm\.markQueueCompletedForTenant\(\{ pool: db\.pool, tenantId, id \}\)/);
-  assert.match(BOOT_BLOCK, /dbm\.markQueueFailedForTenant\(\{ pool: db\.pool, tenantId, id \}\)/);
+  assert.match(BOOT_BLOCK, /dbm\.markQueueRetryScheduledForTenant\(\{ pool: db\.pool, tenantId, id, nextRetryAt \}\)/);
+  assert.match(BOOT_BLOCK, /dbm\.markQueueDeadLetterForTenant\(\{ pool: db\.pool, tenantId, id \}\)/);
 });
 
 test('the db-mode adapter is selected only when channelPersistence.mode is exactly \'db\'', () => {

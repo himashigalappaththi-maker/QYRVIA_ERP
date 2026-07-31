@@ -89,7 +89,12 @@ if (!URL) {
     return {
       dequeuePendingAcrossTenants: ({ limit } = {}) => dbm.dequeuePendingAcrossTenants({ pool, limit }),
       markCompleted: (tenantId, id) => dbm.markQueueCompletedForTenant({ pool, tenantId, id }),
-      markFailed:    (tenantId, id) => dbm.markQueueFailedForTenant({ pool, tenantId, id })
+      // Phase 66A-B2M: markRetryScheduled/markDeadLetter replace markFailed
+      // as the required contract; unused by this file's own tests (every
+      // processor here returns ok:true), present only to satisfy the
+      // worker's constructor validation, exactly like the production adapter.
+      markRetryScheduled: (tenantId, id, nextRetryAt) => dbm.markQueueRetryScheduledForTenant({ pool, tenantId, id, nextRetryAt }),
+      markDeadLetter:     (tenantId, id) => dbm.markQueueDeadLetterForTenant({ pool, tenantId, id })
     };
   }
 

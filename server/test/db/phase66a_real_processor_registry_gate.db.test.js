@@ -24,16 +24,18 @@
  *   - the existing mock cycle is unaffected by this phase, and the fake
  *     "real" adapter is never touched while mock mode is selected;
  *   - a disabled/absent registry record denies dispatch: zero adapter calls,
- *     the row is never completed, and it reaches the same terminal FAILED
- *     state as any other processor failure (the one safe existing
- *     transition established at discovery — no new state was invented);
+ *     the row is never completed, and — per Phase 66A-B2M — a fresh row
+ *     with retry budget remaining schedules a bounded, durable retry
+ *     (status returns to PENDING with a future next_retry_at) rather than a
+ *     one-shot terminal FAILED;
  *   - an enabled registry record authorizes exactly one adapter call and the
  *     row reaches COMPLETED, correctly attributed to its own tenant/channel;
  *   - a second, empty tick does not redispatch;
  *   - registry authorization is re-evaluated per job — disabling the
  *     registry between two claimed rows blocks only the second;
- *   - a genuine adapter failure (registry-authorized) still reaches FAILED,
- *     distinct in cause from a registry denial;
+ *   - a genuine adapter failure (registry-authorized) schedules the same
+ *     bounded retry, distinguishable in cause from a registry denial only
+ *     via the absent `skipped` flag — never via a different queue state;
  *   - the database security posture is unchanged after all of the above.
  */
 
@@ -102,7 +104,10 @@ if (!URL) {
     return {
       dequeuePendingAcrossTenants: ({ limit } = {}) => dbm.dequeuePendingAcrossTenants({ pool, limit }),
       markCompleted: (tenantId, id) => dbm.markQueueCompletedForTenant({ pool, tenantId, id }),
-      markFailed:    (tenantId, id) => dbm.markQueueFailedForTenant({ pool, tenantId, id })
+      // Phase 66A-B2M: markRetryScheduled/markDeadLetter replace markFailed
+      // as the required contract.
+      markRetryScheduled: (tenantId, id, nextRetryAt) => dbm.markQueueRetryScheduledForTenant({ pool, tenantId, id, nextRetryAt }),
+      markDeadLetter:     (tenantId, id) => dbm.markQueueDeadLetterForTenant({ pool, tenantId, id })
     };
   }
 
@@ -210,7 +215,7 @@ if (!URL) {
   // ---------------------------------------------------------------------
   // 3. REAL MODE — REGISTRY DISABLED
   // ---------------------------------------------------------------------
-  test('master dispatch true, real mode, registry disabled: zero adapter calls, row never completed, safe FAILED outcome', async () => {
+  test('master dispatch true, real mode, registry disabled: zero adapter calls, row never completed, safe bounded-retry outcome (Phase 66A-B2M)', async () => {
     const id = await insertRow(tenantA, { reservationId: 'R-DENY-' + crypto.randomBytes(3).toString('hex') });
     const registry = makeFakeRegistry({ [tenantA.tenantId]: { QYRVIA_CONNECT: false } });
     const qtcn = makeFakeQtcnTransport();
@@ -221,13 +226,16 @@ if (!URL) {
 
     const claimed = result.results.find((r) => r.id === id);
     assert.ok(claimed, 'the row was claimed (dispatch was enabled) but the processor denied it');
-    assert.equal(claimed.status, 'FAILED');
+    assert.equal(claimed.status, 'PENDING');
+    assert.equal(claimed.retryScheduled, true);
     assert.equal(claimed.skipped, true);
     assert.equal(qtcn.calls.length, 0, 'no external call for a registry-denied channel');
 
     const row = await fetchRow(tenantA, id);
-    assert.equal(row.status, 'FAILED');
+    assert.equal(row.status, 'PENDING', 'a fresh row (retry_count=0) with budget remaining schedules a bounded retry, not a terminal state');
+    assert.equal(row.retry_count, 1);
     assert.notEqual(row.status, 'COMPLETED', 'registry-denied work must never be marked completed');
+    assert.notEqual(row.status, 'DEAD_LETTER', 'not yet exhausted');
   });
 
   // ---------------------------------------------------------------------
@@ -293,20 +301,22 @@ if (!URL) {
     const claimedSecond = result.results.find((r) => r.id === idSecond);
     assert.ok(claimedFirst && claimedSecond, 'both rows (one per tenant) were claimed this tick');
     assert.equal(claimedFirst.status, 'COMPLETED', 'tenant A dispatched before the registry flipped');
-    assert.equal(claimedSecond.status, 'FAILED');
+    assert.equal(claimedSecond.status, 'PENDING');
+    assert.equal(claimedSecond.retryScheduled, true);
     assert.equal(claimedSecond.skipped, true, 'tenant B was denied by the same-tick registry flip');
     assert.equal(qtcn.calls.length, 1, 'only the authorized row ever reached the transport');
 
     const rowA = await fetchRow(tenantA, idFirst);
     const rowB = await fetchRow(tenantB, idSecond);
     assert.equal(rowA.status, 'COMPLETED');
-    assert.equal(rowB.status, 'FAILED');
+    assert.equal(rowB.status, 'PENDING', 'tenant B\'s denied row schedules a bounded retry (Phase 66A-B2M), not a terminal state');
+    assert.equal(rowB.retry_count, 1);
   });
 
   // ---------------------------------------------------------------------
   // 6. GENUINE ADAPTER FAILURE (registry-authorized) — distinct from denial
   // ---------------------------------------------------------------------
-  test('registry-authorized row with a genuine adapter failure reaches FAILED, distinct from a registry denial', async () => {
+  test('registry-authorized row with a genuine adapter failure schedules a bounded retry (Phase 66A-B2M), distinct from a registry denial', async () => {
     const id = await insertRow(tenantA, { reservationId: 'R-ADAPTERFAIL-' + crypto.randomBytes(3).toString('hex') });
     const registry = makeFakeRegistry({ [tenantA.tenantId]: { QYRVIA_CONNECT: true } });
     const qtcn = makeFakeQtcnTransport(() => ({ ok: false, error: 'fake_upstream_error' }));
@@ -317,12 +327,14 @@ if (!URL) {
 
     const claimed = result.results.find((r) => r.id === id);
     assert.ok(claimed);
-    assert.equal(claimed.status, 'FAILED');
+    assert.equal(claimed.status, 'PENDING');
+    assert.equal(claimed.retryScheduled, true);
     assert.equal(claimed.skipped, undefined, 'a genuine adapter failure must not carry the registry-denial skipped flag');
     assert.equal(qtcn.calls.length, 1, 'the adapter WAS called - it just failed');
 
     const row = await fetchRow(tenantA, id);
-    assert.equal(row.status, 'FAILED');
+    assert.equal(row.status, 'PENDING');
+    assert.equal(row.retry_count, 1);
   });
 
   // ---------------------------------------------------------------------
