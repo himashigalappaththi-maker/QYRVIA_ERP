@@ -80,7 +80,7 @@ function build(deps = {}) {
   router.use('/incidents',      ...protectedChain, incidentsRouterMod.build(deps));      // Phase 59: incident reporting
   router.use('/maintenance',    ...protectedChain, maintenanceRouterMod.build(deps));    // Phase 59: maintenance work orders
   router.use('/attendance',     ...protectedChain, attendanceRouterMod.build(deps));     // Phase 59: event-based attendance
-  router.use('/ari',            ...protectedChain, ariRouterMod.build({ ariService: deps.ariService, ariStore: deps.ariStore })); // Phase 52: ARI management API
+  router.use('/ari',            ...protectedChain, ariRouterMod.build({ ariService: deps.ariService, ariStore: deps.ariStore, pool: deps.ariPool })); // Phase 52: ARI management API; Phase 66A-B2N-A: pool for tenant-bound writes
 
   return router;
 }

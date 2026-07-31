@@ -1,16 +1,28 @@
 'use strict';
 
 /**
- * D4 — ARI inventory adjuster (Phase 52).
+ * D4 — ARI inventory adjuster (Phase 52; tenant-transaction-bound Phase 66A-B2N-A).
  *
- * Factory: buildAriInventoryAdjuster({ ariStore })
+ * Factory: buildAriInventoryAdjuster({ withAriStore })
  * Returns object: { async adjustSold({ tenantId, propertyId, roomTypeId, arrival, departure, delta }) }
  *
- * Loops over each night in [arrival, departure) and calls ariStore.adjustSold() per night.
- * If ariStore.adjustSold() returns null for a night (sold floor guard — sold already at 0
- * and a decrement would go negative), logs a warning but continues processing remaining nights.
+ * `withAriStore(tenantId, callback)` is an opaque, injected function — this
+ * file has no idea it is backed by runWithTenantTransaction or what an ARI
+ * store even looks like beyond `.adjustSold(...)`. The real implementation
+ * (src/ari/store/tenantAriStore.js's withTenantAriStore, curried with the
+ * boot pool) is wired in at src/index.js.
  *
- * IMPORTANT: Must NOT require from ari/ — ariStore is injected as an opaque object.
+ * Loops over each night in [arrival, departure) and calls store.adjustSold()
+ * per night, ALL inside the ONE unit of work withAriStore opens — Phase
+ * 66A-B2N-A's atomicity invariant: a failure on any night rolls back every
+ * earlier night in the same multi-night adjustment (no partial commit). If
+ * store.adjustSold() returns null for a night (sold floor guard — sold
+ * already at 0 and a decrement would go negative), that is a normal,
+ * successful query result, not an error: it logs a warning and the loop
+ * continues to the remaining nights within the same transaction.
+ *
+ * IMPORTANT: Must NOT require from ari/ — withAriStore is injected as an
+ * opaque function, and the store it hands back is used as an opaque object.
  *
  * Night iteration: from arrival (inclusive) to departure (exclusive), ISO YYYY-MM-DD per night.
  */
@@ -33,26 +45,32 @@ function nightDates(arrival, departure) {
   return out;
 }
 
-function buildAriInventoryAdjuster({ ariStore } = {}) {
-  if (!ariStore || typeof ariStore.adjustSold !== 'function') {
-    throw new Error('buildAriInventoryAdjuster: ariStore with adjustSold() required');
+function buildAriInventoryAdjuster({ withAriStore } = {}) {
+  if (typeof withAriStore !== 'function') {
+    throw new Error('buildAriInventoryAdjuster: withAriStore(tenantId, callback) required');
   }
 
   return {
     async adjustSold({ tenantId, propertyId, roomTypeId, arrival, departure, delta }) {
       const dates = nightDates(arrival, departure);
-      for (const date of dates) {
-        try {
+      if (!dates.length) return;
+
+      // ONE unit of work for every night in the stay — a thrown error on any
+      // night propagates out of this callback, so withAriStore rolls back
+      // EVERY night already applied in this same call. No per-night
+      // try/catch-and-continue: that was the pre-B2N-A behavior and is
+      // exactly the non-atomic pattern this phase removes.
+      await withAriStore(tenantId, async (ariStore) => {
+        for (const date of dates) {
           const result = await ariStore.adjustSold({ tenant_id: tenantId, propertyId, roomTypeId, date, delta });
           if (result === null) {
-            // sold floor guard: sold already at 0, double-decrement prevented
-            logger.warn({ tenantId, propertyId, roomTypeId, date, delta }, '[ariInventoryAdjuster] adjustSold returned null (floor guard) — continuing');
+            // sold floor guard: sold already at 0, double-decrement prevented.
+            // This is a successful query with zero matching rows, not an
+            // error — it does not roll back the nights already applied.
+            logger.warn({ tenantId, propertyId, roomTypeId, date, delta }, '[ariInventoryAdjuster] adjustSold returned null (floor guard) — continuing within the same transaction');
           }
-        } catch (err) {
-          logger.error({ err, tenantId, propertyId, roomTypeId, date, delta }, '[ariInventoryAdjuster] adjustSold error for night');
-          // Continue to remaining nights — partial success is better than none
         }
-      }
+      });
     }
   };
 }

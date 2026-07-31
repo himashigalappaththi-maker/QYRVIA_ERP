@@ -299,6 +299,13 @@ const { buildPaymentAttemptLogDb }     = require('./payment/paymentAttemptLogDb'
 let ariDbStore = null;
 let ariService = null;
 try {
+  // Phase 66A-B2N-A: this single instance remains bound to the boot-time
+  // bare pool and is kept ONLY for the pre-existing READ paths (ariService,
+  // the booking-engine's rate resolver/availability provider, and this
+  // router's own GET handlers) — none of those are in this phase's
+  // authorized scope to change, so their behavior is preserved exactly as
+  // before, not worsened. Every ARI WRITE path below now goes through
+  // withTenantAriStore instead of this instance.
   ariDbStore = buildDbAriStore({ db: obsPool });
   ariService = buildAriService({ store: ariDbStore });
   logger.info('[boot] ARI store + service ready');
@@ -369,7 +376,16 @@ try {
   try {
     if (ariService) ariRateResolver = buildAriRateResolver({ ariService });
     if (ariService) ariAvailabilityProvider = buildAriAvailabilityProvider({ ariService });
-    if (ariDbStore) ariInventoryAdjuster = buildAriInventoryAdjuster({ ariStore: ariDbStore });
+    // Phase 66A-B2N-A: the adjuster no longer receives the bare-pool-bound
+    // ariDbStore. It receives an opaque withAriStore(tenantId, callback)
+    // function (curried with obsPool) so every adjustSold() call — including
+    // every night of a multi-night stay — runs inside one tenant-bound
+    // transaction via src/ari/store/tenantAriStore.js's withTenantAriStore.
+    if (obsPool) {
+      const { withTenantAriStore } = require('./ari/store/tenantAriStore');
+      const withAriStore = (tenantId, callback) => withTenantAriStore(obsPool, tenantId, callback);
+      ariInventoryAdjuster = buildAriInventoryAdjuster({ withAriStore });
+    }
   } catch (e) { logger.warn({ err: e }, '[boot] ARI booking-engine adapters init skipped'); }
 
   // Phase 56: confirmation delivery service (persistent outbox).
@@ -812,7 +828,8 @@ const app = createApp({
   revenue,
   platform,
   ariService,     // Phase 52: ARI management API + booking engine pricing
-  ariStore: ariDbStore, // Phase 52: ARI inventory grid writes
+  ariStore: ariDbStore, // Phase 52: ARI inventory grid reads (write paths moved off this instance, Phase 66A-B2N-A)
+  ariPool: obsPool, // Phase 66A-B2N-A: tenant-bound transaction pool for ARI write endpoints
   makeAuthEvent,
   // Phase 57: commercial SaaS identity
   invitationService,

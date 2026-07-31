@@ -61,7 +61,13 @@ test('GET /ari/room-types -> 200 with list', async () => {
 
 test('POST /ari/room-types: upserts and returns room type row', async () => {
   const store = buildSeededStore();
-  const h = buildAriHandlers({ ariStore: store });
+  // Phase 66A-B2N-A: write handlers now require an opaque withAriStore(tenantId,
+  // callback) (or a real `pool`) to open a tenant-bound transaction. This fake
+  // models "one unit of work" by invoking the callback with the same seeded
+  // in-memory store, so the test's existing intent (does the handler call
+  // through to the store and shape the response correctly?) is unaffected.
+  const withAriStore = (tenantId, callback) => callback(store);
+  const h = buildAriHandlers({ ariStore: store, withAriStore });
   const res = fakeRes();
   await h.upsertRoomType(
     fakeReq({

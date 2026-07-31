@@ -7,17 +7,23 @@
  * All routes require authentication + identityContext (supplied by protectedChain in api.js).
  * RBAC: read endpoints require pms.ari.read; write endpoints require pms.ari.write.
  *
- * If ariService/ariStore are absent, returns an empty router that still processes
- * requests (handlers return graceful ari_not_configured responses).
+ * If ariService/ariStore/pool are absent, returns a router that still
+ * processes requests (handlers return graceful ari_not_configured responses).
+ *
+ * Phase 66A-B2N-A: `pool` is required for the WRITE endpoints (room-types,
+ * rate-plans, inventory/cell, inventory/adjust-sold, rate-rules,
+ * restriction-rules POST routes) — each now opens its own tenant-bound
+ * transaction via ari.handlers.js's withTenantAriStore instead of writing
+ * through the ariStore singleton. Read endpoints are unaffected.
  */
 
 const express = require('express');
 const { requirePermission } = require('../../middleware/authorization');
 const { buildAriHandlers } = require('./ari.handlers');
 
-function build({ ariService, ariStore } = {}) {
+function build({ ariService, ariStore, pool, withAriStore } = {}) {
   const router = express.Router();
-  const h = buildAriHandlers({ ariService, ariStore });
+  const h = buildAriHandlers({ ariService, ariStore, pool, withAriStore });
 
   // Room types
   router.get('/room-types',        requirePermission('pms.ari.read'),  h.listRoomTypes);

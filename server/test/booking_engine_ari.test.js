@@ -362,8 +362,12 @@ test('ariInventoryAdjuster: iterates each night in [arrival, departure) and call
   const fakeStore = {
     async adjustSold(args) { adjCalls.push({ ...args }); return { sold: 1, version: 1 }; }
   };
+  // Phase 66A-B2N-A: the adjuster now receives an opaque withAriStore(tenantId,
+  // callback) instead of a raw ariStore — this fake models "one unit of work"
+  // by simply invoking the callback with the fake store directly.
+  const withAriStore = (tenantId, callback) => callback(fakeStore);
 
-  const adjuster = buildAriInventoryAdjuster({ ariStore: fakeStore });
+  const adjuster = buildAriInventoryAdjuster({ withAriStore });
   await adjuster.adjustSold({
     tenantId: 't1', propertyId: 'p1', roomTypeId: 'rt1',
     arrival: '2026-08-01', departure: '2026-08-04', // 3 nights
@@ -381,8 +385,9 @@ test('ariInventoryAdjuster: null return per night (floor guard) is logged but do
   const fakeStore = {
     async adjustSold() { return null; } // floor guard
   };
+  const withAriStore = (tenantId, callback) => callback(fakeStore);
 
-  const adjuster = buildAriInventoryAdjuster({ ariStore: fakeStore });
+  const adjuster = buildAriInventoryAdjuster({ withAriStore });
   // Must not throw
   await assert.doesNotReject(() => adjuster.adjustSold({
     tenantId: 't1', propertyId: 'p1', roomTypeId: 'rt1',

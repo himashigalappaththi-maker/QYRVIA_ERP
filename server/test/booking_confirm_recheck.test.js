@@ -159,7 +159,13 @@ test('confirmBooking concurrent: ceiling guard prevents oversell beyond physical
   ariStore.putInventoryCell({ propertyId: 'p1', roomTypeId: 'rt1', date: '2026-08-02', physical: 1, sold: 0, blocked: 0 });
 
   const { buildAriInventoryAdjuster } = require('../src/booking-engine/ariInventoryAdjuster');
-  const adjuster = buildAriInventoryAdjuster({ ariStore });
+  // Phase 66A-B2N-A: the adjuster now receives an opaque withAriStore(tenantId,
+  // callback) instead of a raw ariStore — this fake models "one unit of work"
+  // by simply invoking the callback with the same shared memory store, so the
+  // ceiling-guard-across-concurrent-confirms behavior this test exercises is
+  // unaffected.
+  const withAriStore = (tenantId, callback) => callback(ariStore);
+  const adjuster = buildAriInventoryAdjuster({ withAriStore });
 
   const stateStore = buildPaymentStateStoreMemory();
   const attemptLog = buildPaymentAttemptLogMemory();
