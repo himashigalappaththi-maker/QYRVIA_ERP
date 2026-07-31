@@ -102,10 +102,9 @@ test('the worker file contains no network-capable call and no realProcessor/CHAN
   assert.ok(!/channelRegistry/.test(WORKER_CODE));
 });
 
-test('realProcessor.js exists but is not imported by the worker or the boot path', () => {
-  assert.ok(fs.existsSync(REALPROC_PATH), 'realProcessor.js should still exist, untouched');
-  assert.ok(!/require\([^)]*realProcessor/i.test(WORKER_CODE));
-  assert.ok(!/require\([^)]*realProcessor/i.test(INDEX_CODE));
+test('realProcessor.js exists and is never imported by the worker file itself (Phase 66A-B2L wires it conditionally into index.js instead)', () => {
+  assert.ok(fs.existsSync(REALPROC_PATH), 'realProcessor.js should still exist');
+  assert.ok(!/require\([^)]*realProcessor/i.test(WORKER_CODE), 'channelQueueWorker.js must stay processor-agnostic');
 });
 
 test('leaseQueue.js exists and is untouched by this phase (still a valid standalone module)', () => {
@@ -128,9 +127,12 @@ function channelWorkerBootBlock() {
 }
 const BOOT_BLOCK = channelWorkerBootBlock();
 
-test('the boot path constructs the worker with buildMockProcessor() only', () => {
+test('the boot path selects buildMockProcessor by default; buildRealProcessor is constructed only inside the explicit CHANNEL_WORKER_REAL real-mode branch added in Phase 66A-B2L', () => {
   assert.match(BOOT_BLOCK, /buildMockProcessor\(\)/);
-  assert.ok(!/buildRealProcessor/.test(BOOT_BLOCK));
+  const realGateIdx = BOOT_BLOCK.search(/CHANNEL_WORKER_REAL === 'true'/);
+  const realCtorIdx = BOOT_BLOCK.search(/buildRealProcessor\(/);
+  assert.ok(realGateIdx >= 0, 'expected an explicit CHANNEL_WORKER_REAL === \'true\' check');
+  assert.ok(realCtorIdx > realGateIdx, 'buildRealProcessor must only be constructed after the real-mode gate');
 });
 
 test('the boot path builds a queue adapter exposing exactly the three required methods', () => {
@@ -149,8 +151,8 @@ test('the db-mode adapter is selected only when channelPersistence.mode is exact
   assert.match(BOOT_BLOCK, /channelPersistence\.mode === 'db'/);
 });
 
-test('CHANNEL_WORKER_REAL is not read, gated on, or enabled anywhere in the boot path', () => {
-  assert.ok(!/CHANNEL_WORKER_REAL/.test(INDEX_CODE));
+test('CHANNEL_WORKER_REAL is read in the boot path (wired in Phase 66A-B2L) with a strict true-only comparison', () => {
+  assert.match(INDEX_CODE, /CHANNEL_WORKER_REAL === 'true'/);
 });
 
 test('the worker remains gated behind CHANNEL_WORKER_ENABLED, default false', () => {
@@ -159,9 +161,9 @@ test('the worker remains gated behind CHANNEL_WORKER_ENABLED, default false', ()
     /CHANNEL_WORKER_ENABLED:\s*getOptional\('CHANNEL_WORKER_ENABLED',\s*'false'\)/);
 });
 
-test('the boot path introduces no network-capable call and does not reference channelRegistry for the queue worker', () => {
+test('the boot path introduces no network-capable call; channelRegistry is referenced only to inject it into the real-mode processor (Phase 66A-B2L)', () => {
   assert.ok(!/fetch\(|axios|http\.request|https\.request/i.test(BOOT_BLOCK));
-  assert.ok(!/channelRegistry/.test(BOOT_BLOCK));
+  assert.match(BOOT_BLOCK, /channelRegistry/);
 });
 
 // ---------------------------------------------------------------------------

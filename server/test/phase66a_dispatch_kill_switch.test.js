@@ -55,13 +55,13 @@ test('CHANNEL_QUEUE_DISPATCH_ENABLED exists, defaults to \'false\', via the exis
   assert.match(ENV_CODE, /CHANNEL_QUEUE_DISPATCH_ENABLED:\s*getOptional\('CHANNEL_QUEUE_DISPATCH_ENABLED',\s*'false'\)/);
 });
 
-test('the new setting is distinct from CHANNEL_WORKER_ENABLED and CHANNEL_WORKER_REAL', () => {
+test('the dispatch setting remains distinct from CHANNEL_WORKER_ENABLED and CHANNEL_WORKER_REAL (Phase 66A-B2L added CHANNEL_WORKER_REAL as its own third gate)', () => {
   assert.match(ENV_CODE, /CHANNEL_WORKER_ENABLED:\s*getOptional\('CHANNEL_WORKER_ENABLED',\s*'false'\)/);
-  assert.ok(!/CHANNEL_WORKER_REAL/.test(ENV_CODE), 'CHANNEL_WORKER_REAL must remain unread in env.js');
-  // Two distinct getOptional('CHANNEL_..._ENABLED', 'false') call sites for
-  // the two independent worker/dispatch gates — not a shared/reused one.
-  const gateDeclarations = ENV_CODE.match(/getOptional\('CHANNEL_(WORKER|QUEUE_DISPATCH)_ENABLED',\s*'false'\)/g) || [];
-  assert.equal(gateDeclarations.length, 2);
+  assert.match(ENV_CODE, /CHANNEL_WORKER_REAL:\s*getOptional\('CHANNEL_WORKER_REAL',\s*'false'\)/);
+  // Three distinct getOptional('CHANNEL_...', 'false') call sites for the
+  // three independent worker/dispatch/real-processor gates — none reused.
+  const gateDeclarations = ENV_CODE.match(/getOptional\('CHANNEL_(WORKER_ENABLED|QUEUE_DISPATCH_ENABLED|WORKER_REAL)',\s*'false'\)/g) || [];
+  assert.equal(gateDeclarations.length, 3);
 });
 
 // ---------------------------------------------------------------------------
@@ -130,24 +130,27 @@ test('CHANNEL_WORKER_ENABLED remains the sole gate for whether the polling loop 
   assert.match(INDEX_CODE, /CHANNEL_WORKER_ENABLED === 'true'/);
 });
 
-test('the boot path still constructs the worker with buildMockProcessor() only', () => {
+test('the boot path selects buildMockProcessor by default; buildRealProcessor is constructed only inside the explicit CHANNEL_WORKER_REAL real-mode branch added in Phase 66A-B2L', () => {
   assert.match(BOOT_BLOCK, /buildMockProcessor\(\)/);
-  assert.ok(!/buildRealProcessor/.test(BOOT_BLOCK));
+  const realGateIdx = BOOT_BLOCK.search(/CHANNEL_WORKER_REAL === 'true'/);
+  const realCtorIdx = BOOT_BLOCK.search(/buildRealProcessor\(/);
+  assert.ok(realGateIdx >= 0, 'expected an explicit CHANNEL_WORKER_REAL === \'true\' check');
+  assert.ok(realCtorIdx > realGateIdx, 'buildRealProcessor must only be constructed after the real-mode gate');
 });
 
-test('realProcessor.js still exists but is imported nowhere in the boot path or the worker', () => {
+test('realProcessor.js exists; imported conditionally in the boot path (Phase 66A-B2L) but never by the worker file itself', () => {
   assert.ok(fs.existsSync(REALPROC_PATH));
-  assert.ok(!/require\([^)]*realProcessor/i.test(INDEX_CODE));
-  assert.ok(!/require\([^)]*realProcessor/i.test(WORKER_CODE));
+  assert.match(BOOT_BLOCK, /require\(['"]\.\/channel-manager\/worker\/realProcessor['"]\)/);
+  assert.ok(!/require\([^)]*realProcessor/i.test(WORKER_CODE), 'channelQueueWorker.js must stay processor-agnostic');
 });
 
-test('CHANNEL_WORKER_REAL is not read, gated on, or introduced anywhere in the boot path', () => {
-  assert.ok(!/CHANNEL_WORKER_REAL/.test(INDEX_CODE));
+test('CHANNEL_WORKER_REAL is read exactly in the boot path with a strict true-only comparison (Phase 66A-B2L)', () => {
+  assert.match(INDEX_CODE, /CHANNEL_WORKER_REAL === 'true'/);
 });
 
-test('the boot path introduces no network-capable call and does not reference channelRegistry', () => {
+test('the boot path introduces no network-capable call; channelRegistry is referenced only to inject it into the real-mode processor (Phase 66A-B2L)', () => {
   assert.ok(!/fetch\(|axios|http\.request|https\.request/i.test(BOOT_BLOCK));
-  assert.ok(!/channelRegistry/.test(BOOT_BLOCK));
+  assert.match(BOOT_BLOCK, /channelRegistry/);
 });
 
 test('this phase introduces no role, migration, ownership or RLS/FORCE-RLS construct anywhere in its changes', () => {

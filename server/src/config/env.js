@@ -65,6 +65,14 @@ const config = Object.freeze({
   // dispatch itself still held off, and CHANNEL_WORKER_REAL is a separate,
   // still-unimplemented switch for a real processor this phase does not wire.
   CHANNEL_QUEUE_DISPATCH_ENABLED: getOptional('CHANNEL_QUEUE_DISPATCH_ENABLED', 'false'),
+  // Phase 66A-B2L: selects the real channel processor (realProcessor.js)
+  // instead of the mock processor at boot. A third, independent gate — does
+  // NOT by itself authorize any external dispatch. realProcessor additionally
+  // requires a live per-channel registry authorization, re-evaluated for
+  // every job, immediately before its one external adapter/transport call.
+  // Default OFF; only the literal string 'true' selects it, same convention
+  // as every other boolean flag in this file.
+  CHANNEL_WORKER_REAL: getOptional('CHANNEL_WORKER_REAL', 'false'),
   // Phase 24 B8-B1: encryption key for the local SecretProvider (32-byte: 64-hex,
   // base64-32, or passphrase). Empty default => no provider (credential subsystem dormant).
   CHANNEL_CREDENTIAL_KEY: getOptional('CHANNEL_CREDENTIAL_KEY', ''),

@@ -10,6 +10,15 @@ function makeSecretProvider(secret = null) {
   return { async get() { return secret; } };
 }
 
+// Phase 66A-B2L: channelRegistry is now a required constructor dependency
+// (same required-or-throw pattern as secretProvider). These tests exercise
+// transport/provider behavior, not registry gating, so an always-enabled
+// fake keeps every existing assertion's intent unchanged. Registry-gating
+// behavior itself is covered by test/phase66a_real_processor_registry_gate.test.js.
+function makeAlwaysEnabledRegistry() {
+  return { async get() { return { enabled: true }; } };
+}
+
 const BASE_JOB = {
   action:          'CREATE_BOOKING',
   channel:         'BOOKING_COM',
@@ -32,7 +41,7 @@ test('buildRealProcessor throws without secretProvider', () => {
 
 // — unknown_action —
 test('process: unknown action returns ok=false error=unknown_action', async () => {
-  const p   = buildRealProcessor({ secretProvider: makeSecretProvider() });
+  const p   = buildRealProcessor({ secretProvider: makeSecretProvider(), channelRegistry: makeAlwaysEnabledRegistry() });
   const out = await p.process({ action: 'WARP_DRIVE', channel: 'BOOKING_COM', tenant_id: 't' });
   assert.equal(out.ok, false);
   assert.equal(out.error, 'unknown_action');
@@ -40,14 +49,14 @@ test('process: unknown action returns ok=false error=unknown_action', async () =
 
 // — null job —
 test('process: null job returns ok=false', async () => {
-  const p   = buildRealProcessor({ secretProvider: makeSecretProvider() });
+  const p   = buildRealProcessor({ secretProvider: makeSecretProvider(), channelRegistry: makeAlwaysEnabledRegistry() });
   const out = await p.process(null);
   assert.equal(out.ok, false);
 });
 
 // — missing channel —
 test('process: missing channel returns channel_required', async () => {
-  const p   = buildRealProcessor({ secretProvider: makeSecretProvider() });
+  const p   = buildRealProcessor({ secretProvider: makeSecretProvider(), channelRegistry: makeAlwaysEnabledRegistry() });
   const out = await p.process({ action: 'CREATE_BOOKING', tenant_id: 'tid' });
   assert.equal(out.ok, false);
   assert.equal(out.error, 'channel_required');
@@ -55,7 +64,7 @@ test('process: missing channel returns channel_required', async () => {
 
 // — missing tenant_id —
 test('process: missing tenant_id returns tenant_required', async () => {
-  const p   = buildRealProcessor({ secretProvider: makeSecretProvider() });
+  const p   = buildRealProcessor({ secretProvider: makeSecretProvider(), channelRegistry: makeAlwaysEnabledRegistry() });
   const out = await p.process({ action: 'CREATE_BOOKING', channel: 'BOOKING_COM' });
   assert.equal(out.ok, false);
   assert.equal(out.error, 'tenant_required');
@@ -63,7 +72,7 @@ test('process: missing tenant_id returns tenant_required', async () => {
 
 // — unknown channel (no provider) —
 test('process: unknown channel returns no_provider_for_channel', async () => {
-  const p   = buildRealProcessor({ secretProvider: makeSecretProvider() });
+  const p   = buildRealProcessor({ secretProvider: makeSecretProvider(), channelRegistry: makeAlwaysEnabledRegistry() });
   const out = await p.process({ ...BASE_JOB, channel: 'UNKNOWN_OTA_XYZ' });
   assert.equal(out.ok, false);
   assert.equal(out.error, 'no_provider_for_channel');
@@ -71,13 +80,13 @@ test('process: unknown channel returns no_provider_for_channel', async () => {
 
 // — CHECK_IN / CHECK_OUT are local-only (no transport) —
 test('process: CHECK_IN returns ok=true dispatch=local_only', async () => {
-  const p   = buildRealProcessor({ secretProvider: makeSecretProvider() });
+  const p   = buildRealProcessor({ secretProvider: makeSecretProvider(), channelRegistry: makeAlwaysEnabledRegistry() });
   const out = await p.process({ ...BASE_JOB, action: 'CHECK_IN' });
   assert.equal(out.ok, true);
   assert.equal(out.result.dispatch, 'local_only');
 });
 test('process: CHECK_OUT returns ok=true dispatch=local_only', async () => {
-  const p   = buildRealProcessor({ secretProvider: makeSecretProvider() });
+  const p   = buildRealProcessor({ secretProvider: makeSecretProvider(), channelRegistry: makeAlwaysEnabledRegistry() });
   const out = await p.process({ ...BASE_JOB, action: 'CHECK_OUT' });
   assert.equal(out.ok, true);
   assert.equal(out.result.dispatch, 'local_only');
@@ -85,7 +94,7 @@ test('process: CHECK_OUT returns ok=true dispatch=local_only', async () => {
 
 // — Disabled HTTP transport (default) returns transport_disabled, non-retryable —
 test('process: disabled HTTP returns ok=false error=transport_disabled for known channel', async () => {
-  const p   = buildRealProcessor({ secretProvider: makeSecretProvider({ api_key: 'k' }), http: buildDisabledHttp() });
+  const p   = buildRealProcessor({ secretProvider: makeSecretProvider({ api_key: 'k' }), channelRegistry: makeAlwaysEnabledRegistry(), http: buildDisabledHttp() });
   const out = await p.process(BASE_JOB);
   assert.equal(out.ok, false);
   assert.equal(out.error, 'transport_disabled');
@@ -93,7 +102,7 @@ test('process: disabled HTTP returns ok=false error=transport_disabled for known
 
 // — CANCEL_BOOKING encodes CANCELLED status —
 test('process: CANCEL_BOOKING passes CANCELLED status to transport (ack still transport_disabled)', async () => {
-  const p   = buildRealProcessor({ secretProvider: makeSecretProvider({ api_key: 'k' }) });
+  const p   = buildRealProcessor({ secretProvider: makeSecretProvider({ api_key: 'k' }), channelRegistry: makeAlwaysEnabledRegistry() });
   const out = await p.process({ ...BASE_JOB, action: 'CANCEL_BOOKING' });
   assert.equal(out.ok, false);
   assert.equal(out.error, 'transport_disabled'); // transport_disabled because HTTP is off
@@ -104,7 +113,7 @@ const { CHANNELS } = require('../src/channel-manager/core/canonical/types');
 const OTA_CHANNELS = [CHANNELS.BOOKING_COM, CHANNELS.EXPEDIA, CHANNELS.AGODA, CHANNELS.AIRBNB, CHANNELS.MAKEMYTRIP, CHANNELS.GOOGLE, CHANNELS.TRIPADVISOR];
 for (const ch of OTA_CHANNELS) {
   test(`process: ${ch} dispatches without throwing (transport_disabled)`, async () => {
-    const p   = buildRealProcessor({ secretProvider: makeSecretProvider({ api_key: 'k' }) });
+    const p   = buildRealProcessor({ secretProvider: makeSecretProvider({ api_key: 'k' }), channelRegistry: makeAlwaysEnabledRegistry() });
     const out = await p.process({ ...BASE_JOB, channel: ch });
     assert.equal(out.ok, false);
     assert.equal(out.error, 'transport_disabled');
@@ -117,7 +126,7 @@ test('process: ok=true when mock HTTP transport returns 200', async () => {
     kind: 'mock', enabled: true,
     async send() { return { ok: true, status: 200, body: { confirmation_id: 'ACK-1' } }; }
   };
-  const p   = buildRealProcessor({ secretProvider: makeSecretProvider({ api_key: 'k' }), http: mockHttp });
+  const p   = buildRealProcessor({ secretProvider: makeSecretProvider({ api_key: 'k' }), channelRegistry: makeAlwaysEnabledRegistry(), http: mockHttp });
   const out = await p.process(BASE_JOB);
   assert.equal(out.ok, true);
   assert.ok(out.result.ackId != null || out.result.ackId === null); // may or may not have ackId

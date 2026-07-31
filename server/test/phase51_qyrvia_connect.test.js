@@ -112,6 +112,13 @@ function makeSecretProvider(secret = null) {
   return { async get() { return secret; } };
 }
 
+// Phase 66A-B2L: channelRegistry is now a required constructor dependency.
+// These tests exercise QYRVIA Connect dispatch, not registry gating, so an
+// always-enabled fake keeps every existing assertion's intent unchanged.
+function makeAlwaysEnabledRegistry() {
+  return { async get() { return { enabled: true }; } };
+}
+
 const QYRVIA_CONNECT_BASE = {
   action:          'CREATE_BOOKING',
   channel:         'QYRVIA_CONNECT',
@@ -121,7 +128,7 @@ const QYRVIA_CONNECT_BASE = {
 };
 
 test('realProcessor: QYRVIA_CONNECT dispatches via in-process (not no_provider_for_channel)', async () => {
-  const p   = buildRealProcessor({ secretProvider: makeSecretProvider() });
+  const p   = buildRealProcessor({ secretProvider: makeSecretProvider(), channelRegistry: makeAlwaysEnabledRegistry() });
   const out = await p.process(QYRVIA_CONNECT_BASE);
   assert.equal(out.ok, true);
   assert.equal(out.result.dispatch, 'in_process');
@@ -130,7 +137,7 @@ test('realProcessor: QYRVIA_CONNECT dispatches via in-process (not no_provider_f
 });
 
 test('realProcessor: QYRVIA_CONNECT CREATE_BOOKING → ok=true, dispatch=in_process', async () => {
-  const p   = buildRealProcessor({ secretProvider: makeSecretProvider() });
+  const p   = buildRealProcessor({ secretProvider: makeSecretProvider(), channelRegistry: makeAlwaysEnabledRegistry() });
   const out = await p.process({ ...QYRVIA_CONNECT_BASE, action: 'CREATE_BOOKING' });
   assert.equal(out.ok, true);
   assert.equal(out.result.action, 'CREATE_BOOKING');
@@ -142,7 +149,7 @@ test('realProcessor: QYRVIA_CONNECT CANCEL_BOOKING → ok=true, payload.status=C
   const qtcnTransport = {
     async send(req) { deliveries.push(req); return { ok: true, status: 200, ackId: 'ack-cancel' }; }
   };
-  const p   = buildRealProcessor({ secretProvider: makeSecretProvider(), qtcnTransport });
+  const p   = buildRealProcessor({ secretProvider: makeSecretProvider(), channelRegistry: makeAlwaysEnabledRegistry(), qtcnTransport });
   const out = await p.process({ ...QYRVIA_CONNECT_BASE, action: 'CANCEL_BOOKING' });
   assert.equal(out.ok, true);
   assert.equal(out.result.dispatch, 'in_process');
@@ -150,14 +157,14 @@ test('realProcessor: QYRVIA_CONNECT CANCEL_BOOKING → ok=true, payload.status=C
 });
 
 test('realProcessor: QYRVIA_CONNECT UPDATE_BOOKING → ok=true, dispatch=in_process', async () => {
-  const p   = buildRealProcessor({ secretProvider: makeSecretProvider() });
+  const p   = buildRealProcessor({ secretProvider: makeSecretProvider(), channelRegistry: makeAlwaysEnabledRegistry() });
   const out = await p.process({ ...QYRVIA_CONNECT_BASE, action: 'UPDATE_BOOKING' });
   assert.equal(out.ok, true);
   assert.equal(out.result.dispatch, 'in_process');
 });
 
 test('realProcessor: legacy QTCN code is accepted and output uses canonical QYRVIA_CONNECT', async () => {
-  const p   = buildRealProcessor({ secretProvider: makeSecretProvider() });
+  const p   = buildRealProcessor({ secretProvider: makeSecretProvider(), channelRegistry: makeAlwaysEnabledRegistry() });
   const out = await p.process({ ...QYRVIA_CONNECT_BASE, channel: 'QTCN' });
   assert.equal(out.ok, true);
   assert.equal(out.result.dispatch, 'in_process');

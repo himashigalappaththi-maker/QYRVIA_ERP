@@ -528,8 +528,8 @@ try {
   logger.info('[boot] channel spine ready with registry-backed channel resolution');
 } catch (e) { logger.warn({ err: e }, '[boot] channel spine init skipped'); }
 
-// Phase 24 B6 - durable queue worker (MOCK processor, NO OTA). Default OFF: starts only
-// when CHANNEL_WORKER_ENABLED=true. Infrastructure only; not wired to real processing.
+// Phase 24 B6 - durable queue worker. Default OFF: starts only when
+// CHANNEL_WORKER_ENABLED=true.
 //
 // Phase 66A-B2K: CHANNEL_WORKER_ENABLED only gates whether the polling loop
 // starts. A second, independent, fail-closed switch — CHANNEL_QUEUE_
@@ -538,6 +538,17 @@ try {
 // validated env config fresh on every call (never cached), so only the
 // exact string 'true' at read time ever permits a claim; missing, 'false',
 // or any other value fails closed inside channelQueueWorker.js itself.
+//
+// Phase 66A-B2L: a third, independent gate — CHANNEL_WORKER_REAL, default
+// 'false' — selects which processor a claimed row is handed to.
+// buildMockProcessor() (no OTA, the default) is used unless this reads the
+// exact string 'true'; only then is buildRealProcessor constructed, and only
+// with this boot's own already-existing secretProvider and channelRegistry
+// instances (no new credential or registry wiring was added). Selecting the
+// real processor does not, by itself, authorize any external dispatch —
+// realProcessor.js additionally requires a live per-channel registry
+// authorization for every job, checked fresh immediately before its one
+// external adapter/transport call.
 //
 // Phase 66A-B2J repair: the worker used to be handed either
 // channelPersistence.queue (whose methods it never actually matched — see
@@ -582,16 +593,31 @@ if (require('./config/env').CHANNEL_WORKER_ENABLED === 'true') {
 
     if (workerQueueAdapter) {
       const isDispatchEnabled = () => require('./config/env').CHANNEL_QUEUE_DISPATCH_ENABLED === 'true';
+
+      // Phase 66A-B2L: real-mode processor selection. buildMockProcessor()
+      // (no OTA) stays the default in every case, including when the real
+      // processor's own required dependencies are not available at boot.
+      const useReal = require('./config/env').CHANNEL_WORKER_REAL === 'true';
+      let queueProcessor = buildMockProcessor();
+      if (useReal) {
+        const { buildRealProcessor } = require('./channel-manager/worker/realProcessor');
+        queueProcessor = buildRealProcessor({
+          secretProvider: channelCredentials && channelCredentials.provider,
+          channelRegistry
+        });
+      }
+
       const channelWorker = buildChannelQueueWorker({
         queue: workerQueueAdapter,
-        processor: buildMockProcessor(),
+        processor: queueProcessor,
         isDispatchEnabled,
         enabled: true
       });
       channelWorker.start();
       logger.info({
         mode: channelPersistence && channelPersistence.mode,
-        dispatchEnabled: isDispatchEnabled()
+        dispatchEnabled: isDispatchEnabled(),
+        realProcessor: useReal
       }, '[boot] channel queue worker ready');
     }
   } catch (e) { logger.warn({ err: e }, '[boot] channel worker init skipped'); }

@@ -377,3 +377,71 @@ test('retry policy: backoff schedule then stop', () => {
   assert.deepEqual(rp.next(3), { retry: true, delayMs: 3600000, attempt: 4 });
   assert.deepEqual(rp.next(4), { retry: false, delayMs: null, attempt: 5 });
 });
+
+// -----------------------------------------------------------------------------
+// Phase 66A-B2L: registry-denied ({ ok:false, skipped:true }) result routing.
+// The worker's own queue transition is UNCHANGED — a registry-denied result
+// still goes through the same, already-proven-safe markFailed() path as any
+// other { ok:false } result (see the file header). These tests prove only
+// that it is (a) never mistaken for success and (b) separately observable in
+// metrics from a genuine processor/transport failure.
+// -----------------------------------------------------------------------------
+
+test('a registry-denied ({ ok:false, skipped:true }) result uses markFailed, never markCompleted', async () => {
+  const queue = fakeQueue([[row('d')]]);
+  const processor = { async process() { return { ok: false, error: 'channel_disabled', skipped: true }; } };
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
+
+  const r = await worker.tick();
+  assert.deepEqual(r.results, [{ id: 'd', status: 'FAILED', skipped: true }]);
+  assert.deepEqual(queue.failedCalls, [{ tenantId: 't1', id: 'd' }]);
+  assert.deepEqual(queue.completedCalls, [], 'registry-denied work must never be marked completed');
+});
+
+test('a registry-denied result increments stats.registryDenied, not stats.failures', async () => {
+  const queue = fakeQueue([[row('e')]]);
+  const processor = { async process() { return { ok: false, error: 'channel_disabled', skipped: true }; } };
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
+
+  await worker.tick();
+  const m = worker.metrics();
+  assert.equal(m.registryDenied, 1);
+  assert.equal(m.failed, 0);
+});
+
+test('a genuine processor failure (ok:false, no skipped flag) increments stats.failures, not stats.registryDenied', async () => {
+  const queue = fakeQueue([[row('f')]]);
+  const processor = { async process() { return { ok: false, error: 'transport_error' }; } };
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
+
+  await worker.tick();
+  const m = worker.metrics();
+  assert.equal(m.failed, 1);
+  assert.equal(m.registryDenied, 0);
+});
+
+test('a mix of success, genuine failure and registry-denied rows is routed and counted independently', async () => {
+  const queue = fakeQueue([[row('ok'), row('bad'), row('denied')]]);
+  const processor = {
+    async process(job) {
+      if (job.id === 'ok') return { ok: true, result: { mocked: true } };
+      if (job.id === 'bad') return { ok: false, error: 'transport_error' };
+      return { ok: false, error: 'channel_disabled', skipped: true };
+    }
+  };
+  const worker = buildChannelQueueWorker({ queue, processor, isDispatchEnabled: alwaysEnabled, enabled: false });
+
+  await worker.tick();
+  const m = worker.metrics();
+  assert.equal(m.completed, 1);
+  assert.equal(m.failed, 1);
+  assert.equal(m.registryDenied, 1);
+  assert.deepEqual(queue.completedCalls, [{ tenantId: 't1', id: 'ok' }]);
+  assert.deepEqual(queue.failedCalls, [{ tenantId: 't1', id: 'bad' }, { tenantId: 't1', id: 'denied' }]);
+});
+
+test('metrics() exposes registryDenied alongside processed/completed/failed/disabledTicks, starting at zero', () => {
+  const queue = fakeQueue([[]]);
+  const worker = buildChannelQueueWorker({ queue, processor: buildMockProcessor(), isDispatchEnabled: alwaysEnabled, enabled: false });
+  assert.equal(worker.metrics().registryDenied, 0);
+});

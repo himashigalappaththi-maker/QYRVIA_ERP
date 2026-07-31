@@ -82,6 +82,17 @@
  * behaviour toward "claim nothing", never widen it toward "claim
  * everything". This is independent of, and evaluated in addition to,
  * `enabled` (which only gates whether the polling loop starts at all).
+ *
+ * PHASE 66A-B2L — REGISTRY-DENIED RESULT DISTINCTION
+ * ──────────────────────────────────────────────────
+ * A real-mode processor result of `{ ok: false, skipped: true, ... }` (see
+ * realProcessor.js's per-channel registry authorization) is routed through
+ * this file's existing, already-proven-safe terminal FAILED transition —
+ * exactly like any other `{ ok: false }` result; no new queue state or
+ * transition was introduced. It is additionally counted in its own
+ * `stats.registryDenied` counter (separate from `stats.failures`) purely for
+ * observability, so a registry-driven skip is distinguishable from a genuine
+ * processor/transport failure without changing what happens to the row.
  */
 
 const logger = require('../../config/logger');
@@ -112,7 +123,7 @@ function buildChannelQueueWorker({
   // under interleaved async execution. A second concurrent tick() call is a
   // deliberate no-op ({ skipped: true }), never a queued/duplicate run.
   let _ticking = false;
-  const stats = { processed: 0, completed: 0, failures: 0, disabledTicks: 0 };
+  const stats = { processed: 0, completed: 0, failures: 0, disabledTicks: 0, registryDenied: 0 };
 
   async function tick() {
     if (_ticking) return { skipped: true };
@@ -151,8 +162,13 @@ function buildChannelQueueWorker({
           results.push({ id: job.id, status: 'COMPLETED' });
         } else {
           await queue.markFailed(job.tenant_id, job.id);
-          stats.failures += 1;
-          results.push({ id: job.id, status: 'FAILED' });
+          if (result && result.skipped === true) {
+            stats.registryDenied += 1;
+            results.push({ id: job.id, status: 'FAILED', skipped: true });
+          } else {
+            stats.failures += 1;
+            results.push({ id: job.id, status: 'FAILED' });
+          }
         }
       }
       return { idle: false, results };
@@ -186,7 +202,7 @@ function buildChannelQueueWorker({
   function metrics() {
     return {
       processed: stats.processed, completed: stats.completed, failed: stats.failures,
-      disabledTicks: stats.disabledTicks
+      disabledTicks: stats.disabledTicks, registryDenied: stats.registryDenied
     };
   }
 
