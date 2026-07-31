@@ -24,6 +24,9 @@ const { runWithTenantTransaction, ERR } = require('../src/db/tenantUnitOfWork');
 const { buildAriInventoryAdjuster } = require('../src/booking-engine/ariInventoryAdjuster');
 
 const TENANT_A = '11111111-1111-4111-8111-111111111111';
+// B2N-C1: the outbox requires a real UUID property (ari_outbox_store.
+// property_id is NOT NULL with a composite same-tenant FK).
+const PROPERTY_A = '33333333-3333-4333-8333-333333333333';
 const TENANT_B = '22222222-2222-4222-8222-222222222222';
 
 // ---------------------------------------------------------------------------
@@ -165,8 +168,13 @@ test('static: the boot path constructs the inventory adjuster with withAriStore,
     'the old bare-pool-bound construction must no longer exist');
 });
 
-test('static: ari.handlers.js write handlers route through _withAriStore, not a direct store.putX call on the singleton ariStore', () => {
-  assert.match(HANDLERS_SOURCE, /const _withAriStore = withAriStore \|\| \(pool \? \(tenantId, callback\) => withTenantAriStore\(pool, tenantId, callback\) : null\)/);
+test('static: ari.handlers.js write handlers route through the tenant-bound unit, not a direct store.putX call on the singleton ariStore', () => {
+  // Phase 66A-B2N-C1 renamed the seam from _withAriStore to _withAriUnit: the
+  // callback now receives { ariStore, outbox } built from the SAME
+  // transaction client, so a mutation and its outbox event are atomic. The
+  // invariant this test guards — writes never touch the boot-level singleton
+  // — is unchanged.
+  assert.match(HANDLERS_SOURCE, /const _withAriUnit = withAriUnit \|\| \(pool \? \(tenantId, callback\) => withTenantAriUnit\(pool, tenantId, callback\) : null\)/);
   assert.ok(!/ariStore\.putRoomType/.test(HANDLERS_SOURCE));
   assert.ok(!/ariStore\.putRatePlan/.test(HANDLERS_SOURCE));
   assert.ok(!/ariStore\.putInventoryCell/.test(HANDLERS_SOURCE));
@@ -213,32 +221,45 @@ test('ariInventoryAdjuster + real withTenantAriStore: a 3-night adjustment opens
   const adjuster = buildAriInventoryAdjuster({ withAriStore });
 
   await adjuster.adjustSold({
-    tenantId: TENANT_A, propertyId: 'p1', roomTypeId: 'rt1',
+    tenantId: TENANT_A, propertyId: PROPERTY_A, roomTypeId: 'rt1',
     arrival: '2026-08-01', departure: '2026-08-04', delta: 1
   });
 
   assert.equal(state.connectCalls, 1, 'exactly one connection for the whole multi-night adjustment');
   assert.equal(state.beginCalls, 1, 'exactly one transaction for all three nights');
   assert.equal(state.commitCalls, 1);
-  assert.equal(state.storeQueries.length, 3, 'one adjustSold SQL statement per night');
+  // Phase 66A-B2N-C1: each night now ALSO enqueues its INVENTORY_CHANGED
+  // event on the same client — 3 adjustSold UPDATEs + 3 outbox INSERTs, all
+  // still inside the ONE transaction this test exists to prove.
+  const adjusts = state.storeQueries.filter((q) => /UPDATE ari_inventory_grid/i.test(q));
+  const events  = state.storeQueries.filter((q) => /INSERT INTO ari_outbox_store/i.test(q));
+  assert.equal(adjusts.length, 3, 'one adjustSold SQL statement per night');
+  assert.equal(events.length, 3, 'one outbox event per night, in the same transaction');
 });
 
 test('ariInventoryAdjuster + real withTenantAriStore: a failure on the middle night rolls back the WHOLE multi-night adjustment', async () => {
+  // Fail the SECOND night's adjustSold specifically. Counting only
+  // ari_inventory_grid UPDATEs keeps this anchored on "the 2nd night" now
+  // that each night also issues an outbox INSERT (B2N-C1).
+  let nthAdjust = 0;
   const { pool, state } = makeFakePool({
     boundTenantId: TENANT_A,
-    failOnQueryMatching: (sql, nthStoreQuery) => nthStoreQuery === 2 // the 2nd night's adjustSold throws
+    failOnQueryMatching: (sql) => /UPDATE ari_inventory_grid/i.test(sql) && ++nthAdjust === 2
   });
   const withAriStore = (tenantId, callback) => withTenantAriStore(pool, tenantId, callback);
   const adjuster = buildAriInventoryAdjuster({ withAriStore });
 
   await assert.rejects(() => adjuster.adjustSold({
-    tenantId: TENANT_A, propertyId: 'p1', roomTypeId: 'rt1',
+    tenantId: TENANT_A, propertyId: PROPERTY_A, roomTypeId: 'rt1',
     arrival: '2026-08-01', departure: '2026-08-04', delta: 1 // 3 nights
   }));
 
   assert.equal(state.commitCalls, 0, 'no commit occurred — the failure rolled back the whole unit');
   assert.equal(state.rollbackCalls, 1);
-  assert.equal(state.storeQueries.length, 2, 'the 3rd (later) night never ran after the 2nd night failed');
+  const adjusts = state.storeQueries.filter((q) => /UPDATE ari_inventory_grid/i.test(q));
+  const events  = state.storeQueries.filter((q) => /INSERT INTO ari_outbox_store/i.test(q));
+  assert.equal(adjusts.length, 2, 'the 3rd (later) night never ran after the 2nd night failed');
+  assert.equal(events.length, 1, 'only the first night had emitted its event — and it rolled back too');
 });
 
 // ---------------------------------------------------------------------------

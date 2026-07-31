@@ -359,10 +359,14 @@ test('Backward compat: no inventoryAdjuster injected -> no-op, booking still suc
 
 test('ariInventoryAdjuster: iterates each night in [arrival, departure) and calls adjustSold per night', async () => {
   const adjCalls = [];
+  // Phase 66A-B2N-C1: the store handed to the adjuster now also carries
+  // `.outbox`, bound to the SAME transaction client, because each changed
+  // night must emit its INVENTORY_CHANGED event inside the same unit.
   const fakeStore = {
-    async adjustSold(args) { adjCalls.push({ ...args }); return { sold: 1, version: 1 }; }
+    async adjustSold(args) { adjCalls.push({ ...args }); return { sold: 1, version: 1 }; },
+    outbox: { async enqueue() { return { accepted: true, deduped: false, row: {} }; } }
   };
-  // Phase 66A-B2N-A: the adjuster now receives an opaque withAriStore(tenantId,
+  // Phase 66A-B2N-A: the adjuster receives an opaque withAriStore(tenantId,
   // callback) instead of a raw ariStore — this fake models "one unit of work"
   // by simply invoking the callback with the fake store directly.
   const withAriStore = (tenantId, callback) => callback(fakeStore);

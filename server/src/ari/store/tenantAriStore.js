@@ -32,17 +32,61 @@
 
 const { runWithTenantTransaction, runWithTenantRead } = require('../../db/tenantUnitOfWork');
 const { buildDbAriStore } = require('./dbStore');
+const { buildAriOutboxStore } = require('../outbox/ariOutboxStore');
+
+/**
+ * Phase 66A-B2N-C1 — the permanent half-open sentinel window for UNDATED ARI
+ * configuration events (room types and rate plans are configuration, not
+ * date-scoped, but ari_outbox_store requires effective_from/effective_to NOT
+ * NULL with CHECK (effective_to > effective_from)).
+ *
+ * These are fixed constants, never computed: they participate in the
+ * canonical dedupe key, so a value that drifted would silently re-key every
+ * configuration event ever emitted. Defined once here and reused everywhere.
+ */
+const ARI_CONFIG_EFFECTIVE_FROM = '1970-01-01';
+const ARI_CONFIG_EFFECTIVE_TO   = '9999-12-31';
+
+/**
+ * Phase 66A-B2N-C1 — ONE tenant-bound unit of work exposing BOTH the
+ * authoritative ARI store and the ARI outbox, built from the SAME
+ * transaction-local client. This is what makes an authoritative mutation and
+ * its outbox event atomic: they are two statements on one client inside one
+ * transaction, so they commit together or roll back together.
+ *
+ * runWithTenantTransaction is called exactly once. It already provides
+ * "join an open same-tenant unit, else open a fresh one" (never a second
+ * connection, never a nested independent transaction), rejects cross-tenant
+ * nesting with TENANT_CONTEXT_MISMATCH, and owns COMMIT/ROLLBACK entirely —
+ * nothing here commits, rolls back, binds a tenant or falls back to the bare
+ * pool.
+ */
+function withTenantAriUnit(pool, tenantId, callback) {
+  return runWithTenantTransaction(pool, tenantId, (client) =>
+    callback({
+      ariStore: buildDbAriStore({ db: client }),
+      outbox:   buildAriOutboxStore({ db: client })
+    })
+  );
+}
 
 /**
  * Open (or join) one tenant-bound WRITE transaction and hand the callback an
  * ARI store bound to that transaction's client. Commits on success, rolls
  * back the whole unit on any thrown error — never a partial multi-statement
  * commit.
+ *
+ * B2N-C1: the store handed to the callback additionally carries `.outbox` —
+ * the ARI outbox bound to the very same client — so an emitting caller that
+ * only ever receives this opaque store (e.g. booking-engine/
+ * ariInventoryAdjuster.js, which must not require from ari/) can enqueue
+ * inside the same transaction without any new wiring.
  */
 function withTenantAriStore(pool, tenantId, callback) {
-  return runWithTenantTransaction(pool, tenantId, (client) =>
-    callback(buildDbAriStore({ db: client }))
-  );
+  return withTenantAriUnit(pool, tenantId, ({ ariStore, outbox }) => {
+    ariStore.outbox = outbox;
+    return callback(ariStore);
+  });
 }
 
 /**
@@ -56,4 +100,10 @@ function withTenantAriRead(pool, tenantId, callback) {
   );
 }
 
-module.exports = { withTenantAriStore, withTenantAriRead };
+module.exports = {
+  withTenantAriUnit,
+  withTenantAriStore,
+  withTenantAriRead,
+  ARI_CONFIG_EFFECTIVE_FROM,
+  ARI_CONFIG_EFFECTIVE_TO
+};

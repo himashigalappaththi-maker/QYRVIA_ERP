@@ -56,21 +56,31 @@ function buildDbAriStore({ db } = {}) {
   }
 
   // ---- writes (config + concurrency-safe inventory) ------------------------
+  // Phase 66A-B2N-C1: `RETURNING version` added to the three config upserts
+  // below. They already bumped `version` in SQL but never surfaced it, so no
+  // caller could learn the authoritative post-write version — which the ARI
+  // outbox requires as its sourceVersion (it participates in the canonical
+  // dedupe identity, so it must be the value the DATABASE assigned, never a
+  // timestamp, counter, hash or request value). The version is returned
+  // ADDITIVELY: every pre-existing field of the returned model object is
+  // unchanged.
   async function putRoomType(f) {
     const o = model.makeRoomType(f); const t = f.tenant_id;
-    await db.query(`INSERT INTO ari_room_type (tenant_id, property_id, room_type_id, code, name, total_units)
+    const r = await db.query(`INSERT INTO ari_room_type (tenant_id, property_id, room_type_id, code, name, total_units)
       VALUES ($1,$2,$3,$4,$5,$6)
-      ON CONFLICT (tenant_id, property_id, room_type_id) DO UPDATE SET code=EXCLUDED.code, name=EXCLUDED.name, total_units=EXCLUDED.total_units, version=ari_room_type.version+1, updated_at=now()`,
+      ON CONFLICT (tenant_id, property_id, room_type_id) DO UPDATE SET code=EXCLUDED.code, name=EXCLUDED.name, total_units=EXCLUDED.total_units, version=ari_room_type.version+1, updated_at=now()
+      RETURNING version`,
       [t, o.propertyId, o.roomTypeId, o.code, o.name, o.totalUnits]);
-    return o;
+    return Object.assign({}, o, { version: r.rows[0] ? r.rows[0].version : null });
   }
   async function putRatePlan(f) {
     const o = model.makeRatePlan(f); const t = f.tenant_id;
-    await db.query(`INSERT INTO ari_rate_plan (tenant_id, property_id, rate_plan_id, room_type_id, code, name, currency, base_rate, standard_occupancy, max_occupancy, extra_adult_amount, occupancy_rates, child_rates)
+    const r = await db.query(`INSERT INTO ari_rate_plan (tenant_id, property_id, rate_plan_id, room_type_id, code, name, currency, base_rate, standard_occupancy, max_occupancy, extra_adult_amount, occupancy_rates, child_rates)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-      ON CONFLICT (tenant_id, property_id, rate_plan_id) DO UPDATE SET base_rate=EXCLUDED.base_rate, occupancy_rates=EXCLUDED.occupancy_rates, child_rates=EXCLUDED.child_rates, version=ari_rate_plan.version+1, updated_at=now()`,
+      ON CONFLICT (tenant_id, property_id, rate_plan_id) DO UPDATE SET base_rate=EXCLUDED.base_rate, occupancy_rates=EXCLUDED.occupancy_rates, child_rates=EXCLUDED.child_rates, version=ari_rate_plan.version+1, updated_at=now()
+      RETURNING version`,
       [t, o.propertyId, o.ratePlanId, o.roomTypeId, o.code, o.name, o.currency, o.baseRate, o.standardOccupancy, o.maxOccupancy, o.extraAdultAmount, JSON.stringify(o.occupancyRates), JSON.stringify(o.childRates)]);
-    return o;
+    return Object.assign({}, o, { version: r.rows[0] ? r.rows[0].version : null });
   }
   async function putInventoryCell(f) {
     const o = model.makeInventoryCell(f); const t = f.tenant_id;
@@ -82,11 +92,12 @@ function buildDbAriStore({ db } = {}) {
   }
   async function putRestrictionRule(f) {
     const o = model.makeRestrictionRule(f); const t = f.tenant_id;
-    await db.query(`INSERT INTO ari_restriction_rule (tenant_id, id, property_id, level, room_type_id, rate_plan_id, channel, date_from, date_to, dow, cta, ctd, min_los, max_los, stay_through, min_advance_days, max_advance_days, priority)
+    const r = await db.query(`INSERT INTO ari_restriction_rule (tenant_id, id, property_id, level, room_type_id, rate_plan_id, channel, date_from, date_to, dow, cta, ctd, min_los, max_los, stay_through, min_advance_days, max_advance_days, priority)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-      ON CONFLICT (tenant_id, id) DO UPDATE SET cta=EXCLUDED.cta, ctd=EXCLUDED.ctd, min_los=EXCLUDED.min_los, max_los=EXCLUDED.max_los, stay_through=EXCLUDED.stay_through, version=ari_restriction_rule.version+1, updated_at=now()`,
+      ON CONFLICT (tenant_id, id) DO UPDATE SET cta=EXCLUDED.cta, ctd=EXCLUDED.ctd, min_los=EXCLUDED.min_los, max_los=EXCLUDED.max_los, stay_through=EXCLUDED.stay_through, version=ari_restriction_rule.version+1, updated_at=now()
+      RETURNING version`,
       [t, o.id, o.propertyId, o.level, o.roomTypeId, o.ratePlanId, o.channel, o.date_from, o.date_to, o.dow, o.cta, o.ctd, o.minLos, o.maxLos, o.stayThrough, o.minAdvanceDays, o.maxAdvanceDays, o.priority]);
-    return o;
+    return Object.assign({}, o, { version: r.rows[0] ? r.rows[0].version : null });
   }
 
   /** Optimistic update: apply `patch` only if the row's version is `expectedVersion`. */

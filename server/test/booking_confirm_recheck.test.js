@@ -164,6 +164,9 @@ test('confirmBooking concurrent: ceiling guard prevents oversell beyond physical
   // by simply invoking the callback with the same shared memory store, so the
   // ceiling-guard-across-concurrent-confirms behavior this test exercises is
   // unaffected.
+  // Phase 66A-B2N-C1: attach a recording outbox to the same "unit", since a
+  // changed night now emits its event inside the same transaction.
+  ariStore.outbox = { async enqueue() { return { accepted: true, deduped: false, row: {} }; } };
   const withAriStore = (tenantId, callback) => callback(ariStore);
   const adjuster = buildAriInventoryAdjuster({ withAriStore });
 

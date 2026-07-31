@@ -66,8 +66,17 @@ test('POST /ari/room-types: upserts and returns room type row', async () => {
   // models "one unit of work" by invoking the callback with the same seeded
   // in-memory store, so the test's existing intent (does the handler call
   // through to the store and shape the response correctly?) is unaffected.
-  const withAriStore = (tenantId, callback) => callback(store);
-  const h = buildAriHandlers({ ariStore: store, withAriStore });
+  // Phase 66A-B2N-C1: the seam is now withAriUnit(tenantId, cb) where cb gets
+  // { ariStore, outbox } — both from ONE transaction client in production.
+  // This fake models that unit with the seeded in-memory store plus a
+  // recording outbox, so the test's original intent (does the handler call
+  // through to the store and shape the response correctly?) is unaffected.
+  const enqueued = [];
+  const withAriUnit = (tenantId, callback) => callback({
+    ariStore: store,
+    outbox: { async enqueue(e) { enqueued.push(e); return { accepted: true, deduped: false, row: {} }; } }
+  });
+  const h = buildAriHandlers({ ariStore: store, withAriUnit });
   const res = fakeRes();
   await h.upsertRoomType(
     fakeReq({
@@ -79,6 +88,12 @@ test('POST /ari/room-types: upserts and returns room type row', async () => {
   assert.equal(res._status, 200);
   assert.equal(res._json.ok, true);
   assert.equal(res._json.data.roomTypeId, 'rt2');
+  // B2N-C1: the mutation also produced exactly one AVAILABILITY_CHANGED event
+  // on the same unit.
+  assert.equal(enqueued.length, 1);
+  assert.equal(enqueued[0].eventType, 'AVAILABILITY_CHANGED');
+  assert.equal(enqueued[0].resourceKind, 'AVAILABILITY');
+  assert.equal(enqueued[0].roomTypeId, 'rt2');
 });
 
 test('GET /ari/rate-plans -> 200 with list', async () => {
