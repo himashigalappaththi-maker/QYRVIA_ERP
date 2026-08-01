@@ -328,21 +328,24 @@ function buildAriHandlers({ ariService, ariStore, pool, withAriUnit } = {}) {
   // ---- Restriction Rules ----
 
   /**
-   * PHASE 66A-B2N-C2 DEFERRAL — restriction-rule outbox event production is
-   * DELIBERATELY NOT IMPLEMENTED here.
+   * PHASE 66A-B2N-C2 — restriction-rule events are now produced atomically
+   * with the authoritative mutation, using the aob:v2 identity.
    *
    * ari_restriction_rule.room_type_id and rate_plan_id are both NULLABLE (a
-   * property-level or channel-level rule scopes neither), but the canonical
-   * outbox identity requires a non-empty roomTypeId
-   * (ari_outbox_store_room_type_nonempty), and roomTypeId participates in the
-   * dedupe key. Emitting would require inventing a placeholder roomTypeId, a
-   * synthetic date, a derived version or a rule hash — every one of which is
-   * a collision-prone workaround this phase explicitly forbids.
+   * property-level or channel-level rule scopes neither), which the aob:v1
+   * identity cannot express — and v1 carries no rule identity, so two
+   * distinct rules over the same scope, period and version would collide.
+   * The v2 identity is therefore built from the rule's own IMMUTABLE id plus
+   * its persisted scope. No placeholder room type, synthetic date, derived
+   * version or payload hash is used.
    *
-   * The authoritative mutation below still runs, and now returns its
-   * database-assigned version additively (B2N-C1 decision B2), so B2N-C2 can
-   * design a safe restriction-event identity on top of it. Restriction event
-   * production, full B2N-C and P0-12 all remain OPEN.
+   * EVERY identity and payload value comes from the PERSISTED row returned
+   * by putRestrictionRule — never from req.body. That matters because the
+   * conflict clause deliberately does not refresh scope: resubmitting an
+   * existing id with different scope keeps the ORIGINAL scope, and the event
+   * must describe the row that actually exists. An identical retry also
+   * preserves the authoritative version, so it recomputes the same key and
+   * deduplicates instead of minting a false new event.
    */
   async function upsertRestrictionRule(req, res) {
     try {
@@ -350,11 +353,45 @@ function buildAriHandlers({ ariService, ariStore, pool, withAriUnit } = {}) {
       if (!tenantId) return fail(res, 401, 'tenant_required');
       if (!_withAriUnit) return fail(res, 503, 'ari_not_configured');
       const rawBody = req.body || {};
-      const body = Object.assign({}, rawBody, { tenant_id: tenantId, propertyId: propertyId || rawBody.propertyId });
-      const row = await _withAriUnit(tenantId, ({ ariStore: store }) => {
+      const property = resolveProperty(propertyId, rawBody);
+      if (!property) throw propertyRequired();
+      const body = Object.assign({}, rawBody, { tenant_id: tenantId, propertyId: property });
+      const row = await _withAriUnit(tenantId, async ({ ariStore: store, outbox }) => {
         const fn = store.putRestrictionRule || store.upsertRestrictionRule;
         if (typeof fn !== 'function') throw Object.assign(new Error('putRestrictionRule not available'), { httpStatus: 501, httpError: 'method_not_supported' });
-        return fn.call(store, body);
+        const saved = await fn.call(store, body);
+        await outbox.enqueue({
+          tenantId,
+          propertyId:        saved.propertyId,
+          eventType:         'AVAILABILITY_CHANGED',
+          resourceKind:      'AVAILABILITY',
+          restrictionRuleId: saved.id,
+          level:             saved.level,
+          roomTypeId:        saved.roomTypeId,
+          ratePlanId:        saved.ratePlanId,
+          channel:           saved.channel,
+          effectiveFrom:     saved.date_from,
+          effectiveTo:       saved.date_to,
+          sourceVersion:     saved.version,
+          payload: {
+            restrictionRuleId: saved.id,
+            level:             saved.level,
+            roomTypeId:        saved.roomTypeId,
+            ratePlanId:        saved.ratePlanId,
+            channel:           saved.channel,
+            dow:               saved.dow,
+            cta:               saved.cta,
+            ctd:               saved.ctd,
+            minLos:            saved.minLos,
+            maxLos:            saved.maxLos,
+            stayThrough:       saved.stayThrough,
+            minAdvanceDays:    saved.minAdvanceDays,
+            maxAdvanceDays:    saved.maxAdvanceDays,
+            priority:          saved.priority,
+            source:            'ari_api'
+          }
+        });
+        return saved;
       });
       return ok(res, row);
     } catch (err) {

@@ -357,14 +357,21 @@ test('handler adjustSold: emits on a real change and emits NOTHING on a floor gu
   assert.equal(seam.enqueued.length, 1, 'the guarded adjustment emitted no event');
 });
 
-test('handler putRestrictionRule: returns the version additively but emits NO event (B2N-C2 deferral)', async () => {
+test('handler putRestrictionRule: returns the version additively AND emits its aob:v2 restriction event (B2N-C2)', async () => {
+  // B2N-C1 asserted no event here; B2N-C2 implemented restriction event
+  // production, so this now asserts the emission instead. The version-return
+  // assertion that B2N-C1 introduced is unchanged.
   const seam = unitSeam();
   const h = buildAriHandlers({ withAriUnit: seam.withAriUnit });
   const res = fakeRes();
   await h.upsertRestrictionRule({ ctx: CTX, body: { id: 'r1', level: 'property', date_from: '2026-08-01', date_to: '2026-08-31' } }, res);
   assert.equal(res._status, 200);
   assert.equal(res._json.data.version, 14);
-  assert.equal(seam.enqueued.length, 0);
+  assert.equal(seam.enqueued.length, 1);
+  assert.equal(seam.enqueued[0].eventType, 'AVAILABILITY_CHANGED');
+  assert.equal(seam.enqueued[0].resourceKind, 'AVAILABILITY');
+  assert.equal(seam.enqueued[0].restrictionRuleId, 'r1');
+  assert.equal(seam.enqueued[0].sourceVersion, 14);
 });
 
 test('handlers fail closed with property_required — before mutating — when no property can be resolved', async () => {

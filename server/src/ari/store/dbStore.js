@@ -90,14 +90,65 @@ function buildDbAriStore({ db } = {}) {
       RETURNING version`, [t, o.propertyId, o.roomTypeId, o.date, o.physical, o.sold, o.blocked, o.overbookingBuffer, o.stopSell]);
     return Object.assign({}, o, { version: r.rows[0].version });
   }
+  /**
+   * Phase 66A-B2N-C2 — idempotent restriction upsert returning the COMPLETE
+   * persisted row.
+   *
+   * TWO CORRECTIONS OVER THE B2N-C1 SHAPE
+   *
+   * 1. NO FALSE VERSION ON AN IDENTICAL RETRY. The conflict path previously
+   *    bumped `version` unconditionally, so resubmitting an unchanged rule
+   *    minted a new authoritative version — and therefore a new outbox
+   *    identity — for a mutation that changed nothing. The DO UPDATE now
+   *    carries a WHERE using PostgreSQL's null-safe row-wise
+   *    IS DISTINCT FROM over EXACTLY the five fields the conflict clause
+   *    actually updates (cta, ctd, min_los, max_los, stay_through). When
+   *    they are all identical the UPDATE is skipped entirely: version and
+   *    updated_at are preserved. The comparison is done by the DATABASE, not
+   *    in JavaScript.
+   *
+   * 2. THE COMPLETE PERSISTED ROW IS RETURNED. A skipped DO UPDATE returns
+   *    no row from RETURNING, so the statement is wrapped in a CTE whose
+   *    UNION ALL branch reads the existing row when (and only when) the
+   *    upsert produced nothing. This stays ONE statement — the version is
+   *    never derived from a timestamp, a counter, a hash, the request, or a
+   *    separate query round-trip. Callers receive the row PostgreSQL
+   *    actually holds, which matters because the conflict clause
+   *    deliberately does NOT refresh scope (property_id, level,
+   *    room_type_id, rate_plan_id, channel, date_from, date_to, dow,
+   *    priority): a resubmission with different scope keeps the ORIGINAL
+   *    scope, and identity/payload must describe the row that exists.
+   */
   async function putRestrictionRule(f) {
     const o = model.makeRestrictionRule(f); const t = f.tenant_id;
-    const r = await db.query(`INSERT INTO ari_restriction_rule (tenant_id, id, property_id, level, room_type_id, rate_plan_id, channel, date_from, date_to, dow, cta, ctd, min_los, max_los, stay_through, min_advance_days, max_advance_days, priority)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-      ON CONFLICT (tenant_id, id) DO UPDATE SET cta=EXCLUDED.cta, ctd=EXCLUDED.ctd, min_los=EXCLUDED.min_los, max_los=EXCLUDED.max_los, stay_through=EXCLUDED.stay_through, version=ari_restriction_rule.version+1, updated_at=now()
-      RETURNING version`,
+    const r = await db.query(`WITH upserted AS (
+        INSERT INTO ari_restriction_rule (tenant_id, id, property_id, level, room_type_id, rate_plan_id, channel, date_from, date_to, dow, cta, ctd, min_los, max_los, stay_through, min_advance_days, max_advance_days, priority)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+        ON CONFLICT (tenant_id, id) DO UPDATE SET cta=EXCLUDED.cta, ctd=EXCLUDED.ctd, min_los=EXCLUDED.min_los, max_los=EXCLUDED.max_los, stay_through=EXCLUDED.stay_through, version=ari_restriction_rule.version+1, updated_at=now()
+        WHERE (ari_restriction_rule.cta, ari_restriction_rule.ctd, ari_restriction_rule.min_los, ari_restriction_rule.max_los, ari_restriction_rule.stay_through)
+              IS DISTINCT FROM
+              (EXCLUDED.cta, EXCLUDED.ctd, EXCLUDED.min_los, EXCLUDED.max_los, EXCLUDED.stay_through)
+        RETURNING *
+      )
+      SELECT * FROM upserted
+      UNION ALL
+      SELECT * FROM ari_restriction_rule
+       WHERE tenant_id=$1 AND id=$2 AND NOT EXISTS (SELECT 1 FROM upserted)`,
       [t, o.id, o.propertyId, o.level, o.roomTypeId, o.ratePlanId, o.channel, o.date_from, o.date_to, o.dow, o.cta, o.ctd, o.minLos, o.maxLos, o.stayThrough, o.minAdvanceDays, o.maxAdvanceDays, o.priority]);
-    return Object.assign({}, o, { version: r.rows[0] ? r.rows[0].version : null });
+    const row = r.rows[0];
+    // The CTE always yields exactly one row (the upserted one, or the
+    // unchanged existing one). If it somehow did not, fail closed rather
+    // than hand back a request-shaped object with no authoritative version —
+    // that object would describe a row that may not exist.
+    if (!row) throw new Error('dbAriStore: putRestrictionRule returned no persisted row');
+    return Object.assign({}, model.makeRestrictionRule({
+      id: row.id, level: row.level, propertyId: row.property_id,
+      roomTypeId: row.room_type_id, ratePlanId: row.rate_plan_id, channel: row.channel,
+      date_from: iso(row.date_from), date_to: iso(row.date_to), dow: row.dow,
+      cta: row.cta, ctd: row.ctd, minLos: row.min_los, maxLos: row.max_los,
+      stayThrough: row.stay_through, minAdvanceDays: row.min_advance_days,
+      maxAdvanceDays: row.max_advance_days, priority: row.priority
+    }), { version: row.version, updatedAt: row.updated_at });
   }
 
   /** Optimistic update: apply `patch` only if the row's version is `expectedVersion`. */

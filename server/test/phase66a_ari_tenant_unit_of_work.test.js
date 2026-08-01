@@ -66,12 +66,20 @@ function makeFakePool({ boundTenantId, failOnQueryMatching } = {}) {
         // to complete — version bump / adjustSold's RETURNING sold,version,
         // and enough raw columns for the read-side model.make* mappers
         // (roomTypes/inventory) to not throw on a missing required field.
+        //
+        // Phase 66A-B2N-C2: putRestrictionRule now maps the RETURNED row
+        // through model.makeRestrictionRule (identity and payload must
+        // describe the persisted row, never the request), so the fake row
+        // also carries the authoritative restriction fields that mapper
+        // requires: id, level and the half-open date_from/date_to range.
         return {
           rows: [{
             version: state.storeQueries.length, sold: 1,
             property_id: 'p1', room_type_id: 'rt1', date: '2026-08-01',
             code: 'STD', name: 'Standard', total_units: 10,
-            physical: 10, blocked: 0
+            physical: 10, blocked: 0,
+            id: 'r1', level: 'property',
+            date_from: '2026-08-01', date_to: '2026-08-31'
           }]
         };
       },

@@ -20,10 +20,13 @@ const MIG_PATH = path.join(MIG_DIR, '0087_ari_outbox.sql');
 
 test('migration basename is exactly 0087_ari_outbox.sql and no other 0087 exists', () => {
   assert.ok(fs.existsSync(MIG_PATH));
-  const others = fs.readdirSync(MIG_DIR).filter((f) => f.startsWith('0087') && f !== '0087_ari_outbox.sql');
-  assert.deepEqual(others, [], 'no competing 0087 migration may exist');
-  const later = fs.readdirSync(MIG_DIR).filter((f) => /^\d{4}_/.test(f) && f.slice(0, 4) > '0087');
-  assert.deepEqual(later, [], 'no migration newer than 0087 may exist in this phase');
+  const zero87 = fs.readdirSync(MIG_DIR).filter((f) => /^0087_/.test(f));
+  assert.deepEqual(zero87, ['0087_ari_outbox.sql'],
+    'exactly one 0087_* migration exists and it is 0087_ari_outbox.sql');
+  // Deliberately NOT asserting that nothing newer exists: Phase 66A-B2N-C2
+  // legitimately adds 0088_ari_outbox_restriction_scope.sql, and later
+  // phases will add more. This test guards 0087's own identity and content,
+  // not the end of the migration sequence.
 });
 
 const SOURCE = fs.readFileSync(MIG_PATH, 'utf8');

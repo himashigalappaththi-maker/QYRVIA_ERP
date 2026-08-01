@@ -141,6 +141,121 @@ function buildAriDedupeKey({ eventType, resourceKind, roomTypeId, ratePlanId, ef
 }
 
 /**
+ * Phase 66A-B2N-C2 — the RESTRICTION-RULE identity (key version 2).
+ *
+ * v1 cannot express a restriction rule: it has no slot for the rule's own
+ * identity (so two distinct rules over the same scope, dates and version
+ * collide), and it cannot represent a property-wide or rate-plan-only rule
+ * at all. v2 is therefore a SEPARATE, additional identity — v1's tuple,
+ * arity, prefix and meaning are untouched and still used by every
+ * non-restriction event.
+ *
+ * Encoding matches v1's discipline exactly: an ORDERED canonical array is
+ * serialized with JSON.stringify and the exact bytes hashed with SHA-256.
+ * Every element is either a literal, the rule's IMMUTABLE id, a persisted
+ * scope dimension, or the database-assigned version — never a payload
+ * value, timestamp, request id or random UUID. The literal
+ * 'RESTRICTION_RULE' discriminator means a v2 restriction identity can never
+ * be confused with any future v2 resource, and the differing key prefix
+ * makes a v1/v2 collision impossible.
+ *
+ *   aob:v2:<lowercase-hex-sha256>
+ */
+function buildAriRestrictionDedupeKey({ restrictionRuleId, level, roomTypeId, ratePlanId, channel, effectiveFrom, effectiveTo, sourceVersion }) {
+  const canonicalTuple = [
+    EVENT_TYPES.AVAILABILITY_CHANGED,
+    RESOURCE_KINDS.AVAILABILITY,
+    'RESTRICTION_RULE',
+    restrictionRuleId,
+    level,
+    roomTypeId != null ? roomTypeId : null,
+    ratePlanId != null ? ratePlanId : null,
+    channel != null ? channel : null,
+    effectiveFrom,
+    effectiveTo,
+    sourceVersion
+  ];
+  return 'aob:v2:' + crypto.createHash('sha256').update(JSON.stringify(canonicalTuple), 'utf8').digest('hex');
+}
+
+// Persisted ari_restriction_rule.level values (migration 0049's CHECK).
+const RESTRICTION_LEVELS = Object.freeze(['system', 'property', 'rate_plan', 'channel']);
+
+function optionalNonEmptyString(value, name) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || value.length === 0) throw fail(name + ' must be a non-empty string when present');
+  return value;
+}
+
+/**
+ * Validates a RESTRICTION enqueue (key version 2) and returns the normalized
+ * row values. Fails closed BEFORE any SQL on the first violation. A
+ * restriction event is identified by a non-empty restrictionRuleId; it is
+ * the only event class permitted to omit roomTypeId, and the only
+ * AVAILABILITY_CHANGED event permitted to carry a ratePlanId.
+ */
+function validateRestrictionEnqueueInput(input) {
+  const {
+    tenantId, propertyId, eventType, resourceKind, restrictionRuleId, level,
+    roomTypeId, ratePlanId, channel, effectiveFrom, effectiveTo, sourceVersion,
+    dedupeKey, payload, maxRetries
+  } = input;
+
+  if (typeof tenantId !== 'string' || !UUID_RE.test(tenantId)) throw fail('tenantId must be a UUID');
+  if (typeof propertyId !== 'string' || !UUID_RE.test(propertyId)) throw fail('propertyId must be a UUID');
+
+  if (eventType !== EVENT_TYPES.AVAILABILITY_CHANGED) {
+    throw fail('a restriction event must be AVAILABILITY_CHANGED (got ' + eventType + ')');
+  }
+  const kind = resourceKind === undefined ? RESOURCE_KINDS.AVAILABILITY : resourceKind;
+  if (kind !== RESOURCE_KINDS.AVAILABILITY) {
+    throw fail('a restriction event must carry resourceKind AVAILABILITY (got ' + kind + ')');
+  }
+
+  if (typeof restrictionRuleId !== 'string' || restrictionRuleId.length === 0 || restrictionRuleId.length > 80) {
+    throw fail('restrictionRuleId must be a non-empty string of at most 80 characters');
+  }
+  if (!RESTRICTION_LEVELS.includes(level)) throw fail('level invalid: ' + level);
+
+  const room = optionalNonEmptyString(roomTypeId, 'roomTypeId');
+  const plan = optionalNonEmptyString(ratePlanId, 'ratePlanId');
+  const chan = optionalNonEmptyString(channel, 'channel');
+
+  if (typeof effectiveFrom !== 'string' || !ISO_DATE.test(effectiveFrom)) throw fail("effectiveFrom must be 'YYYY-MM-DD'");
+  if (typeof effectiveTo !== 'string' || !ISO_DATE.test(effectiveTo)) throw fail("effectiveTo must be 'YYYY-MM-DD'");
+  if (!(effectiveTo > effectiveFrom)) throw fail('effective period invalid: effectiveTo must be after effectiveFrom (half-open [from, to))');
+
+  if (!Number.isInteger(sourceVersion) || sourceVersion < 1) throw fail('sourceVersion must be a positive integer');
+
+  const body = payload === undefined ? {} : payload;
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) throw fail('payload must be a plain object');
+  assertNoSecretKeys(body, '');
+
+  const computedKey = buildAriRestrictionDedupeKey({
+    restrictionRuleId, level, roomTypeId: room, ratePlanId: plan, channel: chan,
+    effectiveFrom, effectiveTo, sourceVersion
+  });
+  if (dedupeKey !== undefined && dedupeKey !== computedKey) {
+    throw fail('dedupeKey does not match the canonical restriction identity for these fields');
+  }
+
+  if (maxRetries !== undefined && (!Number.isInteger(maxRetries) || maxRetries < 0)) {
+    throw fail('maxRetries must be a non-negative integer when present');
+  }
+
+  return {
+    tenantId, propertyId,
+    eventType: EVENT_TYPES.AVAILABILITY_CHANGED,
+    resourceKind: RESOURCE_KINDS.AVAILABILITY,
+    restrictionRuleId,
+    roomTypeId: room, ratePlanId: plan,
+    effectiveFrom, effectiveTo, sourceVersion,
+    dedupeKey: computedKey, payload: body,
+    maxRetries: maxRetries !== undefined ? maxRetries : null
+  };
+}
+
+/**
  * Validates every enqueue input and returns the normalized row values.
  * Throws (fails closed) BEFORE any SQL on the first violation.
  */
@@ -219,19 +334,26 @@ function buildAriOutboxStore({ db } = {}) {
      * row (the loser reads the winner's row afterwards).
      */
     async enqueue(input) {
-      const v = validateEnqueueInput(input);
+      // B2N-C2: a non-empty restrictionRuleId selects the restriction (v2)
+      // contract; every other event keeps the unchanged v1 contract. The
+      // two validators are disjoint — a restriction event can never be
+      // accepted as v1, and a non-restriction event can never be accepted
+      // as v2.
+      const isRestriction = input && typeof input.restrictionRuleId === 'string' && input.restrictionRuleId.length > 0;
+      const v = isRestriction ? validateRestrictionEnqueueInput(input) : validateEnqueueInput(input);
+      const restrictionRuleId = isRestriction ? v.restrictionRuleId : null;
       const r = await db.query(
         `INSERT INTO ari_outbox_store
            (tenant_id, property_id, event_type, resource_kind, room_type_id,
             rate_plan_id, effective_from, effective_to, source_version,
-            dedupe_key, payload_json, status${v.maxRetries !== null ? ', max_retries' : ''})
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'PENDING'${v.maxRetries !== null ? ',$12' : ''})
+            dedupe_key, payload_json, restriction_rule_id, status${v.maxRetries !== null ? ', max_retries' : ''})
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'PENDING'${v.maxRetries !== null ? ',$13' : ''})
          ON CONFLICT (tenant_id, property_id, dedupe_key)
          DO NOTHING
          RETURNING *`,
         v.maxRetries !== null
-          ? [v.tenantId, v.propertyId, v.eventType, v.resourceKind, v.roomTypeId, v.ratePlanId, v.effectiveFrom, v.effectiveTo, v.sourceVersion, v.dedupeKey, v.payload, v.maxRetries]
-          : [v.tenantId, v.propertyId, v.eventType, v.resourceKind, v.roomTypeId, v.ratePlanId, v.effectiveFrom, v.effectiveTo, v.sourceVersion, v.dedupeKey, v.payload]
+          ? [v.tenantId, v.propertyId, v.eventType, v.resourceKind, v.roomTypeId, v.ratePlanId, v.effectiveFrom, v.effectiveTo, v.sourceVersion, v.dedupeKey, v.payload, restrictionRuleId, v.maxRetries]
+          : [v.tenantId, v.propertyId, v.eventType, v.resourceKind, v.roomTypeId, v.ratePlanId, v.effectiveFrom, v.effectiveTo, v.sourceVersion, v.dedupeKey, v.payload, restrictionRuleId]
       );
       if (r.rows[0]) return { accepted: true, deduped: false, row: r.rows[0] };
       const existing = await db.query(
@@ -370,9 +492,12 @@ function buildAriOutboxStore({ db } = {}) {
 module.exports = {
   buildAriOutboxStore,
   buildAriDedupeKey,
+  buildAriRestrictionDedupeKey,
   validateEnqueueInput,
+  validateRestrictionEnqueueInput,
   EVENT_TYPES,
   RESOURCE_KINDS,
   EVENT_RESOURCE,
+  RESTRICTION_LEVELS,
   STATUS
 };

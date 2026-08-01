@@ -53,16 +53,26 @@ test('2. dbStore putRatePlan uses RETURNING version and surfaces it additively',
   assert.match(body, /Object\.assign\(\{\}, o, \{ version:/);
 });
 
-test('3. dbStore putRestrictionRule uses RETURNING version and surfaces it additively', () => {
+test('3. dbStore putRestrictionRule surfaces the authoritative version from the database', () => {
+  // B2N-C2 strengthened this: the statement now RETURNS the COMPLETE
+  // persisted row (RETURNING *) instead of only the version, because event
+  // identity and payload must describe the row PostgreSQL actually holds.
+  // The version is still database-assigned and still surfaced additively.
   const body = upsertBody('putRestrictionRule');
-  assert.match(body, /RETURNING version/);
-  assert.match(body, /Object\.assign\(\{\}, o, \{ version:/);
+  assert.match(body, /RETURNING \*/);
+  assert.match(body, /version: row\.version/);
+  assert.match(body, /version=ari_restriction_rule\.version\+1/, 'the database computes the increment');
 });
 
-test('the version is taken only from the mutation statement — no extra SELECT, timestamp, counter or hash', () => {
+test('the version is taken only from the mutation statement — no extra round-trip, timestamp, counter or hash', () => {
   for (const name of ['putRoomType', 'putRatePlan', 'putRestrictionRule']) {
     const body = upsertBody(name);
-    assert.ok(!/SELECT/i.test(body), name + ' must not perform a separate SELECT for the version');
+    // The invariant is ONE database round-trip, not the absence of the token
+    // SELECT: B2N-C2's putRestrictionRule wraps its upsert in a CTE whose
+    // UNION ALL branch reads back the unchanged row when an identical retry
+    // skips the DO UPDATE — still a single statement.
+    assert.equal((body.match(/await db\.query\(/g) || []).length, 1,
+      name + ' must issue exactly one query');
     assert.ok(!/Date\.now|new Date\(|createHash/.test(body), name + ' must not derive a version');
   }
 });
@@ -192,12 +202,17 @@ test('the single-cell adjustSold handler emits INVENTORY_CHANGED only when a row
   assert.match(body, /eventType:\s*'INVENTORY_CHANGED'/);
 });
 
-test('12. the restriction handler does NOT enqueue and carries the explicit B2N-C2 deferral marker', () => {
+test('12. the restriction handler now emits its own event under the aob:v2 identity (B2N-C2 lifted the deferral)', () => {
+  // B2N-C1 deliberately deferred restriction event production; B2N-C2
+  // implemented it with a restriction-specific identity built from the
+  // rule's immutable id. This assertion is inverted accordingly — it is now
+  // a regression guard that the deferral does NOT come back.
   const body = handlerBody('upsertRestrictionRule');
-  assert.ok(!/enqueue\(/.test(body), 'restriction-rule event production is deferred');
-  assert.match(HANDLERS, /PHASE 66A-B2N-C2 DEFERRAL/);
-  assert.match(HANDLERS, /room_type_id and rate_plan_id are both NULLABLE/);
-  assert.match(HANDLERS, /remain OPEN/);
+  assert.equal((body.match(/outbox\.enqueue\(/g) || []).length, 1, 'exactly one restriction event');
+  assert.match(body, /restrictionRuleId: saved\.id/);
+  assert.match(body, /eventType:\s*'AVAILABILITY_CHANGED'/);
+  assert.match(body, /resourceKind:\s*'AVAILABILITY'/);
+  assert.ok(!/PHASE 66A-B2N-C2 DEFERRAL/.test(HANDLERS), 'the deferral marker is gone');
 });
 
 test('every write handler resolves a property and fails closed before mutating', () => {
@@ -270,11 +285,13 @@ test('no credential, URL or environment value was introduced into the modified f
   }
 });
 
-test('no migration file was added for B2N-C1 and migration 0087 is untouched', () => {
+test('B2N-C1 itself added no migration, and migration 0087 remains untouched', () => {
+  // B2N-C1 added no migration. B2N-C2 later added 0088 (restriction scope),
+  // so the newest file is no longer 0087 — what this guards is that 0087's
+  // own content is still exactly as committed.
   const migDir = path.join(SRC, 'db', 'migrations');
-  const files = fs.readdirSync(migDir).filter((f) => /^\d{4}_.+\.sql$/.test(f)).sort();
-  assert.equal(files[files.length - 1], '0087_ari_outbox.sql', 'no migration newer than 0087');
   const mig = fs.readFileSync(path.join(migDir, '0087_ari_outbox.sql'), 'utf8');
   assert.match(mig, /CONSTRAINT uq_aob_logical_event\s*\n\s*UNIQUE \(tenant_id, property_id, dedupe_key\)/);
   assert.match(mig, /FOREIGN KEY \(tenant_id, property_id\)/);
+  assert.match(mig, /room_type_id     VARCHAR\(64\)  NOT NULL/, '0087 still declares its original NOT NULL');
 });
