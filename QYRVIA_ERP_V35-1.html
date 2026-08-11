@@ -15536,18 +15536,69 @@ function printKOT(kot){
 }
 
 // ── Session restore on page reload ──
-(function checkSession(){
+// QYRVIA-SESSION-RESTORE-RELIABILITY-009.
+//
+// Deliberately split into two phases so a DOM-readiness problem in the
+// second phase can never undo a correct decision made in the first:
+//   1. _qyValidateStoredSession() -- pure data validation (storage
+//      parsing, expiry, credential lookup). No DOM access at all, so it
+//      cannot fail due to elements not being parsed yet. This is the
+//      ONLY phase that decides whether the session is valid -- once it
+//      returns a user, that decision is final for this page load.
+//   2. _qyApplyRestoredSession(user) -- DOM-dependent UI application
+//      (hide the auth screens, run applyRoleUI()). Deferred to
+//      DOMContentLoaded when the DOM is still loading. Any exception
+//      here is logged, never silently swallowed, and never causes a
+//      fall-through to the login/setup screen -- the session already
+//      passed validation and stays authenticated regardless of a UI
+//      rendering hiccup.
+// Bounded lifetime: a restored session older than this is treated as
+// expired, matching the 8h bound GK_V24's session manager also enforces
+// for its own (separate) fingerprinted session record.
+const QY_SESSION_MAX_AGE_MS=8*60*60*1000;
+
+function _qyValidateStoredSession(){
   const s=sessionStorage.getItem('gk_session');
-  if(s){
-    try{
-      const sess=JSON.parse(s);
-      const users=loadUsers();
-      const user=users.find(u=>u.id===sess.id);
-      if(user){AUTH.user=user;document.getElementById('loginScreen').style.display='none';applyRoleUI();return;}
-    }catch(e){}
+  if(!s) return null;
+  let sess;
+  try{ sess=JSON.parse(s); }catch(e){ sessionStorage.removeItem('gk_session'); return null; }
+  if(!sess||typeof sess!=='object'||!sess.id){ sessionStorage.removeItem('gk_session'); return null; }
+  const age=Date.now()-(sess.startedAt||0);
+  if(!sess.startedAt||age>QY_SESSION_MAX_AGE_MS){ sessionStorage.removeItem('gk_session'); return null; }
+  let users;
+  try{ users=loadUsers(); }catch(e){ return null; }
+  const user=(users||[]).find(u=>u.id===sess.id);
+  if(!user){ sessionStorage.removeItem('gk_session'); return null; } // forged/stale session, no matching credential -- fail closed
+  return user;
+}
+
+function _qyApplyRestoredSession(user){
+  AUTH.user=user;
+  const loginEl=document.getElementById('loginScreen');
+  if(loginEl) loginEl.style.display='none';
+  const setupEl=document.getElementById('adminSetupScreen');
+  if(setupEl) setupEl.style.display='none';
+  try{
+    applyRoleUI();
+  }catch(e){
+    // Logged, not swallowed -- and deliberately NOT re-thrown and NOT
+    // followed by any call to _qyShowAuthScreen(): the session already
+    // validated successfully in phase 1, so a role-UI rendering problem
+    // must not undo that and must not show the login screen again.
+    console.error('[QYRVIA] applyRoleUI() failed while restoring a valid session (session remains active):', e);
   }
-  // show login
-  document.getElementById('loginScreen').style.display='flex';
+}
+
+(function checkSession(){
+  const user=_qyValidateStoredSession();
+  if(user){
+    const finish=()=>_qyApplyRestoredSession(user);
+    if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', finish); }
+    else { finish(); }
+    return; // valid session -- never fall through to the auth screen below
+  }
+  if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', _qyShowAuthScreen); }
+  else { _qyShowAuthScreen(); }
 })();
 
 window.addEventListener('DOMContentLoaded',init);
@@ -22857,11 +22908,14 @@ function auditLog(action, user, description, role=''){
     };
   }
 
-  // Patch doLogin to audit logins
+  // Patch doLogin to audit logins. doLogin() is async (PBKDF2 has no
+  // synchronous API) -- await the real result before reading AUTH.user
+  // rather than checking it immediately after a bare `.apply()`, which
+  // would race the still-pending credential verification.
   const _oLogin = window.doLogin;
   if(typeof _oLogin === 'function'){
-    window.doLogin = function(){
-      _oLogin.apply(this, arguments);
+    window.doLogin = async function(){
+      await _oLogin.apply(this, arguments);
       if(window.AUTH && AUTH.user){
         auditLog('login', AUTH.user.name, `Login to property PMS`, AUTH.user.role);
       }
@@ -23981,13 +24035,15 @@ function erpTrackPage(pageId){
   };
 })();
 
-// Patch doLogin for session tracking
+// Patch doLogin for session tracking. Await the real result instead of
+// guessing with a fixed 100ms delay -- PBKDF2 verification is not
+// guaranteed to finish within any fixed window.
 (function patchLoginForSession(){
   const _orig = window.doLogin;
   if(typeof _orig!=='function') return;
-  window.doLogin = function(){
-    _orig.apply(this, arguments);
-    setTimeout(()=>erpTrackSession('start'), 100);
+  window.doLogin = async function(){
+    await _orig.apply(this, arguments);
+    if(window.AUTH && AUTH.user) erpTrackSession('start');
   };
 })();
 
@@ -26010,10 +26066,15 @@ GK_V24.monitor = (function(){
   'use strict';
 
   // ── Patch 1: Login — add brute-force protection + session start ──
+  // Awaits the real (async, PBKDF2-backed) login result instead of
+  // guessing with a fixed 200ms delay, which is not guaranteed to
+  // outlast PBKDF2 verification -- a slow device could otherwise record
+  // a false failed-login/brute-force-attempt entry moments before the
+  // real, successful login completes.
   (function(){
     const _orig = window.doLogin;
     if(typeof _orig !== 'function') return;
-    window.doLogin = function(){
+    window.doLogin = async function(){
       const userEl = document.getElementById('loginUser') || document.getElementById('loginUsername');
       const passEl = document.getElementById('loginPass') || document.getElementById('loginPassword');
       const username = userEl?.value?.trim() || '';
@@ -26024,21 +26085,19 @@ GK_V24.monitor = (function(){
         return;
       }
 
-      // Call original
-      _orig.apply(this, arguments);
+      // Call original and wait for the real outcome
+      await _orig.apply(this, arguments);
 
       // Check if login succeeded (AUTH.user would be set)
-      setTimeout(()=>{
-        const user = (typeof AUTH !== 'undefined') ? AUTH?.user : null;
-        if(user){
-          GK_V24.security.trackLoginAttempt(username, true);
-          GK_V24.auth.startSession(user);
-          GK_V24.audit.log('security','auth',`Login successful: ${user.name} (${user.role})`);
-        } else {
-          GK_V24.security.trackLoginAttempt(username, false);
-          GK_V24.audit.log('security','auth',`Login failed for: ${username}`);
-        }
-      }, 200);
+      const user = (typeof AUTH !== 'undefined') ? AUTH?.user : null;
+      if(user){
+        GK_V24.security.trackLoginAttempt(username, true);
+        GK_V24.auth.startSession(user);
+        GK_V24.audit.log('security','auth',`Login successful: ${user.name} (${user.role})`);
+      } else {
+        GK_V24.security.trackLoginAttempt(username, false);
+        GK_V24.audit.log('security','auth',`Login failed for: ${username}`);
+      }
     };
   })();
 
