@@ -1889,9 +1889,11 @@ th{border-bottom:2px solid #C9A84C !important}
     <!-- Super Admin Login Tab -->
     <div id="saTab-login">
       <div class="sa-err" id="saErr">Invalid credentials.</div>
-      <div class="sa-field"><label>Username</label><input type="text" id="saUser" placeholder="superadmin" onkeydown="if(event.key==='Enter')doSuperAdminLogin()"/></div>
-      <div class="sa-field"><label>Password</label><input type="password" id="saPass" placeholder="••••••••" onkeydown="if(event.key==='Enter')doSuperAdminLogin()"/></div>
-      <button class="sa-btn" onclick="doSuperAdminLogin()">🔐 Enter Super Admin Portal</button>
+      <p id="saSetupHint" style="display:none;font-size:11px;color:#9E9E9E;margin:0 0 10px;line-height:1.5">No Super Admin credential exists yet on this device. Create one now (12+ characters, upper/lowercase, number, special character). The password is never stored — only a salt and a derived verifier.</p>
+      <div class="sa-field"><label>Username</label><input type="text" id="saUser" placeholder="superadmin" onkeydown="if(event.key==='Enter')(saIsSetupNeeded()?doSuperAdminSetup:doSuperAdminLogin)()"/></div>
+      <div class="sa-field"><label>Password</label><input type="password" id="saPass" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')(saIsSetupNeeded()?doSuperAdminSetup:doSuperAdminLogin)()"/></div>
+      <div class="sa-field" id="saConfirmField" style="display:none"><label>Confirm Password</label><input type="password" id="saConfirmPwd" placeholder="••••••••" autocomplete="new-password" onkeydown="if(event.key==='Enter')doSuperAdminSetup()"/></div>
+      <button class="sa-btn" id="saLoginBtn" onclick="(saIsSetupNeeded()?doSuperAdminSetup:doSuperAdminLogin)()">🔐 Enter Super Admin Portal</button>
     </div>
     <!-- Property Login Tab -->
     <div id="saTab-propLogin" style="display:none">
@@ -1984,7 +1986,48 @@ th{border-bottom:2px solid #C9A84C !important}
       <input type="password" id="loginPass" placeholder="Enter password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"/>
     </div>
     <button class="login-btn" onclick="doLogin()">🔐 Sign In</button>
+    <div style="text-align:center;margin-top:10px">
+      <a href="javascript:void(0)" onclick="qyResetAdminCredential()" style="font-size:11px;color:#9E9E9E;text-decoration:underline">Forgot administrator password? Reset locally</a>
+    </div>
     <div class="login-hint" style="color:#9E9E9E;font-size:10px">QYRVIA ERP · Enterprise Suite · Contact your administrator</div>
+  </div>
+</div>
+
+<!-- Administrator Setup Required — shown instead of #loginScreen only
+     when no local administrator credential exists yet (fresh install,
+     browser-local fallback mode). No default/fallback password exists
+     anywhere in this file; the user must create the first local
+     administrator here before any normal application access is
+     granted. See qyIsAdminSetupNeeded()/_qyShowAuthScreen(). -->
+<div id="adminSetupScreen" style="display:none">
+  <div class="login-box">
+    <div class="login-logo">
+      <div style="font-size:22px;font-weight:800;text-align:center;letter-spacing:.5px">QYRVIA ERP</div>
+      <div class="lg-sub" style="font-size:11px;color:#718096;letter-spacing:1.5px;text-transform:uppercase;text-align:center;margin-top:4px">Administrator Setup Required</div>
+    </div>
+    <p style="font-size:12px;color:#718096;line-height:1.5;margin:0 0 14px">
+      No local administrator account has been set up yet. Create the first
+      administrator username and password to continue. This password is
+      never stored — only a random salt and a derived verifier.
+    </p>
+    <div class="login-error" id="setupError" style="display:none">Please correct the errors below.</div>
+    <div class="login-field">
+      <label>Administrator Username</label>
+      <input type="text" id="setupUser" placeholder="Choose a username" autocomplete="username"/>
+    </div>
+    <div class="login-field">
+      <label>Password</label>
+      <input type="password" id="setupPass" placeholder="At least 12 characters" autocomplete="new-password"/>
+    </div>
+    <div class="login-field">
+      <label>Confirm Password</label>
+      <input type="password" id="setupPassConfirm" placeholder="Re-enter password" autocomplete="new-password" onkeydown="if(event.key==='Enter')doAdminSetup()"/>
+    </div>
+    <div style="font-size:10.5px;color:#9E9E9E;margin:-4px 0 12px;line-height:1.6">
+      Requires: 12+ characters, uppercase, lowercase, a number and a special character.
+    </div>
+    <button class="login-btn" onclick="doAdminSetup()">🔐 Create Administrator</button>
+    <div class="login-hint" style="color:#9E9E9E;font-size:10px">QYRVIA ERP · Enterprise Suite · Browser-local fallback setup</div>
   </div>
 </div>
 
@@ -5633,12 +5676,112 @@ function saveDB(){
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// ADMIN PASSWORD
+// ADMIN PASSWORD — PBKDF2-SHA256 verifier, Web Crypto API.
+// QYRVIA-REMOVE-HARDCODED-ADMIN-CREDENTIAL-008.
+//
+// There is no default/fallback administrator password anywhere in this
+// file. The local administrator's credential (username + salted
+// verifier) exists only once the user has completed either the
+// first-run Administrator Setup flow or a one-time migration of a
+// legacy plaintext password from an older install (see
+// qyTryLegacyAdminMigration below). The plaintext password itself is
+// NEVER stored -- only a random salt and a PBKDF2-derived verifier.
 // ═══════════════════════════════════════════════════════════════════
-const ADMIN_PWD_KEY='gk_admin_pwd';
-const DEFAULT_ADMIN_PWD='Wpcad1742@';
-function getAdminPassword(){return localStorage.getItem(ADMIN_PWD_KEY)||DEFAULT_ADMIN_PWD;}
-function checkAdminPassword(pwd){return pwd===getAdminPassword();}
+const ADMIN_PWD_KEY='gk_admin_pwd'; // legacy plaintext key name, migration source only
+const QY_ADMIN_AUTH_KEY='gk_admin_auth';
+const QY_PBKDF2_ITERATIONS=310000;
+
+function _qyBytesToB64(bytes){
+  let bin='';
+  for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+function _qyB64ToBytes(b64){
+  const bin=atob(b64);
+  const bytes=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+  return bytes;
+}
+function qyRandomSaltB64(len){
+  return _qyBytesToB64(crypto.getRandomValues(new Uint8Array(len||16)));
+}
+async function qyDeriveVerifier(password,saltB64,iterations){
+  const enc=new TextEncoder();
+  const keyMaterial=await crypto.subtle.importKey('raw',enc.encode(password),{name:'PBKDF2'},false,['deriveBits']);
+  const bits=await crypto.subtle.deriveBits(
+    {name:'PBKDF2',salt:_qyB64ToBytes(saltB64),iterations:iterations||QY_PBKDF2_ITERATIONS,hash:'SHA-256'},
+    keyMaterial,256
+  );
+  return _qyBytesToB64(new Uint8Array(bits));
+}
+// Best-effort constant-time comparison -- JS strings/branches can't give
+// hardware-level guarantees, but this avoids the obvious early-exit
+// short-circuit a plain `===` would produce.
+function qyConstantTimeEqual(a,b){
+  if(typeof a!=='string'||typeof b!=='string'||a.length!==b.length) return false;
+  let diff=0;
+  for(let i=0;i<a.length;i++) diff|=a.charCodeAt(i)^b.charCodeAt(i);
+  return diff===0;
+}
+function qyGetAdminAuth(){
+  try{ return JSON.parse(localStorage.getItem(QY_ADMIN_AUTH_KEY)||'null'); }catch(e){ return null; }
+}
+function qySetAdminAuth(rec){ localStorage.setItem(QY_ADMIN_AUTH_KEY,JSON.stringify(rec)); }
+async function qyCreateAdminCredential(username,password){
+  const salt=qyRandomSaltB64(16);
+  const verifier=await qyDeriveVerifier(password,salt,QY_PBKDF2_ITERATIONS);
+  qySetAdminAuth({
+    username:username, salt:salt, verifier:verifier,
+    algo:'PBKDF2-SHA256', iterations:QY_PBKDF2_ITERATIONS, v:1,
+    setupAt:new Date().toISOString()
+  });
+}
+async function qyVerifyAdminPassword(password){
+  const rec=qyGetAdminAuth();
+  if(!rec) return false;
+  const candidate=await qyDeriveVerifier(password,rec.salt,rec.iterations||QY_PBKDF2_ITERATIONS);
+  return qyConstantTimeEqual(candidate,rec.verifier);
+}
+function qyPasswordPolicyErrors(pwd){
+  const errs=[];
+  if(!pwd||pwd.length<12) errs.push('at least 12 characters');
+  if(!/[a-z]/.test(pwd||'')) errs.push('a lowercase letter');
+  if(!/[A-Z]/.test(pwd||'')) errs.push('an uppercase letter');
+  if(!/[0-9]/.test(pwd||'')) errs.push('a number');
+  if(!/[^A-Za-z0-9]/.test(pwd||'')) errs.push('a special character');
+  return errs;
+}
+function qyIsAdminSetupNeeded(){
+  return !qyGetAdminAuth() && !_qyLegacyAdminPlaintextUser();
+}
+// Finds a legacy (pre-008) plaintext admin password left over in
+// gk_users from an older install -- migration source only, never a
+// fallback credential. Returns null once qyGetAdminAuth() exists.
+function _qyLegacyAdminPlaintextUser(){
+  try{
+    const users=loadUsers();
+    const u1=users.find(u=>u.id==='u1'&&u.role==='admin');
+    if(u1&&typeof u1.password==='string'&&u1.password) return u1;
+  }catch(e){}
+  return null;
+}
+// Attempts a one-time legacy-plaintext login+migration. Returns the
+// migrated user record on success, or null (no legacy credential, or
+// the supplied password didn't match it). Never used once a PBKDF2
+// credential already exists -- qyIsAdminSetupNeeded()/qyGetAdminAuth()
+// gate every call site.
+async function qyTryLegacyAdminMigration(uname,pass){
+  if(qyGetAdminAuth()) return null;
+  const u1=_qyLegacyAdminPlaintextUser();
+  if(!u1||u1.username.toLowerCase()!==uname||u1.password!==pass) return null;
+  await qyCreateAdminCredential(u1.username,pass);
+  const users=loadUsers();
+  const idx=users.findIndex(u=>u.id==='u1');
+  if(idx>=0){ delete users[idx].password; users[idx].tempPwd=false; saveUsers(users); }
+  localStorage.removeItem(ADMIN_PWD_KEY); // remove the old separate step-up password key too
+  return idx>=0?users[idx]:null;
+}
+
 function showChangePwdFields(){
   document.getElementById('adminPwdFields').style.display='block';
   document.getElementById('btnShowChangePwd').style.display='none';
@@ -5649,21 +5792,25 @@ function cancelChangePwd(){
   document.getElementById('adminPwdFields').style.display='none';
   document.getElementById('btnShowChangePwd').style.display='';
 }
-function changeAdminPassword(){
+async function changeAdminPassword(){
   const current=document.getElementById('dmCurrentPwd').value;
   const newPwd=document.getElementById('dmNewPwd').value;
-  const confirm=document.getElementById('dmConfirmPwd').value;
-  if(!checkAdminPassword(current)){toast('Current password is incorrect.','error');return;}
-  if(!newPwd||newPwd.length<6){toast('New password must be at least 6 characters.','error');return;}
-  if(newPwd!==confirm){toast('New passwords do not match.','error');return;}
-  localStorage.setItem(ADMIN_PWD_KEY,newPwd);
-  // Also update the admin user's password in gk_users and clear tempPwd flag
+  const confirmPwd=document.getElementById('dmConfirmPwd').value;
+  const currentOk=await qyVerifyAdminPassword(current);
+  document.getElementById('dmCurrentPwd').value='';
+  if(!currentOk){toast('Current password is incorrect.','error');document.getElementById('dmNewPwd').value='';document.getElementById('dmConfirmPwd').value='';return;}
+  const policyErrs=qyPasswordPolicyErrors(newPwd);
+  if(policyErrs.length){toast('New password needs: '+policyErrs.join(', ')+'.','error');document.getElementById('dmNewPwd').value='';document.getElementById('dmConfirmPwd').value='';return;}
+  if(newPwd!==confirmPwd){toast('New passwords do not match.','error');document.getElementById('dmNewPwd').value='';document.getElementById('dmConfirmPwd').value='';return;}
+  const rec=qyGetAdminAuth();
+  await qyCreateAdminCredential(rec?.username||'admin',newPwd);
   const users=loadUsers();
   const adminIdx=users.findIndex(u=>u.role==='admin'&&u.id==='u1');
-  if(adminIdx>=0){users[adminIdx].password=newPwd;users[adminIdx].tempPwd=false;saveUsers(users);}
-  if(window.AUTH?.user&&window.AUTH.user.id==='u1'){window.AUTH.user.tempPwd=false;}
+  if(adminIdx>=0){delete users[adminIdx].password;users[adminIdx].tempPwd=false;saveUsers(users);}
   cancelChangePwd(); // hide fields and reset after success
-  toast('✅ Admin password changed successfully! Temporary password cleared.','success');
+  toast('✅ Admin password changed. Please sign in again with the new password.','success');
+  // Password change invalidates the current local session -- require a fresh login.
+  setTimeout(()=>{ if(typeof _qyForceReauth==='function') _qyForceReauth(); },1200);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -5706,15 +5853,16 @@ function openVoidModal(type,id){
   setTimeout(()=>document.getElementById('voidReason').focus(),200);
 }
 
-function confirmVoid(){
+async function confirmVoid(){
   const pwd=document.getElementById('voidPassword').value;
   const reason=document.getElementById('voidReason').value.trim();
   const id=document.getElementById('voidTargetId').value;
   const type=document.getElementById('voidTargetType').value;
   if(!reason){toast('Please enter a void reason.','error');return;}
-  if(!checkAdminPassword(pwd)){
+  const pwdOk=await qyVerifyAdminPassword(pwd);
+  document.getElementById('voidPassword').value='';
+  if(!pwdOk){
     toast('❌ Incorrect admin password.','error');
-    document.getElementById('voidPassword').value='';
     document.getElementById('voidPassword').focus();
     return;
   }
@@ -11953,10 +12101,12 @@ function cancelClearData(){
   document.getElementById('btnShowClearData').style.display='inline-flex';
   document.getElementById('clearDataPwd').value='';
 }
-function confirmClearAllData(){
+async function confirmClearAllData(){
   const pwd=document.getElementById('clearDataPwd').value.trim();
   if(!pwd){toast('Please enter the admin password.','error');return;}
-  if(!checkAdminPassword(pwd)){toast('Incorrect admin password.','error');document.getElementById('clearDataPwd').value='';return;}
+  const pwdOk=await qyVerifyAdminPassword(pwd);
+  document.getElementById('clearDataPwd').value='';
+  if(!pwdOk){toast('Incorrect admin password.','error');return;}
   if(!confirm('⚠️ WARNING: This will permanently delete ALL data including bookings, inventory, invoices, and GRN records.\n\nThis cannot be undone!\n\nAre you absolutely sure?'))return;
   localStorage.removeItem('gk_v8');
   location.reload();
@@ -14232,9 +14382,12 @@ function loadUsers(){
     const s=localStorage.getItem('gk_users');
     if(s)return JSON.parse(s);
   }catch(e){}
-  // seed only temporary admin — force password change on first login
+  // Seed only the bootstrap administrator identity -- deliberately no
+  // password field. The account has no working credential until the
+  // Administrator Setup flow (or legacy migration) creates one in
+  // gk_admin_auth; see qyIsAdminSetupNeeded()/doLogin().
   const defaults=[
-    {id:'u1',name:'Administrator',username:'admin',password:'admin123',role:'admin',tempPwd:true}
+    {id:'u1',name:'Administrator',username:'admin',role:'admin',tempPwd:false}
   ];
   localStorage.setItem('gk_users',JSON.stringify(defaults));
   return defaults;
@@ -14242,38 +14395,140 @@ function loadUsers(){
 function saveUsers(users){localStorage.setItem('gk_users',JSON.stringify(users));}
 
 // ── Login / Logout ──
-function doLogin(){
+// Shows whichever entry screen is currently correct: Administrator
+// Setup Required (no admin credential exists yet, local fallback mode)
+// or the normal login screen. Used at boot and after every logout/
+// session-invalidation, so a wiped/missing credential always fails
+// closed into Setup Required rather than silently granting access.
+function _qyShowAuthScreen(){
+  const setupEl=document.getElementById('adminSetupScreen');
+  const loginEl=document.getElementById('loginScreen');
+  if(qyIsAdminSetupNeeded()){
+    if(loginEl) loginEl.style.display='none';
+    if(setupEl) setupEl.style.display='flex';
+  } else {
+    if(setupEl) setupEl.style.display='none';
+    if(loginEl) loginEl.style.display='flex';
+  }
+}
+// Clears the local session and returns to the auth screen WITHOUT the
+// "Sign out?" confirmation dialog -- used only for programmatic,
+// already-confirmed invalidation (password change, session expiry),
+// never as a substitute for the user-initiated doLogout().
+function _qyForceReauth(){
+  AUTH.user=null;
+  sessionStorage.removeItem('gk_session');
+  document.getElementById('loginUser').value='';
+  document.getElementById('loginPass').value='';
+  const rb=document.getElementById('topbarRoleBadge'); if(rb) rb.style.display='none';
+  const un=document.getElementById('topbarUserName'); if(un) un.style.display='none';
+  const lb=document.getElementById('logoutBtn'); if(lb) lb.style.display='none';
+  _qyShowAuthScreen();
+}
+
+async function doLogin(){
   const uname=document.getElementById('loginUser').value.trim().toLowerCase();
   const pass =document.getElementById('loginPass').value;
   const errEl=document.getElementById('loginError');
-  const users =loadUsers();
-  const user  =users.find(u=>u.username.toLowerCase()===uname && u.password===pass);
-  if(!user){errEl.style.display='block';document.getElementById('loginPass').value='';return;}
+  let user=null;
+  const adminAuth=qyGetAdminAuth();
+  if(adminAuth && uname===adminAuth.username.toLowerCase()){
+    const ok=await qyVerifyAdminPassword(pass);
+    if(ok){
+      const users=loadUsers();
+      user=users.find(u=>u.id==='u1')||null;
+    }
+  } else if(!adminAuth){
+    // No PBKDF2 credential yet -- only a legacy pre-008 plaintext
+    // install can still log in, and only via a one-time migration.
+    user=await qyTryLegacyAdminMigration(uname,pass);
+  }
+  if(!user){
+    // Non-admin accounts (created later via User Manager) keep their
+    // existing plaintext-comparison login -- unaffected by this fix.
+    const users=loadUsers();
+    user=users.find(u=>u.username.toLowerCase()===uname && u.role!=='admin' && u.password===pass)||null;
+  }
+  document.getElementById('loginPass').value='';
+  if(!user){errEl.style.display='block';return;}
   errEl.style.display='none';
   AUTH.user=user;
-  sessionStorage.setItem('gk_session',JSON.stringify({id:user.id,username:user.username,role:user.role,name:user.name}));
+  sessionStorage.setItem('gk_session',JSON.stringify({id:user.id,username:user.username,role:user.role,name:user.name,startedAt:Date.now()}));
   document.getElementById('loginScreen').style.display='none';
   applyRoleUI();
   init();
-  // Warn admin about temporary password
-  if(user.role==='admin'&&user.tempPwd){
-    setTimeout(()=>{
-      toast('⚠️ You are using a TEMPORARY password. Please change it immediately in Data Manager → Admin Password.','error');
-    },1500);
-  }
 }
 
 function doLogout(){
   if(!confirm('Sign out?'))return;
-  AUTH.user=null;
-  sessionStorage.removeItem('gk_session');
-  document.getElementById('loginScreen').style.display='flex';
-  document.getElementById('loginUser').value='';
-  document.getElementById('loginPass').value='';
-  // hide topbar user info
-  document.getElementById('topbarRoleBadge').style.display='none';
-  document.getElementById('topbarUserName').style.display='none';
-  document.getElementById('logoutBtn').style.display='none';
+  _qyForceReauth();
+}
+
+// Destructive local administrator reset (forgotten password). Never
+// recovers or displays the previous password -- it can't, since only a
+// salt+verifier are ever stored. Requires an explicit, clearly-worded
+// confirmation dialog every time; there is no query-parameter, console-
+// only, or hidden-shortcut path to this function. Only erases the
+// administrator CREDENTIAL, not application data -- the user sets up a
+// new administrator afterward via the normal first-run Setup screen.
+function qyResetAdminCredential(){
+  const ok=confirm(
+    '⚠️ RESET ADMINISTRATOR ACCESS\n\n'+
+    'This will permanently erase the current local administrator '+
+    'credential on this device/browser. The previous password cannot '+
+    'be recovered or displayed.\n\n'+
+    'After this, you will need to set up a NEW administrator account '+
+    '(Administrator Setup Required). This does not delete your PMS '+
+    'data (bookings, inventory, invoices, etc.), but any local browser '+
+    'admin session will be signed out immediately.\n\n'+
+    'Are you sure you want to reset local administrator access?'
+  );
+  if(!ok) return;
+  localStorage.removeItem(QY_ADMIN_AUTH_KEY);
+  localStorage.removeItem(ADMIN_PWD_KEY); // remove any leftover legacy step-up key too
+  try{
+    const users=loadUsers();
+    const idx=users.findIndex(u=>u.id==='u1');
+    if(idx>=0){ delete users[idx].password; users[idx].tempPwd=false; saveUsers(users); }
+  }catch(e){}
+  if(typeof _qyForceReauth==='function') _qyForceReauth();
+  toast('🔒 Administrator credential reset. Please set up a new administrator.','error');
+}
+
+// First-run local administrator creation. Only reachable while
+// qyIsAdminSetupNeeded() is true (no PBKDF2 credential and no legacy
+// plaintext account exist) -- see _qyShowAuthScreen(). Refuses to run
+// at all if an administrator credential already exists, so this can
+// never be used to silently replace/take over an existing account.
+async function doAdminSetup(){
+  if(!qyIsAdminSetupNeeded()){
+    toast('An administrator already exists. Use Sign In instead.','error');
+    return;
+  }
+  const errEl=document.getElementById('setupError');
+  const uname=document.getElementById('setupUser').value.trim();
+  const pass=document.getElementById('setupPass').value;
+  const confirmPass=document.getElementById('setupPassConfirm').value;
+  const showErr=(msg)=>{ errEl.textContent=msg; errEl.style.display='block'; };
+  if(!uname){ showErr('Please choose an administrator username.'); return; }
+  const policyErrs=qyPasswordPolicyErrors(pass);
+  if(policyErrs.length){ showErr('Password needs: '+policyErrs.join(', ')+'.'); return; }
+  if(pass!==confirmPass){ showErr('Passwords do not match.'); return; }
+  errEl.style.display='none';
+  await qyCreateAdminCredential(uname,pass);
+  const users=loadUsers();
+  let u1=users.find(u=>u.id==='u1');
+  if(!u1){ u1={id:'u1',name:'Administrator',role:'admin'}; users.push(u1); }
+  u1.username=uname; u1.role='admin'; u1.tempPwd=false; delete u1.password;
+  saveUsers(users);
+  document.getElementById('setupPass').value='';
+  document.getElementById('setupPassConfirm').value='';
+  AUTH.user=u1;
+  sessionStorage.setItem('gk_session',JSON.stringify({id:u1.id,username:u1.username,role:u1.role,name:u1.name,startedAt:Date.now()}));
+  document.getElementById('adminSetupScreen').style.display='none';
+  applyRoleUI();
+  init();
+  toast('✅ Administrator account created. Welcome to QYRVIA ERP.','success');
 }
 
 function applyRoleUI(){
@@ -22320,16 +22575,57 @@ function saasGetObj(key,def={}){ try{ const s=localStorage.getItem(key); return 
 function saasSet(key,data){ try{ localStorage.setItem(key,JSON.stringify(data)); }catch(e){ console.warn('SAAS storage error',e); } }
 
 // ─────────────────────────────────────────────────────────────────────
-// SUPER ADMIN CREDENTIALS (stored hashed-style in localStorage)
+// SUPER ADMIN CREDENTIALS — PBKDF2-SHA256 salted verifier, no default.
+// QYRVIA-REMOVE-HARDCODED-ADMIN-CREDENTIAL-008. Reuses the same Web
+// Crypto helpers (qyRandomSaltB64/qyDeriveVerifier/qyConstantTimeEqual/
+// qyPasswordPolicyErrors) as the primary local administrator. There is
+// no seeded default username or password; qyIsAdminSetupNeeded()-style
+// gating (saIsSetupNeeded()) requires an explicit one-time setup before
+// this portal can be entered.
 // ─────────────────────────────────────────────────────────────────────
-const SUPER_ADMIN_KEY = 'saas_superadmin_creds';
-function getSuperAdminCreds(){
-  const s = localStorage.getItem(SUPER_ADMIN_KEY);
-  if(s) try{ return JSON.parse(s); }catch(e){}
-  // Default seeded credentials
-  const defaults = { username:'superadmin', password:'GK@SaaS2025!', name:'Super Administrator' };
-  localStorage.setItem(SUPER_ADMIN_KEY, JSON.stringify(defaults));
-  return defaults;
+const SUPER_ADMIN_KEY = 'saas_superadmin_creds'; // legacy plaintext key, migration source only
+const SUPER_ADMIN_AUTH_KEY = 'saas_superadmin_auth';
+function saGetAuth(){ try{ return JSON.parse(localStorage.getItem(SUPER_ADMIN_AUTH_KEY)||'null'); }catch(e){ return null; } }
+function saIsSetupNeeded(){ return !saGetAuth() && !_saLegacyPlaintextCreds(); }
+function _saLegacyPlaintextCreds(){
+  try{
+    const s=localStorage.getItem(SUPER_ADMIN_KEY);
+    if(!s) return null;
+    const c=JSON.parse(s);
+    return (c && typeof c.password==='string' && c.password) ? c : null;
+  }catch(e){ return null; }
+}
+async function saCreateCredential(username,password){
+  const salt=qyRandomSaltB64(16);
+  const verifier=await qyDeriveVerifier(password,salt,QY_PBKDF2_ITERATIONS);
+  localStorage.setItem(SUPER_ADMIN_AUTH_KEY,JSON.stringify({
+    username:username,salt:salt,verifier:verifier,
+    algo:'PBKDF2-SHA256',iterations:QY_PBKDF2_ITERATIONS,v:1,setupAt:new Date().toISOString()
+  }));
+}
+async function saVerifyPassword(password){
+  const rec=saGetAuth();
+  if(!rec) return false;
+  const candidate=await qyDeriveVerifier(password,rec.salt,rec.iterations||QY_PBKDF2_ITERATIONS);
+  return qyConstantTimeEqual(candidate,rec.verifier);
+}
+// One-time legacy-plaintext migration, mirroring qyTryLegacyAdminMigration.
+async function saTryLegacyMigration(uname,pass){
+  if(saGetAuth()) return null;
+  const legacy=_saLegacyPlaintextCreds();
+  if(!legacy||legacy.username!==uname||legacy.password!==pass) return null;
+  await saCreateCredential(legacy.username,pass);
+  localStorage.removeItem(SUPER_ADMIN_KEY);
+  return legacy;
+}
+// Kept for the few read-only display sites (e.g. the settings panel's
+// disabled "Current Username" field) that only need the username, never
+// the credential itself.
+function getSuperAdminUsername(){
+  const auth=saGetAuth();
+  if(auth) return auth.username;
+  const legacy=_saLegacyPlaintextCreds();
+  return legacy ? legacy.username : '(not set up)';
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -22418,14 +22714,51 @@ function saTabs(tab, el){
   document.getElementById('saTab-login').style.display    = tab==='login'?'':'none';
   document.getElementById('saTab-propLogin').style.display= tab==='propLogin'?'':'none';
   if(tab==='propLogin') saasFillCompanySelect();
+  if(tab==='login') _saRefreshLoginTabMode();
+}
+// Toggles the Super Admin tab between "create the first credential"
+// and "sign in" depending on whether one exists yet. Call whenever the
+// tab/screen becomes visible.
+function _saRefreshLoginTabMode(){
+  const needsSetup=saIsSetupNeeded();
+  const hint=document.getElementById('saSetupHint');
+  const confirmField=document.getElementById('saConfirmField');
+  const btn=document.getElementById('saLoginBtn');
+  if(hint) hint.style.display=needsSetup?'block':'none';
+  if(confirmField) confirmField.style.display=needsSetup?'':'none';
+  if(btn) btn.textContent=needsSetup?'🔐 Create Super Admin':'🔐 Enter Super Admin Portal';
 }
 
-function doSuperAdminLogin(){
-  const creds = getSuperAdminCreds();
+async function doSuperAdminSetup(){
+  if(!saIsSetupNeeded()){ doSuperAdminLogin(); return; }
+  const u=document.getElementById('saUser').value.trim();
+  const p=document.getElementById('saPass').value;
+  const cp=document.getElementById('saConfirmPwd')?.value;
+  const err=document.getElementById('saErr');
+  if(!u){ err.style.display='block'; err.textContent='Choose a Super Admin username.'; return; }
+  const policyErrs=qyPasswordPolicyErrors(p);
+  if(policyErrs.length){ err.style.display='block'; err.textContent='Password needs: '+policyErrs.join(', ')+'.'; return; }
+  if(p!==cp){ err.style.display='block'; err.textContent='Passwords do not match.'; return; }
+  err.style.display='none';
+  await saCreateCredential(u,p);
+  document.getElementById('saPass').value='';
+  if(document.getElementById('saConfirmPwd')) document.getElementById('saConfirmPwd').value='';
+  toast('✅ Super Admin credential created. Please sign in.','success');
+  _saRefreshLoginTabMode();
+}
+
+async function doSuperAdminLogin(){
   const u = document.getElementById('saUser').value.trim();
   const p = document.getElementById('saPass').value;
   const err = document.getElementById('saErr');
-  if(u===creds.username && p===creds.password){
+  let ok=false;
+  if(saGetAuth()){
+    ok = u.toLowerCase()===saGetAuth().username.toLowerCase() && await saVerifyPassword(p);
+  } else {
+    ok = !!(await saTryLegacyMigration(u,p));
+  }
+  document.getElementById('saPass').value='';
+  if(ok){
     err.style.display='none';
     SAAS_CTX = { mode:'super_admin', companyId:null, propertyId:null };
     saasSaveContext();
@@ -22537,8 +22870,10 @@ function saasApplyDataIsolation(propertyId){
   // Patch loadUsers to use property key
   window.loadUsers = function(){
     try{ const s=localStorage.getItem(usrKey); if(s)return JSON.parse(s); }catch(e){}
-    // Seed default admin for this property
-    const defaults=[{id:'u1',name:'Property Admin',username:'admin',password:'admin123',role:'admin',tempPwd:true}];
+    // Seed the property administrator identity only -- no password field.
+    // No working credential exists until Administrator Setup (or legacy
+    // migration) creates one; see qyIsAdminSetupNeeded()/doLogin().
+    const defaults=[{id:'u1',name:'Property Admin',username:'admin',role:'admin',tempPwd:false}];
     localStorage.setItem(usrKey,JSON.stringify(defaults));
     return defaults;
   };
@@ -22547,7 +22882,7 @@ function saasApplyDataIsolation(propertyId){
 
 function saShowLegacyLogin(){
   document.getElementById('saasAdminScreen').classList.remove('visible');
-  document.getElementById('loginScreen').style.display='flex';
+  _qyShowAuthScreen();
 }
 
 function saLogout(){
@@ -22556,6 +22891,7 @@ function saLogout(){
   saasSaveContext();
   document.getElementById('saasPortal').style.display='none';
   document.getElementById('saasAdminScreen').classList.add('visible');
+  _saRefreshLoginTabMode();
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -22853,28 +23189,40 @@ function saExportAudit(){
 
 // ── SA Settings panel ──
 function saRenderSettings(){
-  const creds = getSuperAdminCreds();
   return `
     <div style="margin-bottom:16px"><h2 style="font-size:16px;font-weight:700;">⚙️ Super Admin Settings</h2></div>
     <div class="card" style="max-width:480px">
       <div class="card-title" style="margin-bottom:14px;">🔐 Change Super Admin Password</div>
-      <div class="form-group"><label class="form-label">Current Username</label><input class="form-input" value="${creds.username}" disabled/></div>
-      <div class="form-group"><label class="form-label">New Password</label><input class="form-input" type="password" id="saNewPwd" placeholder="Enter new password"/></div>
-      <div class="form-group"><label class="form-label">Confirm Password</label><input class="form-input" type="password" id="saConfPwd" placeholder="Confirm password"/></div>
+      <div class="form-group"><label class="form-label">Current Username</label><input class="form-input" value="${getSuperAdminUsername()}" disabled/></div>
+      <div class="form-group"><label class="form-label">Current Password</label><input class="form-input" type="password" id="saCurPwd" placeholder="Enter current password" autocomplete="current-password"/></div>
+      <div class="form-group"><label class="form-label">New Password</label><input class="form-input" type="password" id="saNewPwd" placeholder="12+ chars, upper/lower/number/special" autocomplete="new-password"/></div>
+      <div class="form-group"><label class="form-label">Confirm Password</label><input class="form-input" type="password" id="saConfPwd" placeholder="Confirm password" autocomplete="new-password"/></div>
       <button class="btn btn-primary" onclick="saChangePassword()" style="margin-top:8px;">💾 Update Password</button>
     </div>`;
 }
 
-function saChangePassword(){
+async function saChangePassword(){
+  const cur=document.getElementById('saCurPwd').value;
   const np=document.getElementById('saNewPwd').value;
   const cp=document.getElementById('saConfPwd').value;
-  if(!np||np.length<8){ alert('Password must be at least 8 characters.'); return; }
-  if(np!==cp){ alert('Passwords do not match.'); return; }
-  const creds=getSuperAdminCreds();
-  creds.password=np;
-  localStorage.setItem(SUPER_ADMIN_KEY,JSON.stringify(creds));
+  const curOk=await saVerifyPassword(cur);
+  document.getElementById('saCurPwd').value='';
+  if(!curOk){ alert('Current password is incorrect.'); document.getElementById('saNewPwd').value=''; document.getElementById('saConfPwd').value=''; return; }
+  const policyErrs=qyPasswordPolicyErrors(np);
+  if(policyErrs.length){ alert('New password needs: '+policyErrs.join(', ')+'.'); document.getElementById('saNewPwd').value=''; document.getElementById('saConfPwd').value=''; return; }
+  if(np!==cp){ alert('Passwords do not match.'); document.getElementById('saNewPwd').value=''; document.getElementById('saConfPwd').value=''; return; }
+  await saCreateCredential(saGetAuth().username,np);
+  document.getElementById('saNewPwd').value='';
+  document.getElementById('saConfPwd').value='';
   auditLog('update','Super Admin','Super Admin password changed','super_admin');
-  alert('Password updated successfully.');
+  alert('Password updated successfully. Please sign in again.');
+  // Force re-authentication -- no confirmation prompt, this is an
+  // already-confirmed consequence of a successful password change.
+  SAAS_CTX = { mode:'legacy', companyId:null, propertyId:null };
+  saasSaveContext();
+  document.getElementById('saasPortal').style.display='none';
+  document.getElementById('saasAdminScreen').classList.add('visible');
+  _saRefreshLoginTabMode();
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -23538,7 +23886,9 @@ function notifMarkAllRead(){
   if(mode === 'saas'){
     // SaaS mode: show SaaS login screen
     document.getElementById('loginScreen').style.display='none';
+    const setupEl=document.getElementById('adminSetupScreen'); if(setupEl) setupEl.style.display='none';
     document.getElementById('saasAdminScreen').classList.add('visible');
+    if(typeof _saRefreshLoginTabMode==='function') _saRefreshLoginTabMode();
     saasFillCompanySelect();
   } else {
     // Legacy mode: normal login flow (do nothing — existing checkSession handles it)
@@ -27213,13 +27563,12 @@ GK_V25.health = (function(){
       return {ok, msg: ok ? `${Object.keys(window.PMS||{}).length} modules exposed` : 'Namespace not built'};
     }, 1);
 
-    // Default password check
-    check('Default Password Security', ()=>{
-      const users = typeof loadUsers==='function' ? loadUsers() : [];
-      const admin = users.find(u=>u.role==='admin');
-      const defaultPwd = 'Wpcad1742@';
-      const hasDefault = admin && !admin.v25_hashed && admin.password === defaultPwd;
-      return {ok: !hasDefault, msg: hasDefault ? '⚠️ Admin using default password — please change!' : 'Admin password is not default'};
+    // Administrator credential check -- there is no default/fallback
+    // password in this build; this reports whether Administrator Setup
+    // (PBKDF2 verifier) has actually been completed on this device.
+    check('Administrator Credential Security', ()=>{
+      const setupDone = typeof qyGetAdminAuth==='function' && !!qyGetAdminAuth();
+      return {ok: setupDone, msg: setupDone ? 'Administrator credential is set up (salted PBKDF2 verifier)' : '⚠️ Administrator Setup not yet completed on this device'};
     }, 2);
 
     // Storage capacity
