@@ -28005,7 +28005,14 @@ GK_V25._initCallbacks = [];
 
   /* ── 1. CONFIG ─────────────────────────────────────────────────────── */
   const Cfg = (() => {
-    const DEF = { apiBase:'', mode:'standalone', autoSync:true,
+    // Production default mode is a neutral "backend connected" posture,
+    // not Standalone -- Standalone remains a selectable option (see the
+    // v26iMode <select>), just never the production default. This has
+    // no effect on whether any automatic request is attempted: that is
+    // separately gated on apiBase being a non-blank, valid http(s) URL
+    // (blank by default here), both directly in boot() and via
+    // QY_RUNTIME.isBackendConfigured().
+    const DEF = { apiBase:'', mode:'connected', autoSync:true,
                   syncMs:30000, timeout:8000, propertyId:'' };
     let c = { ...DEF };
     const load = () => { try { const s=JSON.parse(localStorage.getItem(CFG_KEY)||'null'); if(s) c={...DEF,...s}; } catch{} return c; };
@@ -28014,6 +28021,21 @@ GK_V25._initCallbacks = [];
     const connected = () => c.mode==='connected'||c.mode==='hybrid';
     return { load, save, get, connected };
   })();
+
+  /* ── 1b. ACCESS CONTROL — Backend API Configuration / migration is
+     restricted to the existing Super Admin / System Admin roles already
+     used elsewhere in this file (same isAdmin pattern as
+     patchApplyRoleUI's permissions/audit-log gate). Every function below
+     that renders sensitive connection details (endpoint, credentials) or
+     performs a sensitive action (save/test/login/migrate) checks this
+     first — not just the sidebar nav item — so a non-admin cannot reveal
+     the controls by calling GK_V26.ui.* directly from the console either. */
+  const _isBackendAdmin = () => {
+    try {
+      const u = (typeof AUTH !== 'undefined' && AUTH) ? AUTH.user : null;
+      return !!u && (u.role==='admin' || u.role==='prop_admin' || u.role==='super_admin');
+    } catch(e) { return false; }
+  };
 
   /* ── 2. API CLIENT ─────────────────────────────────────────────────── */
   const Api = (() => {
@@ -28198,20 +28220,44 @@ GK_V25._initCallbacks = [];
 
     const _bar = () => {};
 
+    /* Safe status summary — everything an ordinary operational user or a
+       Standalone Mode surface is allowed to see. No endpoint, no
+       username/password, no migration controls, no LAN/localhost
+       address, no credential-related error detail. */
+    const _safeStatusLabel = () => {
+      const mode = Cfg.get('mode');
+      if (mode === 'standalone') return 'Standalone Mode';
+      if (Api.isOnline()) return 'Backend connected';
+      if (Cfg.get('apiBase')) return 'Backend unavailable';
+      return 'Configuration required';
+    };
+    const _renderSafeStatus = () => {
+      const body = document.getElementById('v26CfgBody');
+      if (!body) return;
+      body.innerHTML = `
+        <div class="v26-cfg">
+          <div class="v26-cfg-row"><span class="v26-cfg-key">Status</span>
+            <span class="v26-cfg-val" style="font-weight:700">${_safeStatusLabel()}</span></div>
+        </div>
+        <p style="font-size:11px;color:#9E9E9E;margin-top:10px">Backend configuration is managed by your System Administrator.</p>`;
+      document.getElementById('v26CfgModal').classList.add('v26-open');
+    };
+
     const openConfig = () => {
+      if (!_isBackendAdmin()) { _renderSafeStatus(); return; }
       const cfg=Cfg.get();
       document.getElementById('v26CfgBody').innerHTML=`
         <div class="v26-grid2">
           <div>
             <div class="v26-cfg">
               <div class="v26-cfg-row"><span class="v26-cfg-key">Status</span>
-                <span style="font-weight:700;color:${Api.isOnline()?'#1B5E20':'#B71C1C'}">${Api.isOnline()?'✅ Online':'❌ Offline'}</span></div>
+                <span style="font-weight:700;color:${!cfg.apiBase?'#616161':(Api.isOnline()?'#1B5E20':'#B71C1C')}">${!cfg.apiBase?'⚪ Not Configured':(Api.isOnline()?'✅ Online':'❌ Offline')}</span></div>
               <div class="v26-cfg-row"><span class="v26-cfg-key">Version</span><span class="v26-cfg-val">${V26_VER}</span></div>
               <div class="v26-cfg-row"><span class="v26-cfg-key">Queue</span><span class="v26-cfg-val">${Sync.queueLen()} pending</span></div>
               <div class="v26-cfg-row"><span class="v26-cfg-key">Last Sync</span><span class="v26-cfg-val">${Sync.lastSyncTime()||'Never'}</span></div>
             </div>
             <div class="v26-field"><label class="v26-label">API Base URL</label>
-              <input class="v26-input" id="v26iUrl" value="${cfg.apiBase}" placeholder="http://192.168.1.x:3000/api/v1"></div>
+              <input class="v26-input" id="v26iUrl" value="${cfg.apiBase}" placeholder="https://your-backend.example.com/api/v1"></div>
             <div class="v26-field"><label class="v26-label">Property ID</label>
               <input class="v26-input" id="v26iProp" value="${cfg.propertyId}" placeholder="prop_qyrvia_001"></div>
             <div class="v26-field"><label class="v26-label">Mode</label>
@@ -28233,7 +28279,7 @@ GK_V25._initCallbacks = [];
             <div class="v26-field"><label class="v26-label">Username</label>
               <input class="v26-input" id="v26iUser" placeholder="admin" autocomplete="username"></div>
             <div class="v26-field"><label class="v26-label">Password</label>
-              <input class="v26-input" type="password" id="v26iPwd" placeholder="••••••••" autocomplete="current-password"></div>
+              <input class="v26-input" type="password" id="v26iPwd" value="" placeholder="••••••••" autocomplete="current-password"></div>
             <button class="v26-btn v26-btn-teal" style="width:100%" onclick="GK_V26.ui._doLogin()">🔑 Login to Backend</button>
             <div id="v26LoginMsg" style="margin-top:8px"></div>
             <hr style="margin:16px 0;border:none;border-top:1px solid #E0E0E0">
@@ -28257,6 +28303,7 @@ GK_V25._initCallbacks = [];
     };
 
     const _saveConfig = () => {
+      if (!_isBackendAdmin()) return;
       Cfg.save({
         apiBase:  document.getElementById('v26iUrl')?.value?.trim()||'',
         propertyId:document.getElementById('v26iProp')?.value?.trim()||'',
@@ -28269,6 +28316,7 @@ GK_V25._initCallbacks = [];
     };
 
     const _testConn = async () => {
+      if (!_isBackendAdmin()) return;
       const url=document.getElementById('v26iUrl')?.value?.trim();
       if(url) Cfg.save({apiBase:url});
       const el=document.getElementById('v26CfgMsg');
@@ -28280,6 +28328,7 @@ GK_V25._initCallbacks = [];
     };
 
     const _doLogin = async () => {
+      if (!_isBackendAdmin()) return;
       const u=document.getElementById('v26iUser')?.value?.trim();
       const p=document.getElementById('v26iPwd')?.value;
       const el=document.getElementById('v26LoginMsg');
@@ -28291,11 +28340,16 @@ GK_V25._initCallbacks = [];
         Api.setOnline(true);
         _bar(true, Cfg.get('mode'));
       } catch(e){
-        if(el) el.innerHTML=`<div class="v26-alert err">❌ ${e.message}</div>`;
+        /* Sanitized: never surface raw backend error text (may contain
+           credential/connection detail) to the interface. */
+        if(el) el.innerHTML='<div class="v26-alert err">❌ Login failed — check credentials and try again</div>';
+      } finally {
+        const pf=document.getElementById('v26iPwd'); if(pf) pf.value='';
       }
     };
 
     const openHealth = async () => {
+      if (!_isBackendAdmin()) { _renderSafeStatus(); return; }
       const body=document.getElementById('v26HealthBody');
       if(!body) return;
       body.innerHTML='<div class="v26-alert info"><span class="v26-spin"></span> Running checks…</div>';
@@ -28335,12 +28389,16 @@ GK_V25._initCallbacks = [];
     };
 
     const openMigration = () => {
+      if (!_isBackendAdmin()) return;
       const DB=window.DB||{};
       const counts={Rooms:(DB.rooms||[]).length,Bookings:(DB.bookings||[]).length,
         Items:(DB.items||[]).length,Invoices:(DB.invoices||[]).length,
         Employees:(DB.employees||[]).length,GRNs:(DB.grn||[]).length,
         Guests:(DB.guests||[]).length};
       document.getElementById('v26MigBody').innerHTML=`
+        <div class="v26-alert" style="background:#FFF3E0;border:1px solid #FFB74D;color:#E65100;font-weight:600">
+          ⚠️ This operation changes backend configuration and writes data to the connected database. It is not reversible from this screen — only proceed if you understand the impact.
+        </div>
         <div class="v26-alert ${Api.isOnline()?'ok':'err'}">
           ${Api.isOnline()?'✅ Backend reachable — ready to migrate':'❌ Backend not connected — configure and test first'}
         </div>
@@ -28374,6 +28432,7 @@ GK_V25._initCallbacks = [];
     };
 
     const _runMigration = async () => {
+      if (!_isBackendAdmin()) return;
       const btn=document.getElementById('v26MigBtn');
       if(btn) btn.disabled=true;
       _migLog.length=0;
