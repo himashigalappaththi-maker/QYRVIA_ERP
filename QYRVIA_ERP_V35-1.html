@@ -14,13 +14,14 @@
 <!-- Phase 36 Stitch integration: Hanken Grotesk (design font) + Material Symbols (icon set) -->
 <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:ital,wght@0,100..900;1,100..900&display=swap" rel="stylesheet"/>
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet"/>
-<style>
-@font-face {
-  font-family: 'Söhne';
-  src: local('Söhne'), local('Sohne');
-  font-display: swap;
-}
-</style>
+<!-- Phase V35-1 UI fix: the previous @font-face for 'Söhne' resolved to
+     local()-only sources. Almost no visitor machine has that typeface
+     installed, so it sat as a dead middle link in every font stack —
+     the browser still had to evaluate and reject it before reaching the
+     real fallback, and it contributed nothing metrically. Removed; the
+     font stacks below now go straight from the two loaded webfonts to a
+     strong, metric-aware system-font fallback. See the html,body rule for
+     the accompanying font-synthesis:none fix. -->
 <script src="https://cdn.jsdelivr.net/npm/dexie@3.2.4/dist/dexie.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -76,7 +77,7 @@
 :root{
   /* ══════════════════════════════════════════════════════════
      HOSPITALITY PRECISION DESIGN SYSTEM — QYRVIA ERP
-     Font: Söhne → Inter → Arial · Primary: Charcoal · Accent: Gold
+     Font: Hanken Grotesk → Inter → system-ui · Primary: Charcoal · Accent: Gold
   ══════════════════════════════════════════════════════════ */
 
   /* Surface Scale */
@@ -190,14 +191,17 @@
 
 /* ═══════════════════════════════════════════════════════════
    HOSPITALITY PRECISION — TYPOGRAPHY & UI SYSTEM
-   Font: Söhne, Inter Variable, Arial (fallback chain)
+   Font: Hanken Grotesk, Inter, strong system-font fallback chain
+   (Phase V35-1 UI fix: font-synthesis:none below stops the browser faking
+   bold/weight on the fallback font during the swap window, which was the
+   root cause of the "blurred / double-printed / thin" first-load text.)
 ═══════════════════════════════════════════════════════════ */
 *,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
 html,body {
   height:100%;
   overflow:hidden;
   max-height:100vh;
-  font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;
+  font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
   font-size:14px;
   line-height:1.5;
   font-weight:400;
@@ -206,8 +210,18 @@ html,body {
   -webkit-font-smoothing:antialiased;
   -moz-osx-font-smoothing:grayscale;
   letter-spacing:-.01em;
+  /* Phase V35-1 UI fix: while Hanken Grotesk/Inter are still downloading,
+     the fallback font in the stack above (Segoe UI/Roboto/Arial/etc.) does
+     not natively carry every weight this stylesheet requests (400/500/600/
+     700). Without this, the browser FAKES the missing weights on the
+     fallback font (synthetic bold/oblique) - a visibly thinner/thicker,
+     slightly doubled-stroke render that clears up the instant the real
+     variable-weight webfont swaps in. That synthesis artifact was the
+     actual cause of the reported "blurred / double-printed / thin for
+     several minutes" first-load defect, not a missing font weight. */
+  font-synthesis:none;
 }
-button,input,select,textarea { font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif; }
+button,input,select,textarea { font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif; font-synthesis:none; }
 button { cursor:pointer; }
 a { color:inherit; text-decoration:none; }
 
@@ -234,7 +248,7 @@ a { color:inherit; text-decoration:none; }
 /* Table */
 table th { font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--on-surface-variant); }
 td.right  { text-align:right; }
-td.mono   { font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif; font-size:12px; font-variant-numeric:tabular-nums; }
+td.mono   { font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif; font-size:12px; font-variant-numeric:tabular-nums; }
 .kpi-value { font-variant-numeric:tabular-nums; }
 .realtime-clock { font-variant-numeric:tabular-nums; font-size:12px; font-weight:600; letter-spacing:.02em; }
 
@@ -244,7 +258,7 @@ td.mono   { font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif; font
 .btn {
   display:inline-flex; align-items:center; justify-content:center;
   gap:6px; padding:8px 16px;
-  font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;
+  font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
   font-size:13px; font-weight:600;
   line-height:1.2; letter-spacing:.01em;
   border-radius:var(--radius); border:1px solid transparent;
@@ -267,7 +281,7 @@ td.mono   { font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif; font
 ═══════════════════════════════════════════════════════════ */
 .form-control {
   width:100%; padding:8px 12px;
-  font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif; font-size:13px; font-weight:400;
+  font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif; font-size:13px; font-weight:400;
   color:var(--on-surface); background:var(--surface-container-lowest);
   border:1px solid var(--outline-variant); border-radius:var(--radius);
   transition:border-color var(--transition), box-shadow var(--transition);
@@ -338,28 +352,28 @@ table td { padding:9px 12px; border-bottom:1px solid var(--surface-container-hig
    SIDEBAR — Charcoal with gold accents
 ═══════════════════════════════════════════════════════════ */
 .sidebar { background:var(--sidebar-bg) !important; }
-.sidebar-logo .logo-name { font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif !important; font-weight:700 !important; font-size:13px !important; letter-spacing:.08em !important; }
-.sidebar-logo .logo-sub  { font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif !important; font-size:8px !important; font-weight:500 !important; letter-spacing:.14em !important; color:var(--primary) !important; text-transform:uppercase !important; }
-.nav-item { font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif !important; font-size:13px !important; font-weight:500 !important; }
+.sidebar-logo .logo-name { font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif !important; font-weight:700 !important; font-size:13px !important; letter-spacing:.08em !important; }
+.sidebar-logo .logo-sub  { font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif !important; font-size:8px !important; font-weight:500 !important; letter-spacing:.14em !important; color:var(--primary) !important; text-transform:uppercase !important; }
+.nav-item { font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif !important; font-size:13px !important; font-weight:500 !important; }
 .nav-item.active { border-left-color:var(--primary) !important; color:var(--primary-fixed-dim) !important; }
 .nav-item:hover { background:rgba(179,139,77,.08) !important; }
-.sidebar-footer .version { font-size:10px !important; font-weight:500 !important; color:rgba(255,255,255,.3) !important; font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif !important; letter-spacing:.02em !important; }
+.sidebar-footer .version { font-size:10px !important; font-weight:500 !important; color:rgba(255,255,255,.3) !important; font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif !important; letter-spacing:.02em !important; }
 
 /* ═══════════════════════════════════════════════════════════
    TOPBAR
 ═══════════════════════════════════════════════════════════ */
 .topbar { background:var(--surface-container-lowest); border-bottom:1px solid var(--outline-variant); }
-.topbar-title { font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif !important; font-size:15px !important; font-weight:700 !important; letter-spacing:-.02em !important; }
-.topbar-badge { background:rgba(179,139,77,.12) !important; color:var(--primary-dark) !important; border:1px solid rgba(179,139,77,.3) !important; font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif !important; }
+.topbar-title { font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif !important; font-size:15px !important; font-weight:700 !important; letter-spacing:-.02em !important; }
+.topbar-badge { background:rgba(179,139,77,.12) !important; color:var(--primary-dark) !important; border:1px solid rgba(179,139,77,.3) !important; font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif !important; }
 
 /* ═══════════════════════════════════════════════════════════
    LOGIN SCREEN
 ═══════════════════════════════════════════════════════════ */
-.login-logo .lg-name { font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif !important; font-weight:700 !important; }
+.login-logo .lg-name { font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif !important; font-weight:700 !important; }
 
 /* Print override */
 @media print {
-  body { font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif !important; }
+  body { font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif !important; }
 }
 
 ::-webkit-scrollbar{width:6px;height:6px}
@@ -373,7 +387,7 @@ table td { padding:9px 12px; border-bottom:1px solid var(--surface-container-hig
 .sidebar-logo{padding:0 16px;height:var(--topbar-h);display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(255,255,255,.08);cursor:pointer;flex-shrink:0;}
 .sidebar-logo .logo-icon{font-size:24px;flex-shrink:0;line-height:1}
 .sidebar-logo .logo-text{white-space:nowrap;overflow:hidden}
-.sidebar-logo .logo-name{font-size:13px;font-weight:700;color:#ffffff;letter-spacing:.08em;display:block;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;text-transform:uppercase}
+.sidebar-logo .logo-name{font-size:13px;font-weight:700;color:#ffffff;letter-spacing:.08em;display:block;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;text-transform:uppercase}
 .sidebar-logo .logo-sub{font-size:9px;color:#b38b4d;display:block;margin-top:1px;letter-spacing:.14em;text-transform:uppercase;font-weight:600}
 .sidebar-nav{flex:1;overflow-y:auto;overflow-x:hidden;padding:8px 0}
 .nav-item{display:flex;align-items:center;gap:12px;padding:10px 16px;cursor:pointer;border-left:3px solid transparent;transition:all var(--transition);white-space:nowrap;min-height:44px;}
@@ -393,10 +407,10 @@ table td { padding:9px 12px; border-bottom:1px solid var(--surface-container-hig
 /* .content defined in layout fix block above */
 /* content rule defined above */.topbar{height:var(--topbar-h);background:var(--white);border-bottom:1px solid var(--grey-200);display:flex;align-items:center;padding:0 24px;gap:12px;flex-shrink:0;z-index:200;}
 .topbar-menu-btn{background:none;border:none;font-size:20px;color:var(--grey-700);display:none;padding:4px;border-radius:var(--radius-sm);}
-.topbar-title{font-size:15px;font-weight:700;color:var(--grey-900);font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif}
+.topbar-title{font-size:15px;font-weight:700;color:var(--grey-900);font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif}
 .topbar-sub{font-size:10px;color:var(--grey-500);margin-top:1px}
 .topbar-right{margin-left:auto;display:flex;align-items:center;gap:10px}
-.realtime-clock{font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;font-size:12px;color:var(--grey-700);background:var(--grey-100);border:1px solid var(--grey-200);padding:4px 12px;border-radius:8px;font-weight:500;white-space:nowrap;}
+.realtime-clock{font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px;color:var(--grey-700);background:var(--grey-100);border:1px solid var(--grey-200);padding:4px 12px;border-radius:8px;font-weight:500;white-space:nowrap;}
 .topbar-badge{background:var(--red-100);color:var(--red-800);padding:3px 10px;border-radius:20px;font-size:10px;font-weight:600;}
 /* .content defined in layout fix block above */
 .sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:250;}
@@ -415,7 +429,7 @@ table td { padding:9px 12px; border-bottom:1px solid var(--surface-container-hig
 .kpi.gold::before{background:linear-gradient(90deg,var(--amber-700),var(--gold))}
 .kpi-icon{font-size:22px;margin-bottom:8px;display:block}
 .kpi-label{font-size:10px;font-weight:600;color:var(--grey-500);letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px}
-.kpi-value{font-size:17px;font-weight:700;color:var(--grey-900);font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;line-height:1.1}
+.kpi-value{font-size:17px;font-weight:700;color:var(--grey-900);font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;line-height:1.1}
 .kpi-sub{font-size:10px;color:var(--grey-500);margin-top:4px}
 .chart-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin-bottom:16px}
 .chart-card{background:var(--white);border:1px solid var(--grey-300);border-radius:var(--radius);padding:16px}
@@ -430,8 +444,8 @@ td{padding:9px 11px;border-bottom:1px solid var(--grey-100);color:var(--grey-700
 tr:last-child td{border-bottom:none}
 tr:hover td{background:var(--green-50);transition:background .1s}
 tr.alt td{background:var(--grey-50)}
-td.mono{font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;font-size:11px}
-td.right{text-align:right;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif}
+td.mono{font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:11px}
+td.right{text-align:right;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif}
 td.center{text-align:center}
 td.bold{font-weight:600;color:var(--grey-900)}
 .badge{display:inline-flex;align-items:center;gap:3px;padding:3px 8px;border-radius:20px;font-size:10px;font-weight:600;white-space:nowrap}
@@ -498,7 +512,7 @@ select.form-control{cursor:pointer;appearance:auto}
 @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 @keyframes fadeInDown{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
 .page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px}
-.page-title{font-size:18px;font-weight:700;color:var(--grey-900);font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif}
+.page-title{font-size:18px;font-weight:700;color:var(--grey-900);font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif}
 .page-subtitle{font-size:11px;color:var(--grey-500);margin-top:2px}
 .page-actions{display:flex;gap:8px;flex-wrap:wrap}
 .cat-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;white-space:nowrap;}
@@ -561,15 +575,15 @@ select.form-control{cursor:pointer;appearance:auto}
 .report-date-range{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px;background:var(--green-50);padding:14px;border-radius:var(--radius);border:1px solid var(--green-100);}
 @media print{
   @page{size:A4;margin:12mm 15mm}
-  body{background:white!important;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif}
+  body{background:white!important;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif}
   body>*{display:none!important}
   #print-zone{display:block!important}
   .no-print{display:none!important}
 }
 #print-zone{display:none}
-.print-doc{background:white;color:#111;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;padding:0;max-width:210mm;}
+.print-doc{background:white;color:#111;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;padding:0;max-width:210mm;}
 .print-header{background:linear-gradient(135deg,#1A2332,#2D3748);color:white;padding:24px 28px;display:flex;justify-content:space-between;align-items:flex-start;}
-.print-hotel-name{font-size:22px;font-weight:800;letter-spacing:.5px;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif}
+.print-hotel-name{font-size:22px;font-weight:800;letter-spacing:.5px;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif}
 .print-hotel-sub{font-size:10px;opacity:.8;margin-top:3px}
 .print-doc-badge{text-align:right}
 .print-doc-badge .doc-type{font-size:13px;font-weight:700;opacity:.9;text-transform:uppercase;letter-spacing:1px}
@@ -586,7 +600,7 @@ select.form-control{cursor:pointer;appearance:auto}
 .print-items-table th{padding:8px 10px;text-align:left;font-size:9px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
 .print-items-table td{padding:8px 10px;font-size:11px;border-bottom:1px solid #f0f0f0}
 .print-items-table tr:nth-child(even) td{background:#fafaf7}
-.print-items-table td.right{text-align:right;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif}
+.print-items-table td.right{text-align:right;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif}
 .print-totals{display:flex;justify-content:flex-end;padding:14px 20px;border-top:2px solid #C9A84C;}
 .print-totals-inner{min-width:260px}
 .print-total-row{display:flex;justify-content:space-between;font-size:12px;padding:4px 0;color:#444}
@@ -600,7 +614,7 @@ select.form-control{cursor:pointer;appearance:auto}
 .print-report-kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:16px 20px;background:#f9fff9;border-bottom:1px solid #e0e0e0;}
 .print-report-kpi-item{text-align:center;padding:10px;background:white;border-radius:6px;border:1px solid #e0e0e0}
 .print-report-kpi-label{font-size:8px;font-weight:700;color:#666;text-transform:uppercase;letter-spacing:.5px}
-.print-report-kpi-value{font-size:15px;font-weight:800;color:#1B5E20;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif}
+.print-report-kpi-value{font-size:15px;font-weight:800;color:#1B5E20;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif}
 .inv-item-cell{display:flex;flex-direction:column;gap:3px}
 .inv-item-cell select,.inv-item-cell input{font-size:11px!important;padding:4px 6px!important}
 @media(max-width:768px){
@@ -885,7 +899,7 @@ input[type=number],input[type=text],input[type=email],input[type=date],input[typ
 .room-card.reserved .room-status-bar{background:linear-gradient(90deg,var(--amber-700),#FFD54F)}
 .room-card.maintenance .room-status-bar{background:linear-gradient(90deg,#757575,#bdbdbd)}
 .room-card.checkout .room-status-bar{background:linear-gradient(90deg,var(--blue-800),#42a5f5)}
-.room-number{font-size:22px;font-weight:800;color:var(--grey-900);font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif}
+.room-number{font-size:22px;font-weight:800;color:var(--grey-900);font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif}
 .room-type-label{font-size:10px;font-weight:700;color:var(--grey-500);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
 .room-guest{font-size:11px;font-weight:600;color:var(--grey-700);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .room-dates{font-size:9px;color:var(--grey-500);margin-top:3px}
@@ -946,7 +960,7 @@ input[type=number],input[type=text],input[type=email],input[type=date],input[typ
 .login-box{background:var(--white);border-radius:20px;padding:44px 40px;width:100%;max-width:420px;box-shadow:0 40px 100px rgba(0,0,0,.5);animation:slideModal .3s ease;border:1px solid rgba(255,255,255,.08);}
 .login-logo{text-align:center;margin-bottom:28px}
 .login-logo .lg-icon{font-size:48px;display:block;margin-bottom:8px;display:none}
-.login-logo .lg-name{font-size:26px;font-weight:800;color:var(--grey-900);letter-spacing:.5px;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif}
+.login-logo .lg-name{font-size:26px;font-weight:800;color:var(--grey-900);letter-spacing:.5px;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif}
 .login-logo .lg-sub{font-size:11px;color:var(--grey-500);margin-top:3px}
 .login-field{margin-bottom:14px}
 .login-field label{font-size:10px;font-weight:700;color:var(--grey-700);letter-spacing:.5px;text-transform:uppercase;display:block;margin-bottom:5px}
@@ -1008,7 +1022,7 @@ input[type=number],input[type=text],input[type=email],input[type=date],input[typ
 .kot-search-item:last-child{border-bottom:none}
 .kot-search-item:hover{background:var(--green-50)}
 .kot-search-item .k-name{font-size:12.5px;font-weight:600;color:var(--grey-900);flex:1}
-.kot-search-item .k-code{font-size:10px;color:var(--teal-700);font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;background:var(--teal-100);padding:1px 5px;border-radius:4px;white-space:nowrap}
+.kot-search-item .k-code{font-size:10px;color:var(--teal-700);font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;background:var(--teal-100);padding:1px 5px;border-radius:4px;white-space:nowrap}
 .kot-search-item .k-price{font-size:11px;font-weight:700;color:var(--green-800);white-space:nowrap}
 .kot-search-item .k-cat{font-size:9px;color:var(--grey-500);display:block;margin-top:1px}
 .kot-search-empty{padding:16px 12px;font-size:12px;color:var(--grey-500);font-style:italic;text-align:center}
@@ -1064,7 +1078,7 @@ input[type=number],input[type=text],input[type=email],input[type=date],input[typ
 .tx-transfer{background:#e3f2fd;color:#1565c0}
 
 /* ═══ PETTY CASH LEDGER ═══ */
-.pc-balance{font-size:22px;font-weight:800;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;color:var(--green-800)}
+.pc-balance{font-size:22px;font-weight:800;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:var(--green-800)}
 
 @media(max-width:768px){
   #kotModal .modal{max-width:100%}
@@ -1138,7 +1152,7 @@ input[type=number],input[type=text],input[type=email],input[type=date],input[typ
 .badge.credit-pending{background:#FFF3E0;color:#E65100;border:1px solid #ffcc80}
 .badge.credit-partial{background:#E3F2FD;color:#1565C0;border:1px solid #90caf9}
 .badge.credit-paid{background:#E8F5E9;color:#1B5E20;border:1px solid #a5d6a7}
-.outstanding-cell{font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;font-size:11px;font-weight:700;color:var(--orange-800)}
+.outstanding-cell{font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:11px;font-weight:700;color:var(--orange-800)}
 
 
 /* ═══ GUEST CRM ═══ */
@@ -1155,7 +1169,7 @@ input[type=number],input[type=text],input[type=email],input[type=date],input[typ
 .lb-gold{background:#fff8e1;color:#f57f17}.lb-platinum{background:#ede7f6;color:#4527a0}
 
 /* ═══ ICAL IMPROVED ═══ */
-.ical-url-box{background:var(--grey-900);color:#a5d6a7;padding:12px 16px;border-radius:var(--radius-sm);font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;font-size:12px;word-break:break-all;margin:10px 0;border-left:4px solid var(--green-500)}
+.ical-url-box{background:var(--grey-900);color:#a5d6a7;padding:12px 16px;border-radius:var(--radius-sm);font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px;word-break:break-all;margin:10px 0;border-left:4px solid var(--green-500)}
 .ical-step{display:flex;gap:14px;padding:14px 0;border-bottom:1px solid var(--grey-100)}
 .ical-step:last-child{border-bottom:none}
 .ical-step-num{background:var(--green-700);color:white;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0;margin-top:2px}
@@ -1167,14 +1181,14 @@ input[type=number],input[type=text],input[type=email],input[type=date],input[typ
 .api-endpoint{background:var(--white);border:1px solid var(--grey-300);border-radius:var(--radius);margin-bottom:10px;overflow:hidden}
 .api-endpoint-header{display:flex;align-items:center;gap:12px;padding:14px 18px;cursor:pointer;user-select:none}
 .api-endpoint-header:hover{background:var(--grey-50)}
-.api-method{display:inline-flex;align-items:center;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:800;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;min-width:70px;justify-content:center}
+.api-method{display:inline-flex;align-items:center;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:800;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;min-width:70px;justify-content:center}
 .api-get{background:#e8f5e9;color:#1b5e20}.api-post{background:#e3f2fd;color:#1565c0}
 .api-put{background:#fff8e1;color:#f57f17}.api-del{background:#ffebee;color:#c62828}
-.api-path{font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;font-size:13px;color:var(--grey-900);font-weight:600}
+.api-path{font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:13px;color:var(--grey-900);font-weight:600}
 .api-desc{font-size:12px;color:var(--grey-500);margin-left:auto}
 .api-body{display:none;padding:0 18px 18px;border-top:1px solid var(--grey-100)}
 .api-body.open{display:block}
-.api-code{background:var(--grey-900);color:#e8f5e9;padding:14px 18px;border-radius:var(--radius-sm);font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;font-size:12px;line-height:1.8;overflow-x:auto;margin-top:12px;white-space:pre}
+.api-code{background:var(--grey-900);color:#e8f5e9;padding:14px 18px;border-radius:var(--radius-sm);font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px;line-height:1.8;overflow-x:auto;margin-top:12px;white-space:pre}
 
 /* ═══ SETUP GUIDE ═══ */
 .setup-step{background:var(--white);border:1px solid var(--grey-300);border-radius:var(--radius);padding:20px;margin-bottom:12px;display:flex;gap:18px;align-items:flex-start}
@@ -1293,7 +1307,7 @@ input[type=number],input[type=text],input[type=email],input[type=date],input[typ
   --ops-cyn:#22d3ee; --ops-pink:#ec4899; --ops-org:#f97316;
   --ops-gbg:#052e16; --ops-abg:#422006; --ops-rbg:#450a0a; --ops-cbg:#083344;
 }
-.ops-page { color: var(--ops-text); font-family: 'Hanken Grotesk','Söhne','Inter',Arial, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; ; min-height:0; }
+.ops-page { color: var(--ops-text); font-family: 'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif; font-size: 13px; ; min-height:0; }
 .ops-card { background: var(--ops-card); border: 1px solid var(--ops-border); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; }
 .ops-section-title { font-size: 15px; font-weight: 700; color: var(--ops-text); margin: 0 0 14px; }
 .ops-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 20px; font-size: 10.5px; font-weight: 700; white-space: nowrap; }
@@ -1428,7 +1442,7 @@ input[type=number],input[type=text],input[type=email],input[type=date],input[typ
 
 /* Section header in content area */
 .section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
-.section-heading{font-size:20px;font-weight:700;color:var(--grey-900);font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;letter-spacing:-.3px}
+.section-heading{font-size:20px;font-weight:700;color:var(--grey-900);font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;letter-spacing:-.3px}
 
 /* Form control - updated focus ring */
 .form-control{border-radius:8px}
@@ -1481,7 +1495,7 @@ table{font-size:13px}
 }
 #qyrvia-loader.fade-out{opacity:0;pointer-events:none}
 .qyrvia-loader-logo{
-  font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;font-size:40px;font-weight:800;
+  font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:40px;font-weight:800;
   color:white;letter-spacing:4px;margin-bottom:8px;
 }
 .qyrvia-loader-sub{
@@ -4868,7 +4882,7 @@ function printZone(title){
     '<title>' + (title||'QYRVIA Print') + '</title>' +
     '<style>' +
     '@page{size:A4;margin:12mm 15mm}' +
-    'body{background:white;margin:0;padding:0;font-family:Söhne,Inter,Arial,sans-serif}' +
+    'body{background:white;margin:0;padding:0;font-family:"Hanken Grotesk",Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}' +
     css +
     '.print-doc{display:block!important}' +
     '</style>' +
@@ -4980,7 +4994,7 @@ function printZone(title){
     </div>
     <div style="background:var(--green-50);border:1px solid #a5d6a7;border-radius:var(--radius-sm);padding:10px 14px;margin-top:8px;font-size:12px;display:flex;justify-content:space-between;align-items:center">
       <span style="font-weight:700;color:var(--grey-700)">Combined Room Total:</span>
-      <span id="fBkRoomTotal" style="font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;font-weight:800;font-size:14px;color:var(--green-800)">LKR 0.00</span>
+      <span id="fBkRoomTotal" style="font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-weight:800;font-size:14px;color:var(--green-800)">LKR 0.00</span>
     </div>
 
     <!-- Advance Payment Section -->
@@ -5212,7 +5226,7 @@ function printZone(title){
       <div id="poLines"></div>
     </div>
     <button class="btn btn-secondary btn-sm" onclick="addPOLine()">＋ Add Line</button>
-    <div id="poGrandTotal" style="text-align:right;margin-top:10px;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;font-size:13px;font-weight:700;color:var(--green-800)"></div>
+    <div id="poGrandTotal" style="text-align:right;margin-top:10px;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:13px;font-weight:700;color:var(--green-800)"></div>
   </div>
   <div class="modal-footer">
     <button class="btn btn-secondary" onclick="closeModal('poModal')">Cancel</button>
@@ -5357,7 +5371,7 @@ function printZone(title){
       <div id="invPaySplitLines"></div>
       <div class="pay-split-total">
         <span>Total Allocated</span>
-        <span id="invPaySplitTotal" style="font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;color:var(--amber-700)">LKR 0.00</span>
+        <span id="invPaySplitTotal" style="font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:var(--amber-700)">LKR 0.00</span>
       </div>
     </div>
     <button class="btn btn-secondary btn-sm" onclick="addInvPaySplitLine()">＋ Add Payment Method</button>
@@ -6457,9 +6471,9 @@ function renderInventory(){
   }).join('')}
   <tr style="background:var(--green-900);color:white">
     <td colspan="9" style="text-align:right;font-weight:700;color:white;padding:10px 11px;font-size:11px">TOTALS (${items.length} items)</td>
-    <td class="right" style="color:white;font-weight:700;font-family:Söhne,Inter,Arial,sans-serif">${fmtNum(items.reduce((s,it)=>s+getStock(it.code),0))}</td>
+    <td class="right" style="color:white;font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtNum(items.reduce((s,it)=>s+getStock(it.code),0))}</td>
     <td colspan="3" style="color:white">—</td>
-    <td class="right" style="color:#69f0ae;font-weight:700;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(items.reduce((s,it)=>s+getStock(it.code)*it.cost,0))}</td>
+    <td class="right" style="color:#69f0ae;font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(items.reduce((s,it)=>s+getStock(it.code)*it.cost,0))}</td>
     <td></td>
   </tr></tbody>`;
 }
@@ -6809,7 +6823,7 @@ function addGRNLine(){
     </div>
     <input type="number" class="form-control" id="grnQty-${id}" value="1" min="0" step="0.01" oninput="updateGRNTotal('${id}')"/>
     <input type="number" class="form-control" id="grnPrice-${id}" value="0" min="0" step="0.01" oninput="updateGRNTotal('${id}')"/>
-    <span id="grnTot-${id}" style="font-family:Söhne,Inter,Arial,sans-serif;font-size:12px;color:var(--green-700);padding-left:2px">—</span>
+    <span id="grnTot-${id}" style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px;color:var(--green-700);padding-left:2px">—</span>
     <button class="btn btn-danger btn-xs btn-icon" onclick="document.getElementById('grnl-${id}').remove()">✕</button>`;
   document.getElementById('grnLines').appendChild(div);
 }
@@ -6843,8 +6857,8 @@ function addISSLine(){
       <div id="issAvail-${id}" style="font-size:10px;margin-top:3px"></div>
     </div>
     <input type="number" class="form-control" id="issQty-${id}" value="1" min="0" step="0.01" oninput="updateISSTotal('${id}')"/>
-    <span id="issCost-${id}" style="font-family:Söhne,Inter,Arial,sans-serif;font-size:12px;padding:6px 0">—</span>
-    <span id="issTot-${id}" style="font-family:Söhne,Inter,Arial,sans-serif;font-size:12px;color:var(--blue-800)">—</span>
+    <span id="issCost-${id}" style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px;padding:6px 0">—</span>
+    <span id="issTot-${id}" style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px;color:var(--blue-800)">—</span>
     <button class="btn btn-danger btn-xs btn-icon" onclick="document.getElementById('issl-${id}').remove()">✕</button>`;
   document.getElementById('issLines').appendChild(div);
 }
@@ -6958,7 +6972,7 @@ function viewGRN(id){
       </tbody>
       <tfoot><tr style="background:var(--green-900);color:white">
         <td colspan="6" style="text-align:right;font-weight:700;padding:9px 11px">Total GRN Value:</td>
-        <td style="text-align:right;font-weight:700;font-family:Söhne,Inter,Arial,sans-serif;padding:9px 11px">${fmtLKR(tot)}</td>
+        <td style="text-align:right;font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;padding:9px 11px">${fmtLKR(tot)}</td>
       </tr></tfoot>
     </table></div>`;
   document.getElementById('viewGRNPrintBtn').onclick=()=>{closeModal('viewGRNModal');printGRN(id)};
@@ -7014,7 +7028,7 @@ function addPOLine(prefill){
     </div>
     <input type="number" class="form-control" id="poQty-${id}" value="${prefill?prefill.qty:1}" min="0" step="0.01" oninput="updatePOLineTotal('${id}');updatePOGrandTotal()"/>
     <input type="number" class="form-control" id="poPrice-${id}" value="${prefill?prefill.unitPrice:0}" min="0" step="0.01" oninput="updatePOLineTotal('${id}');updatePOGrandTotal()"/>
-    <span id="poTot-${id}" style="font-family:Söhne,Inter,Arial,sans-serif;font-size:12px;color:var(--green-700);padding-left:2px">—</span>
+    <span id="poTot-${id}" style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px;color:var(--green-700);padding-left:2px">—</span>
     <button class="btn btn-danger btn-xs btn-icon" onclick="document.getElementById('pol-${id}').remove();updatePOGrandTotal()">✕</button>`;
   document.getElementById('poLines').appendChild(div);
   if(prefill){
@@ -7200,7 +7214,7 @@ function viewPO(id){
       </tbody>
       <tfoot><tr style="background:var(--green-900);color:white">
         <td colspan="6" style="text-align:right;font-weight:700;padding:9px 11px">Total PO Value:</td>
-        <td style="text-align:right;font-weight:700;font-family:Söhne,Inter,Arial,sans-serif;padding:9px 11px">${fmtLKR(tot)}</td>
+        <td style="text-align:right;font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;padding:9px 11px">${fmtLKR(tot)}</td>
       </tr></tfoot>
     </table></div>`;
   openModal('viewPOModal');
@@ -7222,7 +7236,7 @@ function printPO(){
   win.document.write(`<!DOCTYPE html><html><head><title>${p.poNo} — ${HOTEL}</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:'Hanken Grotesk','Söhne','Inter',Arial,Arial,sans-serif;font-size:12px;color:#111;background:#fff}
+    body{font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px;color:#111;background:#fff}
     .header{background:linear-gradient(135deg,#1B4332,#2E7D32);color:white;padding:20px 28px;display:flex;justify-content:space-between;align-items:flex-start}
     .hotel-name{font-size:18px;font-weight:800;letter-spacing:-.3px}
     .hotel-sub{font-size:10px;opacity:.75;margin-top:2px}
@@ -7253,7 +7267,7 @@ function printPO(){
     <div style="display:flex;align-items:center;gap:14px">
       <div style="background:rgba(255,255,255,0.15);border-radius:10px;padding:8px 10px;flex-shrink:0">${GK_LOGO_WHITE_SVG}</div>
       <div>
-        <div class="hotel-name" style="font-family:Söhne,Inter,Arial,sans-serif;font-weight:800;letter-spacing:1px">${HOTEL}</div>
+        <div class="hotel-name" style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-weight:800;letter-spacing:1px">${HOTEL}</div>
         <div class="hotel-sub">PURCHASE ORDER</div>
         <div class="hotel-sub">${LOC} &nbsp;|&nbsp; ${TEL}</div>
       </div>
@@ -8131,10 +8145,10 @@ function viewInvoice(id){
       </tbody></table></div>
     <div style="display:flex;justify-content:flex-end;margin-top:12px">
       <div style="min-width:280px;background:var(--grey-50);border-radius:var(--radius-sm);padding:14px;border:1px solid var(--grey-300)">
-        <div class="li-total-row"><span>Invoice Total (incl. 10% SC)</span><span style="font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(c.grossTotal)}</span></div>
-        ${c.disc>0?`<div class="li-total-row" style="color:var(--red-800)"><span>Discount (${c.disc}%)</span><span style="font-family:Söhne,Inter,Arial,sans-serif">− ${fmtLKR(c.grossTotal-c.afterDisc)}</span></div>`:''}
-        ${c.govTax>0?`<div class="li-total-row" style="color:var(--blue-800)"><span>Government Tax (${c.govTax}%)</span><span style="font-family:Söhne,Inter,Arial,sans-serif">+ ${fmtLKR(c.taxAmt)}</span></div>`:''}
-        ${c.roomCharge>0?`<div class="li-total-row" style="color:var(--teal-700)"><span>🏨 Room Balance Due</span><span style="font-family:Söhne,Inter,Arial,sans-serif">+ ${fmtLKR(c.roomCharge)}</span></div>`:''}
+        <div class="li-total-row"><span>Invoice Total (incl. 10% SC)</span><span style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(c.grossTotal)}</span></div>
+        ${c.disc>0?`<div class="li-total-row" style="color:var(--red-800)"><span>Discount (${c.disc}%)</span><span style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">− ${fmtLKR(c.grossTotal-c.afterDisc)}</span></div>`:''}
+        ${c.govTax>0?`<div class="li-total-row" style="color:var(--blue-800)"><span>Government Tax (${c.govTax}%)</span><span style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">+ ${fmtLKR(c.taxAmt)}</span></div>`:''}
+        ${c.roomCharge>0?`<div class="li-total-row" style="color:var(--teal-700)"><span>🏨 Room Balance Due</span><span style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">+ ${fmtLKR(c.roomCharge)}</span></div>`:''}
         <div class="li-total-row grand"><span>💰 Grand Total</span><span>${fmtLKR(c.total)}</span></div>
       </div>
     </div>`;
@@ -8231,7 +8245,7 @@ function renderWaste(){
   }).join(''):`<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--grey-500)">No waste records yet. Click "+ Log Waste" to start.</td></tr>`}
   ${DB.waste.length?`<tr style="background:var(--green-900);color:white">
     <td colspan="7" style="text-align:right;font-weight:700;padding:10px 11px;color:white">TOTAL WASTE VALUE:</td>
-    <td class="right" style="font-family:Söhne,Inter,Arial,sans-serif;font-weight:700;color:#ef9a9a">${fmtLKR(totalVal)}</td>
+    <td class="right" style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-weight:700;color:#ef9a9a">${fmtLKR(totalVal)}</td>
     <td colspan="2"></td>
   </tr>`:''}</tbody>`;
 }
@@ -8442,7 +8456,7 @@ function downloadReport(){
   }
   const content = document.getElementById('reportContent').innerHTML;
   const fullHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>${fileName}</title>
-  <style>body{font-family:Söhne,Inter,Arial,sans-serif;padding:20px;color:#111}
+  <style>body{font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;padding:20px;color:#111}
   table{width:100%;border-collapse:collapse;margin-bottom:16px}
   th{background:#1B5E20;color:white;padding:8px 10px;text-align:left;font-size:10px}
   td{padding:8px 10px;border-bottom:1px solid #eee;font-size:11px}
@@ -8619,7 +8633,7 @@ function generateReport(){
             const tot=g.lines.reduce((s,l)=>s+l.qty*l.unitPrice,0);
             return`<tr class="${i%2?'alt':''}"><td class="mono bold" style="color:var(--teal-700)">${g.grnNo}</td><td>${fmtDate(g.date)}</td><td>${g.supplier}</td><td>${g.lines.length} item(s)</td><td class="right bold">${fmtLKR(tot)}</td></tr>`;
           }).join('')}
-          <tr style="background:var(--green-900);color:white"><td colspan="4" style="font-weight:700;padding:8px 11px">TOTAL GRN VALUE</td><td class="right" style="font-weight:800;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(grnTotal)}</td></tr>
+          <tr style="background:var(--green-900);color:white"><td colspan="4" style="font-weight:700;padding:8px 11px">TOTAL GRN VALUE</td><td class="right" style="font-weight:800;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(grnTotal)}</td></tr>
         </tbody></table></div></div>`;
   }
 
@@ -8633,7 +8647,7 @@ function generateReport(){
             const tot=iss.lines.reduce((s,l)=>s+l.qty*l.unitCost,0);
             return`<tr class="${i%2?'alt':''}"><td class="mono bold" style="color:var(--blue-800)">${iss.issNo||'—'}</td><td>${fmtDate(iss.date)}</td><td>${iss.issuedTo||'Kitchen'}</td><td>${iss.lines.length} item(s)</td><td class="right bold">${fmtLKR(tot)}</td></tr>`;
           }).join('')}
-          <tr style="background:var(--green-900);color:white"><td colspan="4" style="font-weight:700;padding:8px 11px">TOTAL ISSUED COST</td><td class="right" style="font-weight:800;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(issTotal)}</td></tr>
+          <tr style="background:var(--green-900);color:white"><td colspan="4" style="font-weight:700;padding:8px 11px">TOTAL ISSUED COST</td><td class="right" style="font-weight:800;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(issTotal)}</td></tr>
         </tbody></table></div></div>`;
   }
 
@@ -8648,7 +8662,7 @@ function generateReport(){
             const tot=p.lines.reduce((s,l)=>s+l.qty*l.unitPrice,0);
             return`<tr class="${i%2?'alt':''}"><td class="mono bold" style="color:var(--teal-700)">${p.poNo}</td><td>${fmtDate(p.date)}</td><td class="bold">${p.supplier}</td><td>${p.deliveryDate?fmtDate(p.deliveryDate):'—'}</td><td>${p.lines.length} item(s)</td><td><span class="badge ${statusColor[p.status]||'grey'}">${p.status}</span></td><td class="right bold">${fmtLKR(tot)}</td></tr>`;
           }).join('')}
-          <tr style="background:var(--green-900);color:white"><td colspan="6" style="font-weight:700;padding:8px 11px">TOTAL PO VALUE</td><td class="right" style="font-weight:800;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(poTotal)}</td></tr>
+          <tr style="background:var(--green-900);color:white"><td colspan="6" style="font-weight:700;padding:8px 11px">TOTAL PO VALUE</td><td class="right" style="font-weight:800;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(poTotal)}</td></tr>
         </tbody></table></div></div>`;
   }
 
@@ -8666,9 +8680,9 @@ function generateReport(){
           }).join('')}
           <tr style="background:var(--green-900);color:white">
             <td colspan="4" style="font-weight:700;padding:8px 11px">TOTAL SALES</td>
-            <td class="right" style="font-weight:800;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(salesTotals.sub)}</td>
-            <td class="right" style="font-weight:800;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(salesTotals.sc)}</td>
-            <td class="right" style="font-weight:800;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(salesTotals.total)}</td>
+            <td class="right" style="font-weight:800;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(salesTotals.sub)}</td>
+            <td class="right" style="font-weight:800;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(salesTotals.sc)}</td>
+            <td class="right" style="font-weight:800;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(salesTotals.total)}</td>
           </tr>
         </tbody></table></div>
 
@@ -8720,7 +8734,7 @@ function generateReport(){
             const emp=(DB.employees||[]).find(e=>e.id===adv.empId);
             return`<tr class="${i%2?'alt':''}"><td>${fmtDate(adv.date)}</td><td class="bold">${emp?emp.name:adv.empId}</td><td style="color:var(--grey-500);font-size:11px">${adv.note||'—'}</td><td class="right bold" style="color:var(--red-800)">${fmtLKR(+adv.amount||0)}</td></tr>`;
           }).join('')}
-          <tr style="background:var(--green-900);color:white"><td colspan="3" style="font-weight:700;padding:8px 11px">TOTAL ADVANCES</td><td class="right" style="font-weight:800;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(totalAdvInRange)}</td></tr>
+          <tr style="background:var(--green-900);color:white"><td colspan="3" style="font-weight:700;padding:8px 11px">TOTAL ADVANCES</td><td class="right" style="font-weight:800;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(totalAdvInRange)}</td></tr>
         </tbody></table></div></div>`;
   }
 
@@ -8732,7 +8746,7 @@ function generateReport(){
       <div class="table-wrap"><table>
         <thead><tr><th>Category</th><th class="right">Amount</th></tr></thead>
         <tbody>${Object.entries(expByType).map(([k,v],i)=>`<tr class="${i%2?'alt':''}"><td>${k}</td><td class="right bold">${fmtLKR(v)}</td></tr>`).join('')}
-        <tr style="background:var(--green-900);color:white"><td style="font-weight:700;padding:8px 11px">Total Other Expenses</td><td class="right" style="font-weight:700;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(totalOtherExpInRange)}</td></tr>
+        <tr style="background:var(--green-900);color:white"><td style="font-weight:700;padding:8px 11px">Total Other Expenses</td><td class="right" style="font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(totalOtherExpInRange)}</td></tr>
         </tbody></table></div></div>`;
   }
   // Cash in Hand summary
@@ -8753,7 +8767,7 @@ function generateReport(){
         <tr><td style="padding-left:20px">− Other Expenses</td><td class="right" style="color:var(--red-800)">− ${fmtLKR(totalOtherExpInRange)}</td></tr>
         <tr style="background:${cashInHand>=0?'var(--green-900)':'var(--red-800)'};color:white">
           <td style="font-weight:800;font-size:14px;padding:10px 11px">💴 CASH IN HAND</td>
-          <td class="right" style="font-weight:800;font-size:14px;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(cashInHand)}</td>
+          <td class="right" style="font-weight:800;font-size:14px;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(cashInHand)}</td>
         </tr>
       </tbody></table></div>
     ${creditTotal>0?`<div style="background:var(--amber-100);border:1px solid #ffe082;border-radius:var(--radius-sm);padding:10px 14px;font-size:11px;color:var(--amber-700);margin-top:10px">
@@ -9127,12 +9141,12 @@ function printGRN(id){
       <thead><tr><th>#</th><th>SKU</th><th>Item Name</th><th>Category</th><th class="right">Qty</th><th>Unit</th><th class="right">Unit Price</th><th class="right">Total (LKR)</th></tr></thead>
       <tbody>
       ${g.lines.map((l,i)=>{const it=DB.inventory.find(x=>x.code===l.itemCode);return`
-        <tr><td>${i+1}</td><td style="font-family:Söhne,Inter,Arial,sans-serif;font-size:10px;color:#00695C">${it?.sku||l.itemCode}</td>
+        <tr><td>${i+1}</td><td style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:10px;color:#00695C">${it?.sku||l.itemCode}</td>
         <td style="font-weight:600">${it?it.name:l.itemCode}</td><td>${it?CAT_MAP[it.cat]||it.cat:'—'}</td>
         <td class="right">${fmtNum(l.qty)}</td><td>${it?it.unit:'—'}</td>
         <td class="right">${fmtNum(l.unitPrice)}</td><td class="right" style="font-weight:600">${fmtNum(l.qty*l.unitPrice)}</td></tr>`}).join('')}
       <tr style="background:#E0F2F1"><td colspan="7" style="text-align:right;font-weight:800;padding:10px;color:#00695C">TOTAL GRN VALUE</td>
-        <td style="text-align:right;font-weight:800;padding:10px;font-family:Söhne,Inter,Arial,sans-serif;color:#00695C">${fmtLKR(tot)}</td></tr>
+        <td style="text-align:right;font-weight:800;padding:10px;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#00695C">${fmtLKR(tot)}</td></tr>
       </tbody>
     </table>
     <div class="print-signatures">
@@ -10307,9 +10321,9 @@ function openBalancePayModal(bookingId){
   document.getElementById('balancePaySummary').innerHTML=`
     <div style="font-weight:700;color:var(--green-800);margin-bottom:8px">🏨 ${room?room.number+' ('+room.type+')':b.room} — ${b.guest}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
-      <div><div style="font-size:9px;color:var(--grey-500);font-weight:600">TOTAL</div><div style="font-weight:700;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(pay.total)}</div></div>
-      <div><div style="font-size:9px;color:var(--grey-500);font-weight:600">ADVANCE PAID</div><div style="font-weight:700;font-family:Söhne,Inter,Arial,sans-serif;color:var(--green-800)">${fmtLKR(pay.adv)}</div></div>
-      <div><div style="font-size:9px;color:var(--grey-500);font-weight:600">BALANCE DUE</div><div style="font-weight:700;font-family:Söhne,Inter,Arial,sans-serif;color:var(--red-800)">${fmtLKR(pay.balance)}</div></div>
+      <div><div style="font-size:9px;color:var(--grey-500);font-weight:600">TOTAL</div><div style="font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(pay.total)}</div></div>
+      <div><div style="font-size:9px;color:var(--grey-500);font-weight:600">ADVANCE PAID</div><div style="font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:var(--green-800)">${fmtLKR(pay.adv)}</div></div>
+      <div><div style="font-size:9px;color:var(--grey-500);font-weight:600">BALANCE DUE</div><div style="font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:var(--red-800)">${fmtLKR(pay.balance)}</div></div>
     </div>`;
   openModal('balancePayModal');
 }
@@ -10357,9 +10371,9 @@ function viewBooking(id){
     <div style="background:var(--green-50);border:1px solid #a5d6a7;border-radius:var(--radius-sm);padding:14px;margin-bottom:12px">
       <div style="font-size:11px;font-weight:700;color:var(--green-800);margin-bottom:8px">💳 Advance Payment Details</div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
-        <div><div style="font-size:9px;color:var(--grey-500);font-weight:600">TOTAL</div><div style="font-weight:700;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(pay.total)}</div></div>
-        <div><div style="font-size:9px;color:var(--grey-500);font-weight:600">ADVANCE PAID</div><div style="font-weight:700;font-family:Söhne,Inter,Arial,sans-serif;color:var(--green-800)">${fmtLKR(pay.adv)}</div></div>
-        <div><div style="font-size:9px;color:var(--grey-500);font-weight:600">BALANCE DUE</div><div style="font-weight:700;font-family:Söhne,Inter,Arial,sans-serif;color:${pay.balance>0?'var(--red-800)':'var(--green-800)'};">${fmtLKR(pay.balance)}</div></div>
+        <div><div style="font-size:9px;color:var(--grey-500);font-weight:600">TOTAL</div><div style="font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(pay.total)}</div></div>
+        <div><div style="font-size:9px;color:var(--grey-500);font-weight:600">ADVANCE PAID</div><div style="font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:var(--green-800)">${fmtLKR(pay.adv)}</div></div>
+        <div><div style="font-size:9px;color:var(--grey-500);font-weight:600">BALANCE DUE</div><div style="font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${pay.balance>0?'var(--red-800)':'var(--green-800)'};">${fmtLKR(pay.balance)}</div></div>
       </div>
       <div class="adv-progress-bar" style="margin-top:10px"><div class="adv-progress-fill" style="width:${pay.pct}%"></div></div>
       <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:9px;color:var(--grey-500)">
@@ -10422,15 +10436,15 @@ function printBookingConf(id){
       <div style="font-size:9px;font-weight:800;color:#00695C;letter-spacing:1px;text-transform:uppercase;margin-bottom:10px">Payment Summary</div>
       <table style="width:100%;border-collapse:collapse">
         <tr style="background:#E0F2F1"><td style="padding:8px 12px;font-size:12px;color:#004D40;font-weight:600">Rate per Night</td>
-          <td style="padding:8px 12px;text-align:right;font-family:Söhne,Inter,Arial,sans-serif;font-weight:700">${fmtLKR(b.rate)}</td></tr>
+          <td style="padding:8px 12px;text-align:right;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-weight:700">${fmtLKR(b.rate)}</td></tr>
         <tr><td style="padding:8px 12px;font-size:12px;color:#555">Number of Nights</td>
-          <td style="padding:8px 12px;text-align:right;font-family:Söhne,Inter,Arial,sans-serif">${b.nights}</td></tr>
+          <td style="padding:8px 12px;text-align:right;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${b.nights}</td></tr>
         <tr style="background:#f9f9f9"><td style="padding:8px 12px;font-size:13px;font-weight:700">Total Room Charges</td>
-          <td style="padding:8px 12px;text-align:right;font-family:Söhne,Inter,Arial,sans-serif;font-weight:700;font-size:13px">${fmtLKR(pay.total)}</td></tr>
+          <td style="padding:8px 12px;text-align:right;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-weight:700;font-size:13px">${fmtLKR(pay.total)}</td></tr>
         <tr style="background:#E8F5E9"><td style="padding:8px 12px;font-size:12px;color:#1B5E20;font-weight:600">Advance Payment Received <span style="font-size:9px;background:#1B5E20;color:white;padding:2px 6px;border-radius:10px;margin-left:4px">${advStatus}</span></td>
-          <td style="padding:8px 12px;text-align:right;font-family:Söhne,Inter,Arial,sans-serif;font-weight:700;color:#1B5E20">${fmtLKR(pay.adv)}</td></tr>
+          <td style="padding:8px 12px;text-align:right;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-weight:700;color:#1B5E20">${fmtLKR(pay.adv)}</td></tr>
         <tr style="background:#1B5E20"><td style="padding:10px 12px;font-size:14px;font-weight:800;color:white">BALANCE DUE AT CHECK-IN</td>
-          <td style="padding:10px 12px;text-align:right;font-family:Söhne,Inter,Arial,sans-serif;font-weight:800;color:#69f0ae;font-size:14px">${fmtLKR(pay.balance)}</td></tr>
+          <td style="padding:10px 12px;text-align:right;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-weight:800;color:#69f0ae;font-size:14px">${fmtLKR(pay.balance)}</td></tr>
       </table>
       ${b.advReceipt?`<div style="font-size:10px;color:#666;margin-top:6px">Advance Receipt No: <b>${b.advReceipt}</b> · Paid via: ${b.advMethod||'—'} · Date: ${fmtDate(b.advDate)||'—'}</div>`:''}
     </div>
@@ -10533,7 +10547,7 @@ function renderRevenueAnalytics(){
   '<tr class="alt"><td>🏷️</td><td>Room Service Charge (SC Ledger 4003)</td><td class="right bold" style="color:var(--amber-700)">'+fmtLKR(snap.roomScTotal)+'</td><td class="right">'+(snap.totalCollections>0?(snap.roomScTotal/snap.totalCollections*100).toFixed(1)+'%':'—')+'</td></tr>'+
   '<tr><td>🏛️</td><td>Government Tax (VAT Ledger 2005)</td><td class="right bold" style="color:var(--blue-800)">'+fmtLKR(snap.fnbTaxTotal)+'</td><td class="right">'+(snap.totalCollections>0?(snap.fnbTaxTotal/snap.totalCollections*100).toFixed(1)+'%':'—')+'</td></tr>'+
   '<tr style="background:var(--green-900);color:white"><td>✅</td><td style="font-weight:800">= TOTAL COLLECTIONS (VERIFIED)</td>'+
-  '<td class="right" style="font-family:Söhne,Inter,Arial,sans-serif;font-weight:800;color:#69f0ae">'+fmtLKR(snap.totalCollections)+'</td>'+
+  '<td class="right" style="font-family:\'Hanken Grotesk\',Inter,-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,Arial,sans-serif;font-weight:800;color:#69f0ae">'+fmtLKR(snap.totalCollections)+'</td>'+
   '<td class="right" style="color:'+reconOkColor+';font-weight:800">'+(snap.reconOk?'✓ BALANCED':'⚠️ DIFF: '+fmtLKR(snap.reconDiff))+'</td></tr>'+
   '</tbody></table></div>'+
   (days.length>1?
@@ -11335,8 +11349,8 @@ function calcPayroll(){
       </td>
       <td>${emp.designation}</td>
       <td class="right">${fmtLKR(emp.basic)}</td>
-      <td class="center" style="font-family:Söhne,Inter,Arial,sans-serif;font-weight:600">${monthDays}</td>
-      <td class="center" style="font-family:Söhne,Inter,Arial,sans-serif;font-weight:700;color:var(--green-800)">${payableDays}</td>
+      <td class="center" style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-weight:600">${monthDays}</td>
+      <td class="center" style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-weight:700;color:var(--green-800)">${payableDays}</td>
       <td class="center">
         <input type="number" value="${daysWorked}" min="0" max="${payableDays}" id="dw_${emp.id}"
           style="width:52px;border:1px solid var(--grey-300);border-radius:4px;padding:3px 5px;font-size:11px;text-align:center"
@@ -11370,12 +11384,12 @@ function calcPayroll(){
 
   html+=`<tr style="background:var(--green-900);color:white">
     <td colspan="10" style="text-align:right;font-weight:700;padding:8px 11px">SC Pool Distributed ▶</td>
-    <td class="right" style="font-weight:700;font-family:Söhne,Inter,Arial,sans-serif;color:#69f0ae">${fmtLKR(totalDistributed)}</td>
+    <td class="right" style="font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#69f0ae">${fmtLKR(totalDistributed)}</td>
     <td></td><td></td><td></td>
   </tr>
   <tr style="background:var(--green-900);color:white">
     <td colspan="12" style="text-align:right;font-weight:700;padding:8px 11px">Total Payroll Cost ▶</td>
-    <td class="right" style="font-weight:700;font-family:Söhne,Inter,Arial,sans-serif;color:#69f0ae">${fmtLKR(totalPayrollCost)}</td>
+    <td class="right" style="font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#69f0ae">${fmtLKR(totalPayrollCost)}</td>
     <td></td>
   </tr></tbody></table></div>
   <div class="alert info" style="margin-top:10px">📝 <strong>Salary Rule:</strong> If Days Worked ≥ 24 → Full Basic Salary paid. If Days Worked &lt; 24 → Basic − (Basic ÷ ${monthDays} month days × No-Pay Days). No-Pay days are sourced from Attendance records (NP + Absent).</div>
@@ -11441,7 +11455,7 @@ function printPayrollCalc(){
   const win=window.open('','_blank');
   win.document.write(`<!DOCTYPE html><html><head><title>Payroll — ${HOTEL}</title>
     <style>
-      body{font-family:'Hanken Grotesk','Söhne','Inter',Arial,Arial,sans-serif;font-size:12px;color:#111;padding:16px}
+      body{font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px;color:#111;padding:16px}
       table{width:100%;border-collapse:collapse;font-size:11px}
       th{background:#1B5E20;color:white;padding:7px 9px;text-align:left;font-size:10px;text-transform:uppercase}
       td{padding:7px 9px;border-bottom:1px solid #eee}
@@ -11514,7 +11528,7 @@ function printSinglePayslip(empId,from,to,monthDays,payableDays,sc90,totalWeight
   win.document.write(`<!DOCTYPE html><html><head><title>Pay Slip — ${emp.name}</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:'Hanken Grotesk','Söhne','Inter',Arial,Arial,sans-serif;background:#f5f5f5;color:#111}
+    body{font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;background:#f5f5f5;color:#111}
     .slip{background:white;width:190mm;min-height:130mm;margin:10mm auto;border-radius:8px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.15);page-break-after:always}
     .slip-header{background:linear-gradient(135deg,#1B4332,#2E7D32);color:white;padding:20px 24px;display:flex;justify-content:space-between;align-items:flex-start}
     .hotel-name{font-size:18px;font-weight:800;letter-spacing:-.3px}
@@ -11552,7 +11566,7 @@ function printSinglePayslip(empId,from,to,monthDays,payableDays,sc90,totalWeight
       <div style="display:flex;align-items:center;gap:14px">
         <div style="background:rgba(255,255,255,0.15);border-radius:10px;padding:8px 10px;flex-shrink:0">${GK_LOGO_WHITE_SVG}</div>
         <div>
-          <div class="hotel-name" style="font-family:Söhne,Inter,Arial,sans-serif;font-weight:800;letter-spacing:1px">${(window.QV_BRAND?QV_BRAND.company():HOTEL)}</div>
+          <div class="hotel-name" style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-weight:800;letter-spacing:1px">${(window.QV_BRAND?QV_BRAND.company():HOTEL)}</div>
           <div class="hotel-sub">${LOC}</div>
           <div class="hotel-sub">${TEL}</div>
           <div class="hotel-sub" style="margin-top:4px">Working location: ${(window.QV_BRAND?QV_BRAND.name():HOTEL)}</div>
@@ -12689,7 +12703,7 @@ function cmRenderInventory(){
     const textCol=isOccupied?'var(--red-800)':'var(--green-800)';
     const label=isOccupied?'🔒 BLOCKED':'✅ AVAILABLE';
     return `<div class="cm-inv-cell" style="background:${col};color:${textCol};border:1.5px solid ${isOccupied?'#ef9a9a':'#a5d6a7'}">
-      <div style="font-size:18px;font-weight:800;font-family:Söhne,Inter,Arial,sans-serif">${id}</div>
+      <div style="font-size:18px;font-weight:800;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${id}</div>
       <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin:2px 0">${r.type||r.category||'Room'}</div>
       <div style="font-size:10px;font-weight:700;margin-top:4px">${label}</div>
       ${isOccupied?`<div style="font-size:9px;margin-top:3px;opacity:.8">${activeBooking.guest||activeBooking.guestName||''}<br>${activeBooking.checkOut}</div>`:'<div style="font-size:9px;margin-top:3px;opacity:.8">All OTAs: Open</div>'}
@@ -14026,7 +14040,7 @@ function showGRCModal(bookingId){
         </div>
         <div style="text-align:right">
           <div style="font-size:9px;color:rgba(255,255,255,.5);text-transform:uppercase">Booking Ref</div>
-          <div style="font-size:20px;font-weight:800;color:var(--green-400);font-family:Söhne,Inter,Arial,sans-serif">${b.ref}</div>
+          <div style="font-size:20px;font-weight:800;color:var(--green-400);font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${b.ref}</div>
           <div style="font-size:9px;color:rgba(255,255,255,.5)">${fmtDate(b.checkIn)} → ${fmtDate(b.checkOut)}</div>
         </div>
       </div>
@@ -14041,7 +14055,7 @@ function showGRCModal(bookingId){
         </div>
         <div>
           <div style="font-size:9px;font-weight:700;color:var(--grey-500);letter-spacing:.8px;text-transform:uppercase;margin-bottom:4px">ID / Passport No.</div>
-          <div style="font-size:14px;font-weight:600;color:var(--grey-900);font-family:Söhne,Inter,Arial,sans-serif">${g.idNo||'—'}</div>
+          <div style="font-size:14px;font-weight:600;color:var(--grey-900);font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${g.idNo||'—'}</div>
         </div>
         <div>
           <div style="font-size:9px;font-weight:700;color:var(--grey-500);letter-spacing:.8px;text-transform:uppercase;margin-bottom:4px">Date of Birth</div>
@@ -14127,7 +14141,7 @@ function printGRC(){
     ? g.foodPrefs.map(p=>`<span style="display:inline-block;background:#E8F5E9;color:#1B5E20;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:600;margin:2px">${p}</span>`).join('')
     : '';
   document.getElementById('print-zone').innerHTML=`
-  <div class="print-doc" style="font-family:'Hanken Grotesk','Söhne','Inter',Arial,Arial,sans-serif;color:#111;max-width:210mm">
+  <div class="print-doc" style="font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#111;max-width:210mm">
     <!-- HEADER -->
     <div style="background:linear-gradient(135deg,#1B4332,#2E7D32);color:white;padding:22px 28px;display:flex;justify-content:space-between;align-items:flex-start">
       <div style="display:flex;align-items:center;gap:16px">
@@ -14140,7 +14154,7 @@ function printGRC(){
       </div>
       <div style="text-align:right">
         <div style="font-size:9px;opacity:.55;text-transform:uppercase;letter-spacing:1px">Booking Ref</div>
-        <div style="font-size:20px;font-weight:800;color:#A5D6A7;font-family:Söhne,Inter,Arial,sans-serif">${b.ref}</div>
+        <div style="font-size:20px;font-weight:800;color:#A5D6A7;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${b.ref}</div>
         <div style="font-size:9px;opacity:.65;margin-top:3px">${fmtDate(b.checkIn)} → ${fmtDate(b.checkOut)}</div>
       </div>
     </div>
@@ -14163,7 +14177,7 @@ function printGRC(){
         </tr>
         <tr>
           <td style="padding:5px 0;color:#555;font-weight:500">NIC / Passport No.</td>
-          <td style="padding:5px 0;font-family:Söhne,Inter,Arial,sans-serif;font-weight:600;border-bottom:1px solid #ddd">${guestNIC||'&nbsp;'}</td>
+          <td style="padding:5px 0;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-weight:600;border-bottom:1px solid #ddd">${guestNIC||'&nbsp;'}</td>
         </tr>
         <tr>
           <td style="padding:5px 0;color:#555;font-weight:500">Contact Number</td>
@@ -14877,7 +14891,7 @@ function addKOTLineWithItem(menuItem){
       <input type="hidden" class="kot-item-hidden-id" value="${menuItem.id}"/>
     </div>
     <input type="number" class="form-control kot-qty-input" id="kotQty_${idx}" value="1" min="1" style="font-size:13px;font-weight:700;text-align:center" oninput="kotUpdateLinePrice(this.closest('.kot-line-row'))"/>
-    <div style="font-size:11px;font-weight:700;color:var(--green-800);padding:6px 4px;font-family:Söhne,Inter,Arial,sans-serif" id="kotLinePriceDisp_${idx}">LKR ${(+menuItem.price||0).toLocaleString()}</div>
+    <div style="font-size:11px;font-weight:700;color:var(--green-800);padding:6px 4px;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif" id="kotLinePriceDisp_${idx}">LKR ${(+menuItem.price||0).toLocaleString()}</div>
     <input type="hidden" class="kot-item-price" value="${menuItem.price||0}"/>
     <button class="btn btn-danger btn-xs" onclick="this.closest('.kot-line-row').remove()">✕</button>`;
   lines.appendChild(row);
@@ -16310,9 +16324,9 @@ function renderLedger(){
     }).join('')+`
     <tr style="background:var(--green-900);color:white">
       <td colspan="3" style="text-align:right;font-weight:700;padding:8px 11px">Closing Balance</td>
-      <td class="right" style="font-weight:700;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(rows.reduce((s,r)=>s+r.debit,0))}</td>
-      <td class="right" style="font-weight:700;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(rows.reduce((s,r)=>s+r.credit,0))}</td>
-      <td class="right" style="font-weight:700;font-family:Söhne,Inter,Arial,sans-serif;color:#69f0ae">${fmtLKR(balance)}</td>
+      <td class="right" style="font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(rows.reduce((s,r)=>s+r.debit,0))}</td>
+      <td class="right" style="font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(rows.reduce((s,r)=>s+r.credit,0))}</td>
+      <td class="right" style="font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#69f0ae">${fmtLKR(balance)}</td>
     </tr></tbody>`;
 }
 
@@ -16342,8 +16356,8 @@ function renderTrialBalance(){
     </tr>`).join('')+
     `<tr style="background:var(--green-900);color:white">
       <td colspan="3" style="font-weight:700;padding:8px 11px">TOTAL</td>
-      <td class="right" style="font-weight:700;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(totD)}</td>
-      <td class="right" style="font-weight:700;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(totC)}</td>
+      <td class="right" style="font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(totD)}</td>
+      <td class="right" style="font-weight:700;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(totC)}</td>
     </tr></tbody>`;
   const diff=Math.abs(totD-totC);
   if(footer)footer.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -16417,19 +16431,19 @@ function renderPL(){
 
     <div style="background:var(--green-50);border:1px solid var(--green-100);border-radius:var(--radius);padding:14px;margin-bottom:14px">
       <div style="font-size:11px;font-weight:800;color:var(--green-900);letter-spacing:.5px;text-transform:uppercase;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid var(--green-400)">💰 Revenue</div>
-      ${revRows.length?revRows.map(r=>`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--green-100);font-size:12px"><span>${r.acc.code} — ${r.acc.name}</span><span style="font-family:Söhne,Inter,Arial,sans-serif;color:var(--green-800);font-weight:600">${fmtLKR(r.val)}</span></div>`).join(''):'<div style="color:var(--grey-500);font-size:12px;padding:6px 0">No revenue entries for this period. Run Accounting Sync from PMS first.</div>'}
-      <div style="display:flex;justify-content:space-between;padding:10px 0 2px;font-weight:800;font-size:13px;border-top:2px solid var(--green-700);margin-top:6px"><span>Total Revenue</span><span style="color:var(--green-800);font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(totalRev)}</span></div>
+      ${revRows.length?revRows.map(r=>`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--green-100);font-size:12px"><span>${r.acc.code} — ${r.acc.name}</span><span style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:var(--green-800);font-weight:600">${fmtLKR(r.val)}</span></div>`).join(''):'<div style="color:var(--grey-500);font-size:12px;padding:6px 0">No revenue entries for this period. Run Accounting Sync from PMS first.</div>'}
+      <div style="display:flex;justify-content:space-between;padding:10px 0 2px;font-weight:800;font-size:13px;border-top:2px solid var(--green-700);margin-top:6px"><span>Total Revenue</span><span style="color:var(--green-800);font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(totalRev)}</span></div>
     </div>
 
     <div style="background:var(--red-100);border:1px solid #ffcdd2;border-radius:var(--radius);padding:14px;margin-bottom:14px">
       <div style="font-size:11px;font-weight:800;color:var(--red-800);letter-spacing:.5px;text-transform:uppercase;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid var(--red-800)">💸 Expenses</div>
-      ${expRows.length?expRows.map(r=>`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #ffcdd2;font-size:12px"><span>${r.acc.code} — ${r.acc.name}</span><span style="font-family:Söhne,Inter,Arial,sans-serif;color:var(--red-800);font-weight:600">${fmtLKR(r.val)}</span></div>`).join(''):'<div style="color:var(--grey-500);font-size:12px;padding:6px 0">No expense entries for this period.</div>'}
-      <div style="display:flex;justify-content:space-between;padding:10px 0 2px;font-weight:800;font-size:13px;border-top:2px solid var(--red-800);margin-top:6px"><span>Total Expenses</span><span style="color:var(--red-800);font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(totalExp)}</span></div>
+      ${expRows.length?expRows.map(r=>`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #ffcdd2;font-size:12px"><span>${r.acc.code} — ${r.acc.name}</span><span style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:var(--red-800);font-weight:600">${fmtLKR(r.val)}</span></div>`).join(''):'<div style="color:var(--grey-500);font-size:12px;padding:6px 0">No expense entries for this period.</div>'}
+      <div style="display:flex;justify-content:space-between;padding:10px 0 2px;font-weight:800;font-size:13px;border-top:2px solid var(--red-800);margin-top:6px"><span>Total Expenses</span><span style="color:var(--red-800);font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(totalExp)}</span></div>
     </div>
 
     <div style="background:${grossProfit>=0?'var(--green-900)':'var(--red-800)'};color:white;border-radius:var(--radius);padding:16px;display:flex;justify-content:space-between;align-items:center">
       <span style="font-size:15px;font-weight:800">${grossProfit>=0?'✅ Net Profit':'❌ Net Loss'}</span>
-      <span style="font-size:20px;font-weight:800;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(Math.abs(grossProfit))}</span>
+      <span style="font-size:20px;font-weight:800;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(Math.abs(grossProfit))}</span>
     </div>
   </div>`;
 }
@@ -16462,8 +16476,8 @@ function renderBalanceSheet(){
     if(!data.rows.length)return'';
     return`<div style="margin-bottom:14px">
       <div style="font-size:11px;font-weight:800;color:${textColor};letter-spacing:.5px;text-transform:uppercase;margin-bottom:8px;padding-bottom:5px;border-bottom:2px solid ${color}">${label}</div>
-      ${data.rows.map(r=>`<div style="display:flex;justify-content:space-between;padding:5px 8px;border-bottom:1px solid var(--grey-100);font-size:12px"><span style="color:var(--grey-700)">${r.acc.code} — ${r.acc.name}</span><span style="font-family:Söhne,Inter,Arial,sans-serif;font-weight:600">${fmtLKR(r.bal)}</span></div>`).join('')}
-      <div style="display:flex;justify-content:space-between;padding:8px;font-weight:800;font-size:13px;border-top:2px solid ${color};margin-top:4px"><span>Total ${label}</span><span style="font-family:Söhne,Inter,Arial,sans-serif;color:${textColor}">${fmtLKR(data.total)}</span></div>
+      ${data.rows.map(r=>`<div style="display:flex;justify-content:space-between;padding:5px 8px;border-bottom:1px solid var(--grey-100);font-size:12px"><span style="color:var(--grey-700)">${r.acc.code} — ${r.acc.name}</span><span style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-weight:600">${fmtLKR(r.bal)}</span></div>`).join('')}
+      <div style="display:flex;justify-content:space-between;padding:8px;font-weight:800;font-size:13px;border-top:2px solid ${color};margin-top:4px"><span>Total ${label}</span><span style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${textColor}">${fmtLKR(data.total)}</span></div>
     </div>`;
   }
 
@@ -16488,14 +16502,14 @@ function renderBalanceSheet(){
         <div style="background:var(--blue-100);border:1px solid #bbdefb;border-radius:var(--radius);padding:16px">
           <div style="font-size:13px;font-weight:800;color:var(--blue-800);margin-bottom:12px;text-align:center">EQUITY</div>
           ${buildSection(equity,'Owner\'s Equity','var(--blue-800)','var(--blue-800)')}
-          ${retainedEarnings!==0?`<div style="display:flex;justify-content:space-between;padding:5px 8px;border-bottom:1px solid var(--blue-100);font-size:12px"><span style="color:var(--grey-700)">Retained Earnings / (Loss)</span><span style="font-family:Söhne,Inter,Arial,sans-serif;font-weight:600;color:${retainedEarnings>=0?'var(--green-800)':'var(--red-800)'}">${fmtLKR(retainedEarnings)}</span></div>`:''}
-          <div style="display:flex;justify-content:space-between;padding:8px;font-weight:800;font-size:13px;border-top:2px solid var(--blue-800);margin-top:4px"><span>Total Liab. + Equity</span><span style="font-family:Söhne,Inter,Arial,sans-serif;color:var(--blue-800)">${fmtLKR(totalLiabEquity)}</span></div>
+          ${retainedEarnings!==0?`<div style="display:flex;justify-content:space-between;padding:5px 8px;border-bottom:1px solid var(--blue-100);font-size:12px"><span style="color:var(--grey-700)">Retained Earnings / (Loss)</span><span style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-weight:600;color:${retainedEarnings>=0?'var(--green-800)':'var(--red-800)'}">${fmtLKR(retainedEarnings)}</span></div>`:''}
+          <div style="display:flex;justify-content:space-between;padding:8px;font-weight:800;font-size:13px;border-top:2px solid var(--blue-800);margin-top:4px"><span>Total Liab. + Equity</span><span style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:var(--blue-800)">${fmtLKR(totalLiabEquity)}</span></div>
         </div>
       </div>
     </div>
     <div style="background:${balanced?'var(--green-900)':'var(--red-800)'};color:white;border-radius:var(--radius);padding:12px 20px;margin-top:14px;display:flex;justify-content:space-between;align-items:center">
       <span style="font-size:13px;font-weight:700">${balanced?'✅ Balance Sheet Balanced':'⚠️ Balance Sheet Unbalanced'}</span>
-      <span style="font-family:Söhne,Inter,Arial,sans-serif;font-size:12px">Assets: ${fmtLKR(assets.total)} | Liab+Eq: ${fmtLKR(totalLiabEquity)}</span>
+      <span style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px">Assets: ${fmtLKR(assets.total)} | Liab+Eq: ${fmtLKR(totalLiabEquity)}</span>
     </div>
   </div>`;
 }
@@ -16774,7 +16788,7 @@ function renderExpenseTracker(){
   </tr>`).join(''):`<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--grey-500)">No expense entries. Click "Record Expense" to start.</td></tr>`}
   ${data.length?`<tr style="background:var(--red-800);color:white">
     <td colspan="6" style="text-align:right;font-weight:700;padding:9px 11px">TOTAL (${data.length} entries)</td>
-    <td class="right" style="color:white;font-weight:800;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(total)}</td>
+    <td class="right" style="color:white;font-weight:800;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(total)}</td>
     <td></td>
   </tr>`:''}
   </tbody>`;
@@ -16980,7 +16994,7 @@ function renderPettyCash(){
       <td style="font-size:11px">${p.approved||'—'}</td>
       <td style="font-size:10px;color:var(--grey-500)">${p.ref||'—'}</td>
       <td class="right bold" style="color:${p.type==='in'?'var(--green-800)':'var(--red-800)'}">${p.type==='out'?'− ':'+ '}${fmtLKR(p.amt)}</td>
-      <td class="right" style="font-family:Söhne,Inter,Arial,sans-serif;font-size:11px">—</td>
+      <td class="right" style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:11px">—</td>
       <td><button class="btn btn-danger btn-xs" onclick="deleteAccEntry('petty','${p.id}',renderPettyCash)">🗑</button></td>
     </tr>`;
   }).join(''):`<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--grey-500)">No petty cash entries yet.</td></tr>`}
@@ -17047,7 +17061,7 @@ function renderSupplierPayments(){
       <td style="color:var(--grey-500);font-size:10px">${i+1}</td>
       <td>${fmtDate(p.date)}</td>
       <td class="bold">${p.supplier}</td>
-      <td style="font-size:11px;font-family:Söhne,Inter,Arial,sans-serif">${p.grn||'—'}</td>
+      <td style="font-size:11px;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${p.grn||'—'}</td>
       <td><span class="badge grey">${p.method}</span></td>
       <td class="right">${p.invAmt?fmtLKR(p.invAmt):'—'}</td>
       <td class="right bold" style="color:var(--teal-700)">${fmtLKR(p.paidAmt)}</td>
@@ -17108,7 +17122,7 @@ function renderCustomerReceipts(){
     <td style="color:var(--grey-500);font-size:10px">${i+1}</td>
     <td>${fmtDate(r.date)}</td>
     <td class="bold">${r.name}</td>
-    <td style="font-family:Söhne,Inter,Arial,sans-serif;font-size:10px;color:var(--amber-700)">${r.invNo||'—'}</td>
+    <td style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:10px;color:var(--amber-700)">${r.invNo||'—'}</td>
     <td><span class="badge blue">${r.method}</span></td>
     <td style="font-size:10px;color:var(--grey-500)">${r.ref||'—'}</td>
     <td class="right bold" style="color:var(--green-800)">${fmtLKR(r.amt)}</td>
@@ -17219,10 +17233,10 @@ function renderTaxReport(){
           }).join('')}
           <tr style="background:var(--green-900);color:white">
             <td colspan="3" style="text-align:right;font-weight:700;padding:9px 11px">TOTALS (${invoices.length})</td>
-            <td class="right" style="color:white;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(_taxSnap.fnbNetTotal)}</td>
-            <td class="right" style="color:#69f0ae;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(_taxSnap.fnbScTotal)}</td>
-            <td class="right" style="color:#fff59d;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(totalGovTax)}</td>
-            <td class="right" style="color:#69f0ae;font-weight:800;font-family:Söhne,Inter,Arial,sans-serif">${fmtLKR(_taxSnap.fnbCollected)}</td>
+            <td class="right" style="color:white;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(_taxSnap.fnbNetTotal)}</td>
+            <td class="right" style="color:#69f0ae;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(_taxSnap.fnbScTotal)}</td>
+            <td class="right" style="color:#fff59d;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(totalGovTax)}</td>
+            <td class="right" style="color:#69f0ae;font-weight:800;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${fmtLKR(_taxSnap.fnbCollected)}</td>
           </tr>
         </tbody>
       </table></div>
@@ -17806,8 +17820,8 @@ function qpsWhatsApp(){
 .sidebar-logo { border-bottom:1px solid rgba(179,139,77,.15) !important; }
 .sidebar-footer { border-top:1px solid rgba(179,139,77,.12) !important; }
 .nav-item.active { border-left-color:#b38b4d !important; background:rgba(179,139,77,.07) !important; }
-.nav-ops-section { color:rgba(179,139,77,.7) !important; font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif !important; font-size:10px !important; font-weight:600 !important; letter-spacing:.12em !important; }
-.nav-group-header { font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif !important; font-size:12px !important; font-weight:600 !important; letter-spacing:.04em !important; }
+.nav-ops-section { color:rgba(179,139,77,.7) !important; font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif !important; font-size:10px !important; font-weight:600 !important; letter-spacing:.12em !important; }
+.nav-group-header { font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif !important; font-size:12px !important; font-weight:600 !important; letter-spacing:.04em !important; }
 /* .content background uses var(--background) from layout fix block */
 .page-header { border-bottom:1px solid var(--outline-variant); padding-bottom:14px; margin-bottom:18px; }
 /* Tabular numbers for all numeric display */
@@ -20143,10 +20157,10 @@ function markCreditSettled(){
 
       <!-- Info KPIs -->
       <div class="kpi-grid" style="grid-template-columns:repeat(auto-fill,minmax(190px,1fr));margin-bottom:20px">
-        <div class="kpi blue"><span class="kpi-icon">🌐</span><div class="kpi-label">Base URL</div><div class="kpi-value" style="font-size:12px;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;word-break:break-all">/api/v1</div><div class="kpi-sub">REST · JSON</div></div>
-        <div class="kpi green"><span class="kpi-icon">📅</span><div class="kpi-label">iCal Feed</div><div class="kpi-value" style="font-size:11px;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;word-break:break-all">/ical/{token}.ics</div><div class="kpi-sub">RFC 5545</div></div>
-        <div class="kpi teal"><span class="kpi-icon">🔔</span><div class="kpi-label">Webhooks</div><div class="kpi-value" style="font-size:12px;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif">POST</div><div class="kpi-sub">booking · payment</div></div>
-        <div class="kpi gold"><span class="kpi-icon">🔑</span><div class="kpi-label">Auth</div><div class="kpi-value" style="font-size:12px;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif">Bearer Token</div><div class="kpi-sub">Authorization header</div></div>
+        <div class="kpi blue"><span class="kpi-icon">🌐</span><div class="kpi-label">Base URL</div><div class="kpi-value" style="font-size:12px;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;word-break:break-all">/api/v1</div><div class="kpi-sub">REST · JSON</div></div>
+        <div class="kpi green"><span class="kpi-icon">📅</span><div class="kpi-label">iCal Feed</div><div class="kpi-value" style="font-size:11px;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;word-break:break-all">/ical/{token}.ics</div><div class="kpi-sub">RFC 5545</div></div>
+        <div class="kpi teal"><span class="kpi-icon">🔔</span><div class="kpi-label">Webhooks</div><div class="kpi-value" style="font-size:12px;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">POST</div><div class="kpi-sub">booking · payment</div></div>
+        <div class="kpi gold"><span class="kpi-icon">🔑</span><div class="kpi-label">Auth</div><div class="kpi-value" style="font-size:12px;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">Bearer Token</div><div class="kpi-sub">Authorization header</div></div>
       </div>
 
       <!-- iCal Sync Guide -->
@@ -20155,9 +20169,9 @@ function markCreditSettled(){
           <div class="card-title">📅 iCal Sync — Complete Setup Guide</div>
           <span class="badge ok">RFC 5545 · VTIMEZONE · Asia/Colombo</span>
         </div>
-        <p style="font-size:13px;color:var(--grey-600);margin-bottom:14px;line-height:1.7">The iCal feed exports all confirmed bookings in standard <strong>.ics format (RFC 5545)</strong> with <code style="background:var(--grey-100);padding:2px 6px;border-radius:4px;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;font-size:12px">VTIMEZONE Asia/Colombo</code>, DTSTAMP, SEQUENCE, UID, and STATUS:CONFIRMED. OTA platforms poll this file to block your availability automatically.</p>
+        <p style="font-size:13px;color:var(--grey-600);margin-bottom:14px;line-height:1.7">The iCal feed exports all confirmed bookings in standard <strong>.ics format (RFC 5545)</strong> with <code style="background:var(--grey-100);padding:2px 6px;border-radius:4px;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px">VTIMEZONE Asia/Colombo</code>, DTSTAMP, SEQUENCE, UID, and STATUS:CONFIRMED. OTA platforms poll this file to block your availability automatically.</p>
 
-        <div style="background:var(--grey-900);color:#a5d6a7;padding:13px 18px;border-radius:var(--radius-sm);font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;font-size:12px;margin-bottom:16px;border-left:4px solid var(--green-500);word-break:break-all">
+        <div style="background:var(--grey-900);color:#a5d6a7;padding:13px 18px;border-radius:var(--radius-sm);font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px;margin-bottom:16px;border-left:4px solid var(--green-500);word-break:break-all">
           📅 Your iCal Feed URL: /ical/gk-{property-token}.ics — Download &amp; upload to each OTA portal
         </div>
 
@@ -20209,7 +20223,7 @@ function markCreditSettled(){
       <!-- iCal Format -->
       <div class="card" style="margin-bottom:16px">
         <div class="card-header"><div class="card-title">📄 iCal File Format (RFC 5545)</div><span class="badge blue">VTIMEZONE · Asia/Colombo</span></div>
-        <pre style="background:var(--grey-900);color:#e8f5e9;padding:18px;border-radius:var(--radius-sm);font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;font-size:12px;line-height:1.9;overflow-x:auto;white-space:pre;margin:0">BEGIN:VCALENDAR
+        <pre style="background:var(--grey-900);color:#e8f5e9;padding:18px;border-radius:var(--radius-sm);font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px;line-height:1.9;overflow-x:auto;white-space:pre;margin:0">BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//QYRVIA ERP//Hotel Management//EN
 CALSCALE:GREGORIAN
@@ -20257,7 +20271,7 @@ END:VCALENDAR</pre>
           </div>
           <div class="api-body">
             <div style="font-size:12px;color:var(--grey-500);margin:12px 0 8px">Query params: <code style="background:var(--grey-100);padding:2px 6px;border-radius:4px;font-size:11px">status</code> <code style="background:var(--grey-100);padding:2px 6px;border-radius:4px;font-size:11px">room</code> <code style="background:var(--grey-100);padding:2px 6px;border-radius:4px;font-size:11px">from</code> <code style="background:var(--grey-100);padding:2px 6px;border-radius:4px;font-size:11px">to</code> <code style="background:var(--grey-100);padding:2px 6px;border-radius:4px;font-size:11px">guest</code></div>
-            <pre style="background:var(--grey-900);color:#e8f5e9;padding:14px 16px;border-radius:var(--radius-sm);font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;font-size:12px;line-height:1.8;overflow-x:auto;white-space:pre;margin:0">GET /api/v1/bookings?status=checked-in&amp;from=2025-01-01
+            <pre style="background:var(--grey-900);color:#e8f5e9;padding:14px 16px;border-radius:var(--radius-sm);font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px;line-height:1.8;overflow-x:auto;white-space:pre;margin:0">GET /api/v1/bookings?status=checked-in&amp;from=2025-01-01
 Authorization: Bearer {your-api-token}
 
 // Response 200
@@ -20282,7 +20296,7 @@ Authorization: Bearer {your-api-token}
             <span style="margin-left:auto;font-size:13px;color:var(--grey-400)">▶</span>
           </div>
           <div class="api-body">
-            <pre style="background:var(--grey-900);color:#e8f5e9;padding:14px 16px;border-radius:var(--radius-sm);font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;font-size:12px;line-height:1.8;overflow-x:auto;white-space:pre;margin-top:12px">POST /api/v1/bookings
+            <pre style="background:var(--grey-900);color:#e8f5e9;padding:14px 16px;border-radius:var(--radius-sm);font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px;line-height:1.8;overflow-x:auto;white-space:pre;margin-top:12px">POST /api/v1/bookings
 Authorization: Bearer {token}
 Content-Type: application/json
 {
@@ -20305,7 +20319,7 @@ Content-Type: application/json
             <span style="margin-left:auto;font-size:13px;color:var(--grey-400)">▶</span>
           </div>
           <div class="api-body">
-            <pre style="background:var(--grey-900);color:#e8f5e9;padding:14px 16px;border-radius:var(--radius-sm);font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;font-size:12px;line-height:1.8;overflow-x:auto;white-space:pre;margin-top:12px">GET /api/v1/rooms/availability?from=2025-06-15&amp;to=2025-06-20
+            <pre style="background:var(--grey-900);color:#e8f5e9;padding:14px 16px;border-radius:var(--radius-sm);font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px;line-height:1.8;overflow-x:auto;white-space:pre;margin-top:12px">GET /api/v1/rooms/availability?from=2025-06-15&amp;to=2025-06-20
 // Response:
 { "rooms": [
   {"room":"101","type":"Standard","available":true,"rate":8000},
@@ -20324,7 +20338,7 @@ Content-Type: application/json
             <span style="margin-left:auto;font-size:13px;color:var(--grey-400)">▶</span>
           </div>
           <div class="api-body">
-            <pre style="background:var(--grey-900);color:#e8f5e9;padding:14px 16px;border-radius:var(--radius-sm);font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;font-size:12px;line-height:1.8;overflow-x:auto;white-space:pre;margin-top:12px">// Payload sent to your server
+            <pre style="background:var(--grey-900);color:#e8f5e9;padding:14px 16px;border-radius:var(--radius-sm);font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:12px;line-height:1.8;overflow-x:auto;white-space:pre;margin-top:12px">// Payload sent to your server
 POST https://your-server.com/hooks/qyrvia
 X-QYRVIA-Signature: sha256={hmac}
 {
@@ -21418,7 +21432,7 @@ function renderBankAccountCards(){
           <button class="btn btn-danger btn-xs" onclick="deleteBankAccount('${b.id}')">🗑️</button>
         </div>
       </div>
-      <div style="font-family:Söhne,Inter,Arial,sans-serif;font-size:20px;font-weight:800;color:${bal>=0?'var(--green-800)':'var(--red-800)'};margin-bottom:6px">${chqFmt(bal)}</div>
+      <div style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:20px;font-weight:800;color:${bal>=0?'var(--green-800)':'var(--red-800)'};margin-bottom:6px">${chqFmt(bal)}</div>
       <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--grey-500)">
         <span>Opening: ${chqFmt(b.openingBalance||0)}</span>
         <span>${txCount} transactions</span>
@@ -21903,7 +21917,7 @@ function printCashierDayBook(){
   const calc=calcCashierSession(sess);
   const w=window.open('','_blank','width=700,height=900');
   w.document.write(`<html><head><title>Cashier Day Book</title><style>
-    body{font-family:'Hanken Grotesk','Söhne','Inter',Arial,Arial,sans-serif;padding:20px;font-size:12px}
+    body{font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;padding:20px;font-size:12px}
     h2{color:#2e3132;border-bottom:2px solid #b38b4d;padding-bottom:8px}
     table{width:100%;border-collapse:collapse;margin:10px 0}
     th{background:#2e3132;color:white;padding:7px 10px;text-align:left}
@@ -21939,7 +21953,7 @@ function printCashReconciliation(){
   const sessions=getCashierSessions();
   const w=window.open('','_blank','width=700,height=900');
   w.document.write(`<html><head><title>Cash Reconciliation</title><style>
-    body{font-family:'Hanken Grotesk','Söhne','Inter',Arial,Arial,sans-serif;padding:20px;font-size:12px}
+    body{font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;padding:20px;font-size:12px}
     h2{color:#2e3132;border-bottom:2px solid #b38b4d;padding-bottom:8px}
     table{width:100%;border-collapse:collapse;margin:10px 0}
     th{background:#2e3132;color:white;padding:7px 10px}
@@ -22001,7 +22015,7 @@ function renderJournal(){
     <td class="bold" style="font-size:12px">${j.desc||'—'}</td>
     <td style="font-size:11px;color:var(--green-800)">${j.debitAccount||'—'}</td>
     <td style="font-size:11px;color:var(--red-800)">${j.creditAccount||'—'}</td>
-    <td class="right bold" style="font-family:Söhne,Inter,Arial,sans-serif">${chqFmt(j.amount)}</td>
+    <td class="right bold" style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${chqFmt(j.amount)}</td>
   </tr>`).join('')}</tbody>`;
 }
 
@@ -22446,7 +22460,7 @@ function renderChqBankKPIs(){
             <span style="font-weight:600;font-size:12px">${c.bankName||'—'}</span>
             <span class="badge grey" style="font-size:10px">${c.chequeNo}</span>
             <span style="font-size:12px">→ ${c.payee}</span>
-            <span style="font-size:11px;font-family:Söhne,Inter,Arial,sans-serif;color:var(--orange-800)">${chqFmt(c.amount)}</span>
+            <span style="font-size:11px;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:var(--orange-800)">${chqFmt(c.amount)}</span>
             <span style="font-size:11px">${label}</span>
             <span style="margin-left:auto;display:flex;gap:4px">
               ${c.whatsapp?`<button class="btn btn-teal btn-xs" onclick="chequeWARemindById('${c.id}','issued')">📲</button>`:''}
@@ -27577,7 +27591,7 @@ GK_V25.shortcuts = (function(){
 
   function showHelp(){
     const entries = [..._registry.entries()].map(([combo, {label}])=>
-      `<tr><td style="font-family:Söhne,Inter,Arial,sans-serif;padding:4px 12px;background:#1B4332;color:#a5d6a7;border-radius:4px;white-space:nowrap">${combo}</td><td style="padding:4px 14px;color:var(--grey-700)">${label}</td></tr>`
+      `<tr><td style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;padding:4px 12px;background:#1B4332;color:#a5d6a7;border-radius:4px;white-space:nowrap">${combo}</td><td style="padding:4px 14px;color:var(--grey-700)">${label}</td></tr>`
     ).join('');
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
@@ -27924,7 +27938,7 @@ GK_V25._initCallbacks = [];
 .v26-cfg-row{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:11px}
 .v26-cfg-row:last-child{margin-bottom:0}
 .v26-cfg-key{font-weight:700;color:#757575;width:110px;flex-shrink:0;text-transform:uppercase;font-size:10px;letter-spacing:.3px}
-.v26-cfg-val{font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;color:#212121;flex:1;word-break:break-all}
+.v26-cfg-val{font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#212121;flex:1;word-break:break-all}
 
 /* ── V26 Health grid ────────────────────────────────────────────────── */
 .v26-health-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:14px}
@@ -27934,13 +27948,13 @@ GK_V25._initCallbacks = [];
 .v26-hc.warn{background:#FFFDE7;border-color:#FFE082}
 .v26-hc-icon{font-size:20px;margin-bottom:5px}
 .v26-hc-name{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:#757575}
-.v26-hc-val{font-size:12px;font-weight:800;margin-top:3px;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif}
+.v26-hc-val{font-size:12px;font-weight:800;margin-top:3px;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif}
 .v26-hc.ok  .v26-hc-val{color:#1B5E20}
 .v26-hc.err .v26-hc-val{color:#B71C1C}
 .v26-hc.warn .v26-hc-val{color:#E65100}
 
 /* ── V26 Migration log ──────────────────────────────────────────────── */
-.v26-log{background:#1A1A1A;border-radius:8px;padding:12px;font-family:'Hanken Grotesk','Söhne','Inter',Arial,sans-serif;
+.v26-log{background:#1A1A1A;border-radius:8px;padding:12px;font-family:'Hanken Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
   font-size:10px;max-height:200px;overflow-y:auto;line-height:1.9;margin-bottom:12px;display:none}
 .v26-log .ok{color:#69F0AE}.v26-log .err{color:#FF5252}.v26-log .info{color:#82B1FF}.v26-log .warn{color:#FFD740}
 
@@ -28288,7 +28302,7 @@ GK_V25._initCallbacks = [];
             <button class="v26-btn v26-btn-secondary" style="width:100%" onclick="GK_V26.ui.openMigration()">🚀 Open Migration Wizard</button>
             <hr style="margin:16px 0;border:none;border-top:1px solid #E0E0E0">
             <p class="v26-label" style="margin-bottom:6px">API Quick Reference</p>
-            <div class="v26-cfg" style="font-size:10px;font-family:Söhne,Inter,Arial,sans-serif;line-height:2">
+            <div class="v26-cfg" style="font-size:10px;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;line-height:2">
               <div>POST /auth/login · logout · refresh</div>
               <div>GET/POST /bookings · /rooms · /guests</div>
               <div>GET/POST /invoices · /grn · /issuing</div>
@@ -28376,7 +28390,7 @@ GK_V25._initCallbacks = [];
             <div class="v26-hc-val">${c.v}</div>
           </div>`).join('')}
         </div>
-        <div class="v26-cfg" style="font-family:Söhne,Inter,Arial,sans-serif;font-size:11px;line-height:2">
+        <div class="v26-cfg" style="font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:11px;line-height:2">
           <div>Version: <b>${V26_VER}</b> · Build: ${V26_BUILD}</div>
           <div>API: <b>${Cfg.get('apiBase')||'not configured'}</b></div>
           <div>Mode: <b>${Cfg.get('mode')}</b> · Last Sync: <b>${Sync.lastSyncTime()||'never'}</b></div>
@@ -32461,7 +32475,7 @@ function _renderAudit() {
       l.action.includes('APPROVE')||l.action.includes('PAY')?'var(--ops-cyn)':
       l.action.includes('RECON')||l.action.includes('RUN')?'var(--ops-amb)':'var(--ops-mut)';
     return `<tr style="background:${i%2?'':'var(--ops-bg)33'}">
-      ${ENT.td(`<span style="font-size:10px;color:var(--ops-fnt);font-family:Söhne,Inter,Arial,sans-serif">${l.ts.replace('T',' ').slice(0,19)}</span>`)}
+      ${ENT.td(`<span style="font-size:10px;color:var(--ops-fnt);font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${l.ts.replace('T',' ').slice(0,19)}</span>`)}
       ${ENT.td(`<span style="color:${actionColor};font-weight:700;font-size:11px">${l.action}</span>`)}
       ${ENT.td(`<span style="background:var(--ops-cbg);color:var(--ops-cyn);padding:2px 7px;border-radius:20px;font-size:10px;font-weight:600">${l.module}</span>`)}
       ${ENT.td(l.details)}
@@ -32678,11 +32692,11 @@ CREATE POLICY prop_isolation ON gk_pms.bookings
     ${_apiTab === 'schema' ? ENT.card(`
       <p style="margin:0 0 12px;font-size:13px;font-weight:700;color:var(--ops-text)">PostgreSQL Production Schema</p>
       <p style="font-size:11.5px;color:var(--ops-mut);margin-bottom:12px">Run-ready DDL for migrating from IndexedDB to PostgreSQL with row-level multi-tenant security.</p>
-      <pre style="background:#0f172a;color:#94a3b8;padding:14px;border-radius:10px;font-size:11px;overflow-x:auto;line-height:1.8;margin:0;font-family:Söhne,Inter,Arial,sans-serif">${postgresSchema}</pre>
+      <pre style="background:#0f172a;color:#94a3b8;padding:14px;border-radius:10px;font-size:11px;overflow-x:auto;line-height:1.8;margin:0;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${postgresSchema}</pre>
       <button onclick="apiCopySchema()" style="margin-top:10px;padding:8px 16px;border-radius:8px;border:none;background:var(--ops-cbg);color:var(--ops-cyn);cursor:pointer;font-size:12px;font-weight:600;font-family:inherit">📋 Copy Schema</button>`) : ''}
     ${_apiTab === 'sdk' ? ENT.card(`
       <p style="margin:0 0 12px;font-size:13px;font-weight:700;color:var(--ops-text)">QYRVIA SDK Reference</p>
-      <pre style="background:#0f172a;color:#94a3b8;padding:14px;border-radius:10px;font-size:11px;overflow-x:auto;line-height:1.8;margin:0;font-family:Söhne,Inter,Arial,sans-serif">// Powered by QYRVIA ERP — JavaScript SDK
+      <pre style="background:#0f172a;color:#94a3b8;padding:14px;border-radius:10px;font-size:11px;overflow-x:auto;line-height:1.8;margin:0;font-family:'Hanken Grotesk',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">// Powered by QYRVIA ERP — JavaScript SDK
 // npm install @qyrvia/pms-sdk
 
 import QYRVIA from '@qyrvia/pms-sdk';
