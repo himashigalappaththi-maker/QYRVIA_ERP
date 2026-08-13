@@ -32,8 +32,26 @@
 --    qyrvia_auth_resolver, SECURITY DEFINER
 -- 3. worker_resolvers.due_scheduler_tenants(integer)   — owned by
 --    qyrvia_auth_resolver, SECURITY DEFINER
--- 4. EXECUTE grants on both functions → APP_ROLE
--- 5. USAGE grant on the worker_resolvers schema → APP_ROLE
+-- 4. worker_resolvers.due_ari_outbox_tenants(integer)  — owned by
+--    qyrvia_auth_resolver, SECURITY DEFINER   (Phase 66A-B2N-D)
+-- 5. EXECUTE grants on all three functions → APP_ROLE
+-- 6. USAGE grant on the worker_resolvers schema → APP_ROLE
+--
+-- PHASE 66A-B2N-D — THE THIRD RESOLVER
+-- ────────────────────────────────────
+-- ari_outbox_store (migrations 0087/0088) is ENABLE + FORCE ROW LEVEL SECURITY
+-- exactly like the two source tables above, so the ARI outbox drain worker hits
+-- the identical discovery problem: with no tenant bound it sees zero rows, and
+-- "no rows" is indistinguishable from "nothing to do". due_ari_outbox_tenants
+-- answers the same one-fact question — "there is actionable ARI outbox work for
+-- this tenant" — and returns tenant_id and nothing else.
+--
+-- FRESH ENVIRONMENTS run THIS script and get all three functions at once.
+-- ENVIRONMENTS THAT ALREADY RAN THE TWO-FUNCTION VERSION must instead run
+-- scripts/db/phase66a_ari_outbox_worker_resolver_bootstrap.sql, which adds ONLY
+-- the third function and leaves the first two untouched. The two scripts define
+-- due_ari_outbox_tenants identically, and a static contract test asserts that
+-- they do; neither may drift from the other.
 --
 -- WHAT THIS DELIBERATELY DOES NOT DO
 -- ──────────────────────────────────
@@ -57,16 +75,22 @@
 --
 -- SECURITY INVARIANTS
 -- ───────────────────
--- * Both functions return EXACTLY ONE column, tenant_id uuid. No queue id, no
---   job id, no property, no reservation, no channel, no action, no status, no
---   timing, no retry counters, no error text, no payload. A worker needs one
---   fact per tenant — "there is work here" — and anything beyond that would be
---   cross-tenant data escaping RLS through a side door.
--- * Neither function reads payload_json or scheduled_jobs.payload.
+-- * All three functions return EXACTLY ONE column, tenant_id uuid. No queue id,
+--   no job id, no outbox id, no property, no reservation, no channel, no
+--   action, no status, no timing, no retry counters, no dedupe key, no error
+--   text, no payload. A worker needs one fact per tenant — "there is work here"
+--   — and anything beyond that would be cross-tenant data escaping RLS through
+--   a side door.
+-- * No function reads payload_json or scheduled_jobs.payload.
 -- * No dynamic SQL. No caller-supplied identifier or predicate. The only
 --   argument is an integer row cap, validated 1..1000.
--- * Fixed search_path on both functions, so a hostile schema on the caller's
---   search_path cannot shadow a table name inside a BYPASSRLS definer context.
+-- * Fixed search_path on all three functions, so a hostile schema on the
+--   caller's search_path cannot shadow a table name inside a BYPASSRLS definer
+--   context.
+-- * All three use now(), never clock_timestamp(): every function is declared
+--   STABLE and the step-8 assertions enforce provolatile='s'. now() is fixed
+--   for the statement, which is what STABLE promises; clock_timestamp() would
+--   let one STABLE call return different results within a single statement.
 -- * PUBLIC gets no EXECUTE and no USAGE.
 -- * BYPASSRLS stays confined to qyrvia_auth_resolver, which cannot log in.
 -- * :"APP_ROLE" uses psql quoted-identifier substitution, so the operator's
@@ -98,6 +122,7 @@
 --   REVOKE ALL ON SCHEMA worker_resolvers FROM <app_role>;
 --   DROP FUNCTION worker_resolvers.pending_channel_tenants(integer);
 --   DROP FUNCTION worker_resolvers.due_scheduler_tenants(integer);
+--   DROP FUNCTION worker_resolvers.due_ari_outbox_tenants(integer);
 --   DROP SCHEMA worker_resolvers;      -- deliberately WITHOUT CASCADE
 -- The Phase 62 roles must be left in place; other infrastructure depends on them.
 -- ============================================================================
@@ -174,7 +199,7 @@ BEGIN
     SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
      WHERE n.nspname = 'public'
-       AND c.relname IN ('channel_sync_queue_store', 'scheduled_jobs')
+       AND c.relname IN ('channel_sync_queue_store', 'scheduled_jobs', 'ari_outbox_store')
   LOOP
     IF NOT v_rls.relrowsecurity THEN
       RAISE EXCEPTION 'Prerequisite not met: public.% does not have ROW LEVEL SECURITY enabled.',
@@ -188,10 +213,10 @@ BEGIN
 
   IF (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
        WHERE n.nspname = 'public'
-         AND c.relname IN ('channel_sync_queue_store', 'scheduled_jobs')) <> 2 THEN
+         AND c.relname IN ('channel_sync_queue_store', 'scheduled_jobs', 'ari_outbox_store')) <> 3 THEN
     RAISE EXCEPTION
-      'Prerequisite not met: public.channel_sync_queue_store and public.scheduled_jobs '
-      'must both exist. Apply migrations through 0084 first.';
+      'Prerequisite not met: public.channel_sync_queue_store, public.scheduled_jobs '
+      'and public.ari_outbox_store must all exist. Apply migrations through 0088 first.';
   END IF;
 
   -- 1e. Every column the resolvers read must exist, with the expected enum type
@@ -225,6 +250,25 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                   WHERE table_schema='public' AND table_name='scheduled_jobs'
                     AND column_name='run_at')        THEN v_missing := v_missing || ' scheduled_jobs.run_at'; END IF;
+  -- Phase 66A-B2N-D: the six columns due_ari_outbox_tenants reads, and no more.
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                  WHERE table_schema='public' AND table_name='ari_outbox_store'
+                    AND column_name='tenant_id')     THEN v_missing := v_missing || ' ari_outbox_store.tenant_id'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                  WHERE table_schema='public' AND table_name='ari_outbox_store'
+                    AND column_name='status')        THEN v_missing := v_missing || ' ari_outbox_store.status'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                  WHERE table_schema='public' AND table_name='ari_outbox_store'
+                    AND column_name='retry_count')   THEN v_missing := v_missing || ' ari_outbox_store.retry_count'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                  WHERE table_schema='public' AND table_name='ari_outbox_store'
+                    AND column_name='max_retries')   THEN v_missing := v_missing || ' ari_outbox_store.max_retries'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                  WHERE table_schema='public' AND table_name='ari_outbox_store'
+                    AND column_name='next_retry_at') THEN v_missing := v_missing || ' ari_outbox_store.next_retry_at'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                  WHERE table_schema='public' AND table_name='ari_outbox_store'
+                    AND column_name='lease_until')   THEN v_missing := v_missing || ' ari_outbox_store.lease_until'; END IF;
   IF v_missing <> '' THEN
     RAISE EXCEPTION 'Prerequisite not met: missing expected column(s):%', v_missing;
   END IF;
@@ -258,7 +302,8 @@ BEGIN
     SELECT count(*) INTO v_extra
       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
      WHERE n.nspname = 'worker_resolvers'
-       AND p.proname NOT IN ('pending_channel_tenants', 'due_scheduler_tenants');
+       AND p.proname NOT IN ('pending_channel_tenants', 'due_scheduler_tenants',
+                             'due_ari_outbox_tenants');
     IF v_extra > 0 THEN
       RAISE EXCEPTION
         'Schema worker_resolvers contains % unapproved function(s). Refusing to '
@@ -356,6 +401,55 @@ BEGIN
 END;
 $$;
 
+-- 4c. Phase 66A-B2N-D — tenants that have ACTIONABLE ARI outbox work.
+--     Returns tenant ids and nothing else — no outbox id, no property, no room
+--     type, no rate plan, no restriction rule, no dedupe key, no payload.
+--
+--     "Actionable" is exactly the union of the two things the drain worker can
+--     do something about:
+--       A. a PENDING row that is due and still has retries left — claimable by
+--          ariOutboxStore.claimDue(), whose predicate this mirrors exactly;
+--       B. a PROCESSING row whose lease has expired — recoverable by
+--          ariOutboxStore.requeueExpiredLeases(), whose predicate this also
+--          mirrors exactly.
+--     COMPLETED and DEAD_LETTER are terminal and never actionable, so a tenant
+--     holding only those is correctly invisible here.
+--
+--     now(), not clock_timestamp(): this function is STABLE (asserted in step
+--     8e) and both mirrored store predicates use now() too, so the resolver and
+--     the claim it precedes agree on one statement-stable clock.
+CREATE OR REPLACE FUNCTION worker_resolvers.due_ari_outbox_tenants(p_limit integer)
+RETURNS TABLE(tenant_id uuid)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+BEGIN
+  IF p_limit IS NULL THEN
+    RAISE EXCEPTION 'invalid_limit: p_limit must not be NULL';
+  END IF;
+  IF p_limit < 1 THEN
+    RAISE EXCEPTION 'invalid_limit: p_limit must be >= 1';
+  END IF;
+  IF p_limit > 1000 THEN
+    RAISE EXCEPTION 'invalid_limit: p_limit must be <= 1000';
+  END IF;
+
+  RETURN QUERY
+  SELECT DISTINCT o.tenant_id
+    FROM public.ari_outbox_store o
+   WHERE (o.status = 'PENDING'
+          AND o.retry_count < o.max_retries
+          AND (o.next_retry_at IS NULL OR o.next_retry_at <= now()))
+      OR (o.status = 'PROCESSING'
+          AND o.lease_until IS NOT NULL
+          AND o.lease_until <= now())
+   ORDER BY o.tenant_id
+   LIMIT p_limit;
+END;
+$$;
+
 -- ── 5. Return to superuser and withdraw CREATE ──────────────────────────────
 RESET ROLE;
 
@@ -369,9 +463,11 @@ REVOKE CREATE ON SCHEMA worker_resolvers FROM qyrvia_auth_resolver;
 --    leaving column-level table grants to the companion migration.
 REVOKE ALL ON FUNCTION worker_resolvers.pending_channel_tenants(integer) FROM PUBLIC;
 REVOKE ALL ON FUNCTION worker_resolvers.due_scheduler_tenants(integer)   FROM PUBLIC;
+REVOKE ALL ON FUNCTION worker_resolvers.due_ari_outbox_tenants(integer)  FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION worker_resolvers.pending_channel_tenants(integer) TO :"APP_ROLE";
 GRANT EXECUTE ON FUNCTION worker_resolvers.due_scheduler_tenants(integer)   TO :"APP_ROLE";
+GRANT EXECUTE ON FUNCTION worker_resolvers.due_ari_outbox_tenants(integer)  TO :"APP_ROLE";
 
 -- ── 7. Schema USAGE for the application role (no CREATE) ────────────────────
 GRANT USAGE ON SCHEMA worker_resolvers TO :"APP_ROLE";
@@ -399,12 +495,12 @@ BEGIN
                     COALESCE(v_schema_owner, '<null>');
   END IF;
 
-  -- 8b. Exactly the two approved functions, and nothing else.
+  -- 8b. Exactly the three approved functions, and nothing else.
   SELECT count(*) INTO v_fn_count
     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
    WHERE n.nspname = 'worker_resolvers';
-  IF v_fn_count <> 2 THEN
-    RAISE EXCEPTION 'worker_resolvers holds % function(s), expected exactly 2', v_fn_count;
+  IF v_fn_count <> 3 THEN
+    RAISE EXCEPTION 'worker_resolvers holds % function(s), expected exactly 3', v_fn_count;
   END IF;
 
   SELECT count(*) INTO v_extra
@@ -484,6 +580,17 @@ BEGIN
           OR has_schema_privilege('public', n.nspname, 'CREATE'));
   IF v_public_usage > 0 THEN
     RAISE EXCEPTION 'PUBLIC holds USAGE or CREATE on worker_resolvers — expected none';
+  END IF;
+
+  -- 8j. Every approved function must actually be present by name. A count of
+  --     three proves nothing on its own if one name was mistyped: the count
+  --     check and the unapproved-name check would both still pass.
+  IF (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'worker_resolvers'
+         AND p.proname IN ('pending_channel_tenants', 'due_scheduler_tenants',
+                           'due_ari_outbox_tenants')) <> 3 THEN
+    RAISE EXCEPTION
+      'worker_resolvers is missing one of the three approved functions by name';
   END IF;
 
   RAISE NOTICE

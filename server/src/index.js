@@ -654,6 +654,67 @@ if (require('./config/env').CHANNEL_WORKER_ENABLED === 'true') {
   logger.info('[boot] channel queue worker disabled (CHANNEL_WORKER_ENABLED=false)');
 }
 
+// Phase 66A-B2N-D — ARI outbox drain worker.
+//
+// Separate from the channel queue worker above in every respect: its own table
+// (ari_outbox_store), its own tenant resolver, its own two gates. None of the
+// CHANNEL_* switches is read here, and none of them is changed.
+//
+// THIS PHASE SHIPS NO TRANSPORT. The dispatcher below is a NOT-READY stub: it
+// reports isReady() === false and its dispatch() throws if it is ever reached.
+// The worker checks both env gates AND dispatcher readiness BEFORE resolving
+// tenants, so even with ARI_OUTBOX_WORKER_ENABLED=true and
+// ARI_OUTBOX_DISPATCH_ENABLED=true this boot performs zero resolver calls, zero
+// claims and zero transitions. That is deliberate: a mock-success dispatcher in
+// production would mark real events COMPLETED without delivering them, which is
+// strictly worse than not draining at all.
+//
+// No polling loop is started in this phase either — tick() exists and is fully
+// tested, but nothing schedules it until a real transport lands.
+if (require('./config/env').ARI_OUTBOX_WORKER_ENABLED === 'true') {
+  try {
+    const { buildAriOutboxWorker } = require('./ari/outbox/ariOutboxWorker');
+    const { buildAriOutboxTenantResolver } = require('./ari/outbox/ariOutboxTenantResolver');
+    const ariOutboxWrappers = require('./ari/outbox/tenantAriOutbox');
+
+    // Not-ready by contract. Kept explicit rather than omitted so the readiness
+    // check has something concrete to refuse.
+    const notReadyDispatcher = {
+      isReady: () => false,
+      dispatch: async () => {
+        throw Object.assign(
+          new Error('ari_outbox_dispatch_not_implemented'),
+          { retryable: false }
+        );
+      }
+    };
+
+    const ariOutboxWorker = buildAriOutboxWorker({
+      tenantResolver: buildAriOutboxTenantResolver({ pool: db.pool }),
+      outbox: ariOutboxWrappers,
+      pool: db.pool,
+      dispatcher: notReadyDispatcher,
+      logger,
+      // Stable for this instance, distinct between instances: it becomes the
+      // outbox lease_owner, and two workers sharing one owner string would make
+      // "whose lease is this?" unanswerable.
+      workerId: 'ari-outbox-' + process.pid + '-' + Math.random().toString(36).slice(2, 10),
+      config: {
+        isEnabled:         () => require('./config/env').ARI_OUTBOX_WORKER_ENABLED === 'true',
+        isDispatchEnabled: () => require('./config/env').ARI_OUTBOX_DISPATCH_ENABLED === 'true'
+      }
+    });
+
+    logger.info({
+      workerId: ariOutboxWorker.workerId,
+      dispatchEnabled: require('./config/env').ARI_OUTBOX_DISPATCH_ENABLED === 'true',
+      dispatcherReady: false
+    }, '[boot] ARI outbox worker constructed — no transport in this phase, no tick scheduled');
+  } catch (e) { logger.warn({ err: e }, '[boot] ARI outbox worker init skipped'); }
+} else {
+  logger.info('[boot] ARI outbox worker disabled (ARI_OUTBOX_WORKER_ENABLED=false)');
+}
+
 // Phase 7 / C7 - Allocation lifecycle (commands + subscribers + sweep job)
 const { buildAllocationService } = require('./services/pms/allocation');
 const { makeAllocationCommands } = require('./commands/pms/allocations');

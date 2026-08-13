@@ -73,6 +73,22 @@ const config = Object.freeze({
   // Default OFF; only the literal string 'true' selects it, same convention
   // as every other boolean flag in this file.
   CHANNEL_WORKER_REAL: getOptional('CHANNEL_WORKER_REAL', 'false'),
+  // Phase 66A-B2N-D: the ARI outbox drain worker. Two independent, fail-closed
+  // gates, deliberately separate from every CHANNEL_* gate above — the ARI
+  // outbox is a different table, a different queue and a different failure
+  // domain, and reusing a channel gate would couple two unrelated kill
+  // switches.
+  //   ARI_OUTBOX_WORKER_ENABLED   — may the drain loop START at all.
+  //   ARI_OUTBOX_DISPATCH_ENABLED — may a running tick CLAIM any outbox row.
+  // Both default OFF, and only the literal string 'true' enables either:
+  // missing, 'false', or any other value (a typo, a stray space, a non-string)
+  // all read as not-'true' and therefore fail closed, exactly like every other
+  // boolean flag in this file. Both must be 'true' AND the injected dispatcher
+  // must report ready before the worker resolves a single tenant — resolution
+  // calls a BYPASSRLS SECURITY DEFINER function, so it is gated behind every
+  // switch, not just the first.
+  ARI_OUTBOX_WORKER_ENABLED:   getOptional('ARI_OUTBOX_WORKER_ENABLED', 'false'),
+  ARI_OUTBOX_DISPATCH_ENABLED: getOptional('ARI_OUTBOX_DISPATCH_ENABLED', 'false'),
   // Phase 24 B8-B1: encryption key for the local SecretProvider (32-byte: 64-hex,
   // base64-32, or passphrase). Empty default => no provider (credential subsystem dormant).
   CHANNEL_CREDENTIAL_KEY: getOptional('CHANNEL_CREDENTIAL_KEY', ''),
