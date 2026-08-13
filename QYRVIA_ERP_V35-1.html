@@ -13991,9 +13991,9 @@ function cmShowWAConfig(){
       <div style="margin-top:16px;background:#F3E5F5;border-radius:6px;padding:12px;font-size:12px">
         <b>🔄 How It Works:</b><br/>
         1. Guest messages your WhatsApp Business number<br/>
-        2. Meta sends webhook to this server → AI processes with Claude<br/>
-        3. Claude checks live availability from PMS<br/>
-        4. Claude creates booking (if Full Auto mode) + sends confirmation<br/>
+        2. Meta sends webhook to this server → QYRVIA AI processes the message<br/>
+        3. QYRVIA AI checks live availability from PMS<br/>
+        4. QYRVIA AI creates booking (if Full Auto mode) + sends confirmation<br/>
         5. All bookings appear in Room Management with source "WhatsApp"
       </div>
     </div>
@@ -30574,7 +30574,7 @@ function aiRenderAdmin(){
     </div>
     <div class="ops-card">
       <p style="margin:0 0 10px;font-size:12.5px;font-weight:700;color:var(--ops-text)">📊 Platform Status</p>
-      ${[['AI Brain API',(typeof DB!=='undefined'&&DB.aiConfig&&DB.aiConfig.lastStatus==='connected'?(DB.aiConfig.provider||'claude')+' · '+(DB.aiConfig.model||'claude-sonnet-4-20250514'):'Not Configured'),(typeof DB!=='undefined'&&DB.aiConfig&&DB.aiConfig.lastStatus==='connected'?'var(--ops-grn)':'var(--ops-err,#b91c1c)')],['WhatsApp Module','Simulator Active','var(--ops-grn)'],['Revenue Engine V35','SC-Separated Active','var(--ops-grn)'],['GPS Attendance','Browser Geolocation API','var(--ops-grn)'],['PMS Data Bridge','Read-only Live Sync','var(--ops-grn)']].map(([l,v,c])=>`
+      ${[['AI Brain API',(typeof DB!=='undefined'&&DB.aiConfig&&DB.aiConfig.lastStatus==='connected'?'QYRVIA AI · Active':'Not Configured'),(typeof DB!=='undefined'&&DB.aiConfig&&DB.aiConfig.lastStatus==='connected'?'var(--ops-grn)':'var(--ops-err,#b91c1c)')],['WhatsApp Module','Simulator Active','var(--ops-grn)'],['Revenue Engine V35','SC-Separated Active','var(--ops-grn)'],['GPS Attendance','Browser Geolocation API','var(--ops-grn)'],['PMS Data Bridge','Read-only Live Sync','var(--ops-grn)']].map(([l,v,c])=>`
         <div style="display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid var(--ops-border)">
           <span style="color:${c};font-size:14px">✓</span>
           <div style="flex:1"><p style="margin:0;font-size:12.5px;font-weight:600;color:var(--ops-text)">${l}</p><p style="margin:0;font-size:10.5px;color:var(--ops-mut)">${v}</p></div>
@@ -30888,7 +30888,7 @@ function aiRenderWABookingAgent(){
       <div class="card" style="padding:14px">
         <div style="font-weight:700;margin-bottom:10px">⚙️ Agent Configuration</div>
         <div style="font-size:12px;line-height:1.8">
-          <div>📌 <b>Model:</b> claude-sonnet-4-20250514</div>
+          <div>📌 <b>Model:</b> QYRVIA AI</div>
           <div>📌 <b>Language:</b> English + Sinhala</div>
           <div>📌 <b>Availability check:</b> Real-time PMS</div>
           <div>📌 <b>Booking creation:</b> Automated via API</div>
@@ -33128,7 +33128,7 @@ window.addEventListener('load', function() {
     const btn = document.createElement('button');
     btn.id = 'af-btn';
     btn.innerHTML = '<span id="af-badge"></span><span id="af-dot" class="unknown"></span><img src="frontend-stitch/assets/ai-assistant.png" style="width:44px;height:44px;object-fit:cover;border-radius:22px;display:block" alt="" onerror="this.style.display=\'none\'">';
-    btn.title = 'AI Auto-Fix — Click to diagnose errors';
+    btn.title = 'QYRVIA AI Auto-Fix — Click to diagnose errors';
     btn.onclick = _afTogglePanel;
     document.body.appendChild(btn);
 
@@ -33137,8 +33137,8 @@ window.addEventListener('load', function() {
     panel.innerHTML = `
       <div id="af-header">
         <span style="font-size:18px">🤖</span>
-        <h3>AI Auto-Fix</h3>
-        <span id="af-ai-model" style="font-size:10px;color:var(--ops-muted,#888);background:var(--ops-border,#2a2a4a);padding:2px 7px;border-radius:10px">claude-sonnet</span>
+        <h3>QYRVIA AI Auto-Fix</h3>
+        <span id="af-ai-model" style="font-size:10px;color:var(--ops-muted,#888);background:var(--ops-border,#2a2a4a);padding:2px 7px;border-radius:10px">QYRVIA AI</span>
         <button id="af-close-btn" onclick="document.getElementById('af-panel').classList.remove('open');_afPanelOpen=false;">✕</button>
       </div>
       <div id="af-body">
@@ -33147,7 +33147,7 @@ window.addEventListener('load', function() {
           <span id="af-status-text">Checking AI connection…</span>
         </div>
         <div id="af-error-list"><p class="af-empty">✅ No errors caught yet.<br>Errors will appear here automatically.</p></div>
-        <button id="af-analyze-btn" onclick="_afAnalyzeSelected()" disabled>🔍 Analyze with Claude</button>
+        <button id="af-analyze-btn" onclick="_afAnalyzeSelected()" disabled>🔍 Analyze with QYRVIA AI</button>
         <div id="af-result"></div>
         <button id="af-clear-btn" onclick="_afClearErrors()" style="display:none">🗑 Clear errors</button>
       </div>
@@ -33175,13 +33175,16 @@ window.addEventListener('load', function() {
       if (_afErrors.length > 0) { badge.classList.add('show'); badge.textContent = _afErrors.length > 9 ? '9+' : _afErrors.length; }
       else badge.classList.remove('show');
     }
-    if (dot) { dot.className = ''; dot.classList.add(_afStatus); }
+    if (dot) { dot.className = ''; dot.classList.add(_afStatus === 'unavailable' ? 'unknown' : _afStatus); }
     if (statusBar && statusText) {
-      statusBar.className = _afStatus;
-      statusText.textContent = _afStatus === 'ready' ? '✅ Claude AI connected and ready'
-        : _afStatus === 'offline' ? '❌ AI offline — set ANTHROPIC_API_KEY in .env'
+      statusBar.className = _afStatus === 'unavailable' ? 'unknown' : _afStatus;
+      statusText.textContent = _afStatus === 'ready' ? '✅ QYRVIA AI connected and ready'
+        : _afStatus === 'offline' ? '❌ AI offline — configure the AI provider in System → AI Provider Settings'
+        : _afStatus === 'unavailable' ? '⚪ AI Not Configured'
         : '⏳ Checking AI connection…';
     }
+    const analyzeBtn = document.getElementById('af-analyze-btn');
+    if (analyzeBtn) analyzeBtn.disabled = _afStatus !== 'ready' || _afSelectedIdx < 0 || _afBusy;
   }
 
   // ── Render error list ──────────────────────────────────────────────
@@ -33191,7 +33194,15 @@ window.addEventListener('load', function() {
     const analyzeBtn = document.getElementById('af-analyze-btn');
     const clearBtn = document.getElementById('af-clear-btn');
     if (!list) return;
-    if (_afErrors.length === 0) {
+    if (_afStatus === 'unavailable') {
+      // Exactly one informational message when AI is unavailable —
+      // computed fresh each render, never appended to _afErrors, so it
+      // can never accumulate or be mistaken for a captured error.
+      list.innerHTML = '<p class="af-empty">ℹ️ AI services are currently unavailable. Configure the Backend API and AI Provider Settings to enable live AI features.</p>';
+      if (analyzeBtn) analyzeBtn.disabled = true;
+      if (clearBtn) clearBtn.style.display = _afErrors.length ? 'block' : 'none';
+      if (!_afErrors.length) return;
+    } else if (_afErrors.length === 0) {
       list.innerHTML = '<p class="af-empty">✅ No errors caught yet.<br>Errors will appear here automatically.</p>';
       if (analyzeBtn) analyzeBtn.disabled = true;
       if (clearBtn) clearBtn.style.display = 'none';
@@ -33206,7 +33217,7 @@ window.addEventListener('load', function() {
         <p class="af-err-meta">${e.page || 'unknown'} · ${e.ts} · ${e.source || 'js'}</p>
       </div>`;
     }).join('');
-    if (analyzeBtn) analyzeBtn.disabled = _afSelectedIdx < 0 || _afBusy;
+    if (analyzeBtn) analyzeBtn.disabled = _afStatus !== 'ready' || _afSelectedIdx < 0 || _afBusy;
   }
 
   window._afSelectError = function(idx) {
@@ -33233,7 +33244,7 @@ window.addEventListener('load', function() {
     const btn = document.getElementById('af-analyze-btn');
     const resultEl = document.getElementById('af-result');
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Analyzing…'; }
-    if (resultEl) { resultEl.className = ''; resultEl.innerHTML = '<p class="af-diag" style="color:var(--ops-muted)">🤖 Claude is diagnosing this error…</p>'; resultEl.classList.add('show'); }
+    if (resultEl) { resultEl.className = ''; resultEl.innerHTML = '<p class="af-diag" style="color:var(--ops-muted)">🤖 QYRVIA AI is diagnosing this error…</p>'; resultEl.classList.add('show'); }
 
     const err = _afErrors[_afSelectedIdx];
     try {
@@ -33254,12 +33265,12 @@ window.addEventListener('load', function() {
     } catch (e) {
       if (resultEl) {
         resultEl.innerHTML = `<p class="af-diag" style="color:#ef4444">❌ Could not get AI diagnosis: ${e.message}</p>
-          <p class="af-diag" style="font-size:11px;color:var(--ops-muted)">Make sure ANTHROPIC_API_KEY is set in your .env file.</p>`;
+          <p class="af-diag" style="font-size:11px;color:var(--ops-muted)">Make sure the AI provider is configured in System → AI Provider Settings.</p>`;
         resultEl.classList.add('show');
       }
     } finally {
       _afBusy = false;
-      if (btn) { btn.disabled = false; btn.textContent = '🔍 Analyze with Claude'; }
+      if (btn) { btn.disabled = false; btn.textContent = '🔍 Analyze with QYRVIA AI'; }
     }
   };
 
@@ -39911,7 +39922,7 @@ function _qyAISourceLabel(reqId, provider, model){
   var ts = n.toLocaleDateString('en-GB') + ' '
     + n.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
   return '\n\n' + '\u2500'.repeat(29)
-    + '\n\U0001f916 QYRVIA AI \u00b7 ' + (provider||'Claude') + ' \u00b7 ' + (model||'claude-sonnet-4-20250514')
+    + '\n\U0001f916 QYRVIA AI'
     + '\nGenerated: ' + ts + ' \u00b7 Request ID: ' + (reqId||'\u2014');
 }
 window._qyAISourceLabel = _qyAISourceLabel;
