@@ -2071,29 +2071,26 @@ th{border-bottom:2px solid #C9A84C !important}
       <span class="nav-group-arrow" id="navg-arrow-operations">▶</span>
     </div>
     <div class="nav-group-body" id="navg-body-operations">
-      <div class="nav-item nav-sub-item" onclick="showPage('inventory',this)">
-        <span class="nav-icon">📦</span><span class="nav-label">Inventory</span>
-      </div>
-      <div class="nav-item nav-sub-item" onclick="showPage('grn',this)">
-        <span class="nav-icon">📥</span><span class="nav-label">GRN</span>
+      <!-- V35-1 UI fix: required order — Requisitions, Purchase Orders, GRN,
+           Issuing, Waste, then any other legitimate Operations page. KOT Track
+           moved to Revenue (4.3); Gate Pass moved to Security only (4.2). -->
+      <div class="nav-item nav-sub-item" id="nav-requisition" onclick="showPage('requisition',this)">
+        <span class="nav-icon">📋</span><span class="nav-label">Requisitions</span>
       </div>
       <div class="nav-item nav-sub-item" id="nav-po" onclick="showPage('po',this)">
         <span class="nav-icon">🛒</span><span class="nav-label">Purchase Orders</span>
       </div>
+      <div class="nav-item nav-sub-item" onclick="showPage('grn',this)">
+        <span class="nav-icon">📥</span><span class="nav-label">GRN</span>
+      </div>
       <div class="nav-item nav-sub-item" onclick="showPage('issuing',this)">
         <span class="nav-icon">🍳</span><span class="nav-label">Issuing</span>
-      </div>
-      <div class="nav-item nav-sub-item" id="nav-requisition" onclick="showPage('requisition',this)">
-        <span class="nav-icon">📋</span><span class="nav-label">Requisitions</span>
-      </div>
-      <div class="nav-item nav-sub-item" id="nav-kot" onclick="showPage('kot',this)">
-        <span class="nav-icon">🎫</span><span class="nav-label">KOT Track</span>
       </div>
       <div class="nav-item nav-sub-item" onclick="showPage('waste',this)">
         <span class="nav-icon">♻️</span><span class="nav-label">Waste</span>
       </div>
-      <div class="nav-item nav-sub-item" id="nav-gatepass" onclick="showPage('gatepass',this)">
-        <span class="nav-icon">🛂</span><span class="nav-label">Gate Pass</span>
+      <div class="nav-item nav-sub-item" onclick="showPage('inventory',this)">
+        <span class="nav-icon">📦</span><span class="nav-label">Inventory</span>
       </div>
     </div>
 
@@ -2112,6 +2109,10 @@ th{border-bottom:2px solid #C9A84C !important}
       </div>
       <div class="nav-item nav-sub-item" id="nav-qr-menu" onclick="showPage('qr-menu',this)">
         <span class="nav-icon">📲</span><span class="nav-label">QR Menu</span>
+      </div>
+      <!-- V35-1 UI fix 4.3: moved from Operations, same id/handler/page preserved -->
+      <div class="nav-item nav-sub-item" id="nav-kot" onclick="showPage('kot',this)">
+        <span class="nav-icon">🎫</span><span class="nav-label">KOT Track</span>
       </div>
     </div>
 
@@ -2209,8 +2210,23 @@ th{border-bottom:2px solid #C9A84C !important}
       <div class="nav-item nav-sub-item" onclick="showPage('setupguide',this)">
         <span class="nav-icon">⚙️</span><span class="nav-label">Setup Guide</span>
       </div>
+      <!-- V35-1 UI fix 7: Property Setup — rooms and room categories -->
+      <div class="nav-item nav-sub-item" id="nav-property-setup" onclick="showPage('property-setup',this)">
+        <span class="nav-icon">🏘️</span><span class="nav-label">Property Setup</span>
+      </div>
+      <!-- V35-1 UI fix 10: AI Provider Settings — visible to every role, unlike
+           the full AI Governance console (nav-ai-governance above/below stays
+           admin-only; this is a simpler status+config view over the same
+           underlying DB.aiConfig, not a parallel/duplicate system). -->
+      <div class="nav-item nav-sub-item" id="nav-ai-provider-settings" onclick="showPage('ai-provider-settings',this)">
+        <span class="nav-icon">🤖</span><span class="nav-label">AI Provider Settings</span>
+      </div>
       <div class="nav-item nav-sub-item" onclick="showPage('apidocs',this)">
         <span class="nav-icon">🔌</span><span class="nav-label">API &amp; Integrations</span>
+      </div>
+      <!-- V35-1 UI fix 4.5: moved from Enterprise Finance, same id/handler/page preserved -->
+      <div class="nav-item nav-sub-item" id="nav-ent-api" onclick="showPage('ent-api',this)" style="border-left:2px solid #a855f744">
+        <span class="nav-icon">🔌</span><span class="nav-label">API Gateway</span>
       </div>
       <div class="nav-item nav-sub-item" id="nav-users" onclick="showPage('users',this)" style="display:none">
         <span class="nav-icon">👤</span><span class="nav-label">User Manager</span>
@@ -2240,7 +2256,6 @@ th{border-bottom:2px solid #C9A84C !important}
       <div class="nav-item nav-sub-item" id="nav-ent-mp"  onclick="showPage('ent-mp',this)"  style="border-left:2px solid #22d3ee44"><span class="nav-icon">🌐</span><span class="nav-label">Multi-Property</span></div>
       <div class="nav-item nav-sub-item" id="nav-ent-proc" onclick="showPage('ent-proc',this)" style="border-left:2px solid #22d3ee44"><span class="nav-icon">🔄</span><span class="nav-label">Procurement</span></div>
       <div class="nav-item nav-sub-item" id="nav-ent-audit" onclick="showPage('ent-audit',this)" style="border-left:2px solid #a855f744"><span class="nav-icon">📜</span><span class="nav-label">Enterprise Audit</span></div>
-      <div class="nav-item nav-sub-item" id="nav-ent-api" onclick="showPage('ent-api',this)" style="border-left:2px solid #a855f744"><span class="nav-icon">🔌</span><span class="nav-label">API Gateway</span></div>
     </div>
 
     <!-- ═══ OPERATIONS SUITE NAV ═══ -->
@@ -2262,9 +2277,13 @@ th{border-bottom:2px solid #C9A84C !important}
       <div class="nav-item nav-sub-item" id="nav-security-patrol" onclick="showPage('security-patrol',this)">
         <span class="nav-icon">🛡️</span><span class="nav-label">Security Patrol</span>
       </div>
-      <div class="nav-item nav-sub-item" id="nav-incidents" onclick="showPage('incidents',this)">
-        <span class="nav-icon">🚨</span><span class="nav-label">Incidents</span>
-      </div>
+      <!-- QYRVIA-PHASE67A-CLOSURE-AND-PATROL-UI-004: Incident Report removed
+           from Operations Suite (user-confirmed defect) — it now lives only
+           under Security (nav-incidents-sec below). The page, its form,
+           records and backend bridge are all unchanged; only this duplicate
+           Operations Suite menu entry is gone. Direct navigation to
+           showPage('incidents', ...) still respects existing role
+           permissions unchanged (ROLE_PAGES / OPS_ROLES are untouched). -->
       <div class="nav-item nav-sub-item" id="nav-approvals" onclick="showPage('approvals',this)">
         <span class="nav-icon">✅</span><span class="nav-label">Approvals</span>
       </div>
@@ -2288,10 +2307,19 @@ th{border-bottom:2px solid #C9A84C !important}
       <div class="nav-item nav-sub-item" id="nav-security-patrol-sec" onclick="showPage('security-patrol',document.getElementById('nav-security-patrol'))">
         <span class="nav-icon">📍</span><span class="nav-label">Patrol Point Location</span>
       </div>
-      <div class="nav-item nav-sub-item" id="nav-incidents-sec" onclick="showPage('incidents',document.getElementById('nav-incidents'))">
+      <!-- QYRVIA-PHASE67A-CLOSURE-AND-PATROL-UI-004: onclick now self-references
+           since nav-incidents (the Operations Suite duplicate it used to point
+           at for active-state highlighting) no longer exists — same fix
+           pattern already applied to Gate Pass above. Page and functionality
+           unchanged. -->
+      <div class="nav-item nav-sub-item" id="nav-incidents-sec" onclick="showPage('incidents',this)">
         <span class="nav-icon">🚨</span><span class="nav-label">Incident Report</span>
       </div>
-      <div class="nav-item nav-sub-item" id="nav-gatepass-sec" onclick="showPage('gatepass',document.getElementById('nav-gatepass'))">
+      <!-- V35-1 UI fix 4.2: Gate Pass now lives only here (removed from
+           Operations); onclick now self-references since the Operations
+           element it used to point at for active-state highlighting no
+           longer exists. Page and functionality unchanged. -->
+      <div class="nav-item nav-sub-item" id="nav-gatepass-sec" onclick="showPage('gatepass',this)">
         <span class="nav-icon">🎫</span><span class="nav-label">Gate Pass</span>
       </div>
     </div>
@@ -3822,6 +3850,104 @@ th{border-bottom:2px solid #C9A84C !important}
 
     </div>
 
+    <!-- V35-1 UI fix 7 — Property Setup: rooms and room categories -->
+    <div id="page-property-setup" class="page stitch-dash">
+      <div class="page-header">
+        <div><div class="page-title">🏘️ Property Setup</div><div class="page-subtitle">Configure this property's room inventory and categories</div></div>
+      </div>
+      <div id="pcStandaloneNotice" class="card" style="border:1px solid rgba(179,139,77,.3);background:rgba(179,139,77,.06);margin-bottom:14px;font-size:12px;color:var(--primary-dark);display:none">
+        💾 Standalone Mode — room and category data is stored in this browser only. Connect the QYRVIA server to persist this centrally.
+      </div>
+
+      <div class="card" style="margin-bottom:14px">
+        <div class="card-header">
+          <div class="card-title">🏷️ Room Categories</div>
+        </div>
+        <div id="pcCatTableWrap"></div>
+        <div style="border-top:1px solid var(--grey-100);margin-top:14px;padding-top:14px">
+          <div style="font-size:12px;font-weight:700;color:var(--grey-700);margin-bottom:8px" id="pcCatFormTitle">Add Category</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:10px">
+            <input type="text" class="form-control" id="pcCatName" placeholder="Category name (e.g. Deluxe)"/>
+            <input type="number" class="form-control" id="pcCatRate" placeholder="Default rate" min="0" step="0.01"/>
+            <input type="number" class="form-control" id="pcCatMaxPax" placeholder="Max occupancy" min="1" step="1"/>
+            <input type="text" class="form-control" id="pcCatDesc" placeholder="Short description"/>
+          </div>
+          <button class="btn btn-primary btn-sm" id="pcCatSubmitBtn" onclick="pcSubmitCategory()">＋ Add Category</button>
+          <button class="btn btn-secondary btn-sm" id="pcCatCancelBtn" onclick="pcCancelCategoryEdit()" style="display:none">Cancel</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">🛏️ Rooms</div>
+        </div>
+        <div id="pcRoomTableWrap"></div>
+        <div style="border-top:1px solid var(--grey-100);margin-top:14px;padding-top:14px">
+          <div style="font-size:12px;font-weight:700;color:var(--grey-700);margin-bottom:8px" id="pcRoomFormTitle">Add Room</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:10px">
+            <input type="text" class="form-control" id="pcRoomNumber" placeholder="Room number/name"/>
+            <select class="form-control" id="pcRoomCategory"></select>
+            <input type="number" class="form-control" id="pcRoomFloor" placeholder="Floor (optional)" step="1"/>
+          </div>
+          <button class="btn btn-primary btn-sm" id="pcRoomSubmitBtn" onclick="pcSubmitRoom()">＋ Add Room</button>
+          <button class="btn btn-secondary btn-sm" id="pcRoomCancelBtn" onclick="pcCancelRoomEdit()" style="display:none">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- V35-1 UI fix 10 — AI Provider Settings (visible to every role) -->
+    <div id="page-ai-provider-settings" class="page stitch-dash">
+      <div class="page-header">
+        <div><div class="page-title">🤖 AI Provider Settings</div><div class="page-subtitle">Provider, model and connection status for QYRVIA AI</div></div>
+      </div>
+      <div id="apsBody"></div>
+    </div>
+
+    <!-- QYRVIA-PUBLIC-PREVIEW-UPLOAD-001: Booking Engine — Direct Sales, given
+         its own dedicated page (was previously a card buried inside the Rooms
+         page with no nav item, no page id and no routing of its own). This is
+         the SAME markup and the SAME qvBookingEngine* functions, unmodified —
+         relocated, not duplicated or rebuilt. -->
+    <div id="page-booking-engine" class="page stitch-dash">
+      <div class="page-header">
+        <div><div class="page-title">🧭 Booking Engine — Direct Sales</div><div class="page-subtitle">Server-backed · fail-closed availability · never overbooks</div></div>
+      </div>
+      <div class="card" id="qvBookingEnginePanel" style="margin-bottom:14px;border-left:3px solid var(--primary)">
+        <p style="font-size:12px;color:var(--grey-600);margin:0 0 12px">Guided direct booking. The server confirms availability before creating a reservation; if availability can't be confirmed, the booking is safely declined.</p>
+
+        <!-- 1) Search: dates / guests / room type -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:10px">
+          <div><label class="form-label">Check-in</label><input id="qvBEArrival" type="date" class="form-input"></div>
+          <div><label class="form-label">Check-out</label><input id="qvBEDeparture" type="date" class="form-input"></div>
+          <div><label class="form-label">Adults</label><input id="qvBEAdults" type="number" min="1" value="1" class="form-input"></div>
+          <div><label class="form-label">Children</label><input id="qvBEChildren" type="number" min="0" value="0" class="form-input"></div>
+          <div><label class="form-label">Room type</label><input id="qvBERoomType" type="text" class="form-input" placeholder="e.g. rt-standard"></div>
+          <div><label class="form-label">Base rate / night</label><input id="qvBERate" type="number" min="0" value="0" class="form-input"></div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <button class="btn btn-teal btn-sm" id="qvBECheckBtn" onclick="qvBookingEngineCheck()">🔍 Check Availability</button>
+        </div>
+        <!-- 3) Available result or fail-closed unavailable / API-unavailable state -->
+        <div id="qvBEAvailResult" style="font-size:13px;color:var(--grey-500);margin-bottom:12px">Enter your stay and check availability.</div>
+
+        <!-- 4) Guest / contact details -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:10px">
+          <div><label class="form-label">Guest name</label><input id="qvBEGuest" type="text" class="form-input" placeholder="Full name"></div>
+          <div><label class="form-label">Contact (email / phone)</label><input id="qvBEContact" type="text" class="form-input" placeholder="guest@example.com"></div>
+        </div>
+
+        <!-- 5) Summary + 6) Submit -->
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <button class="btn btn-secondary btn-sm" onclick="qvBookingEngineReview()">🧾 Review Summary</button>
+          <button class="btn btn-primary btn-sm" id="qvBESubmitBtn" onclick="qvBookingEngineSubmit()">✅ Submit Booking</button>
+        </div>
+        <div id="qvBESummary" style="font-size:13px;margin-bottom:10px"></div>
+
+        <!-- 7) Confirmation / user-safe error -->
+        <div id="qvBEResult" style="font-size:13px"></div>
+      </div>
+    </div>
+
     <!-- USER MANAGER (Admin only) -->
     <div id="page-users" class="page stitch-dash">
       <div class="page-header">
@@ -4714,46 +4840,6 @@ th{border-bottom:2px solid #C9A84C !important}
           <button class="btn btn-secondary" onclick="showRoomOpsModal()">🔧 Room Ops</button>
           <button class="btn btn-primary" id="btnNewBooking" onclick="openBookingModal()">＋ New Booking</button>
         </div>
-      </div>
-
-      <!-- ── Booking Engine — Direct Sales (Phase 39) — server-backed, fail-closed availability ── -->
-      <div class="card" id="qvBookingEnginePanel" style="margin-bottom:14px;border-left:3px solid var(--primary)">
-        <div class="card-header">
-          <div class="card-title">🧭 Booking Engine — Direct Sales</div>
-          <span style="font-size:11px;color:var(--grey-500)">Server-backed · fail-closed availability · never overbooks</span>
-        </div>
-        <p style="font-size:12px;color:var(--grey-600);margin:0 0 12px">Guided direct booking. The server confirms availability before creating a reservation; if availability can't be confirmed, the booking is safely declined.</p>
-
-        <!-- 1) Search: dates / guests / room type -->
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:10px">
-          <div><label class="form-label">Check-in</label><input id="qvBEArrival" type="date" class="form-input"></div>
-          <div><label class="form-label">Check-out</label><input id="qvBEDeparture" type="date" class="form-input"></div>
-          <div><label class="form-label">Adults</label><input id="qvBEAdults" type="number" min="1" value="1" class="form-input"></div>
-          <div><label class="form-label">Children</label><input id="qvBEChildren" type="number" min="0" value="0" class="form-input"></div>
-          <div><label class="form-label">Room type</label><input id="qvBERoomType" type="text" class="form-input" placeholder="e.g. rt-standard"></div>
-          <div><label class="form-label">Base rate / night</label><input id="qvBERate" type="number" min="0" value="0" class="form-input"></div>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-          <button class="btn btn-teal btn-sm" id="qvBECheckBtn" onclick="qvBookingEngineCheck()">🔍 Check Availability</button>
-        </div>
-        <!-- 3) Available result or fail-closed unavailable / API-unavailable state -->
-        <div id="qvBEAvailResult" style="font-size:13px;color:var(--grey-500);margin-bottom:12px">Enter your stay and check availability.</div>
-
-        <!-- 4) Guest / contact details -->
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:10px">
-          <div><label class="form-label">Guest name</label><input id="qvBEGuest" type="text" class="form-input" placeholder="Full name"></div>
-          <div><label class="form-label">Contact (email / phone)</label><input id="qvBEContact" type="text" class="form-input" placeholder="guest@example.com"></div>
-        </div>
-
-        <!-- 5) Summary + 6) Submit -->
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-          <button class="btn btn-secondary btn-sm" onclick="qvBookingEngineReview()">🧾 Review Summary</button>
-          <button class="btn btn-primary btn-sm" id="qvBESubmitBtn" onclick="qvBookingEngineSubmit()">✅ Submit Booking</button>
-        </div>
-        <div id="qvBESummary" style="font-size:13px;margin-bottom:10px"></div>
-
-        <!-- 7) Confirmation / user-safe error -->
-        <div id="qvBEResult" style="font-size:13px"></div>
       </div>
 
       <!-- ── Quick Check-In / Check-Out Panel ── -->
@@ -6254,7 +6340,7 @@ function updateClock(){
 }
 
 // ═══════════════════ NAVIGATION ═══════════════════
-const PAGE_TITLES={'ai-governance':'AI Governance','ai-settings':'AI Settings',dashboard:'Dashboard',inventory:'Inventory',grn:'GRN',po:'Purchase Orders',issuing:'Issuing',kot:'KOT Print',invoice:'Invoice',sales:'Sales','qr-menu':'QR Menu',waste:'Waste',reports:'Reports',rooms:'Room Management',payroll:'Payroll',attendance:'Attendance',otherexpenses:'Other Expenses',accounting:'Accounting',datamanager:'Data Manager',channelmanager:'Channel Manager',users:'User Manager',guestcrm:'Guest CRM',setupguide:'Setup Guide',apidocs:'API & Integrations','ai-command':'AI Command Center','ent-ar':'Accounts Receivable','ent-ap':'Accounts Payable','ent-bank':'Bank Reconciliation','ent-fa':'Fixed Assets','ent-budget':'Budgeting & Forecast','ent-cc':'Cost Centers','ent-mp':'Multi-Property','ent-proc':'Procurement','ent-audit':'Enterprise Audit','ent-api':'API Gateway',gatepass:'Digital Gate Pass'};
+const PAGE_TITLES={'ai-governance':'AI Governance','ai-settings':'AI Settings',dashboard:'Dashboard',inventory:'Inventory',grn:'GRN',po:'Purchase Orders',issuing:'Issuing',kot:'KOT Print',invoice:'Invoice',sales:'Sales','qr-menu':'QR Menu',waste:'Waste',reports:'Reports',rooms:'Room Management',payroll:'Payroll',attendance:'Attendance',otherexpenses:'Other Expenses',accounting:'Accounting',datamanager:'Data Manager',channelmanager:'Channel Manager',users:'User Manager',guestcrm:'Guest CRM',setupguide:'Setup Guide',apidocs:'API & Integrations','ai-command':'AI Command Center','ent-ar':'Accounts Receivable','ent-ap':'Accounts Payable','ent-bank':'Bank Reconciliation','ent-fa':'Fixed Assets','ent-budget':'Budgeting & Forecast','ent-cc':'Cost Centers','ent-mp':'Multi-Property','ent-proc':'Procurement','ent-audit':'Enterprise Audit','ent-api':'API Gateway',gatepass:'Digital Gate Pass','property-setup':'Property Setup','ai-provider-settings':'AI Provider Settings','booking-engine':'Booking Engine — Direct Sales'};
 /* All 7 accordion groups — must stay in sync with PAGE_GROUP_MAP */
 const NAV_GROUPS = ['operations','revenue','hospitality','finance','system','enterprise','ops'];
 
@@ -6288,18 +6374,30 @@ function toggleNavGroup(groupId, forceOpen){
 // Map every page to its group so we can auto-open the right one
 const PAGE_GROUP_MAP = {
   inventory:'operations', grn:'operations', po:'operations',
-  issuing:'operations',   kot:'operations', waste:'operations',
-  invoice:'revenue',      sales:'revenue',  'qr-menu':'revenue',  gatepass:'operations',
+  issuing:'operations',   waste:'operations',
+  // V35-1 UI fix 4.3: KOT Track moved Operations -> Revenue.
+  invoice:'revenue',      sales:'revenue',  'qr-menu':'revenue',  kot:'revenue',
+  // QYRVIA-BOOKING-ENGINE-HOSPITALITY-MOVE-001: moved Revenue -> Hospitality.
+  'booking-engine':'hospitality',
+  // V35-1 UI fix 4.2: Gate Pass removed from Operations, now lives only under
+  // Security (which — like security-patrol/incidents below — isn't one of the
+  // NAV_GROUPS this auto-open loop manages, so no entry here is the correct,
+  // regression-free choice: this page id simply stops force-opening the
+  // Operations group it no longer belongs to).
   rooms:'hospitality',    channelmanager:'hospitality', guestcrm:'hospitality',
   reputation:'hospitality', rms:'hospitality',
-  payroll:'finance',      attendance:'finance',  otherexpenses:'finance',
+  // V35-1 UI fix 4.1: Payroll and Attendance moved Finance -> Human Resources.
+  payroll:'hr',           attendance:'hr',       otherexpenses:'finance',
   cheque:'finance',       accounting:'finance',
   datamanager:'system',   setupguide:'system',
-  apidocs:'system',       users:'system',
+  apidocs:'system',       users:'system',        'property-setup':'system',
+  'ai-provider-settings':'system',
   'ent-ar':'enterprise','ent-ap':'enterprise','ent-bank':'enterprise',
   'ent-fa':'enterprise','ent-budget':'enterprise','ent-cc':'enterprise',
   'ent-mp':'enterprise','ent-proc':'enterprise',
-  'ent-audit':'enterprise','ent-api':'enterprise',
+  'ent-audit':'enterprise',
+  // V35-1 UI fix 4.5: API Gateway moved Enterprise Finance -> System.
+  'ent-api':'system',
   'hk-ops':'ops','kitchen-ops':'ops','maint-ops':'ops',
   'security-patrol':'ops','incidents':'ops','approvals':'ops',
   'infra':'ops','admin-panel':'ops','ai-command':'ops',
@@ -9182,6 +9280,21 @@ const DEFAULT_ROOMS = [
 function loadRoomDB(){
   if(!DB.rooms||DB.rooms.length===0)DB.rooms=JSON.parse(JSON.stringify(DEFAULT_ROOMS));
   if(!DB.bookings)DB.bookings=[];
+  // V35-1 UI fix 7: seed DB.roomCategories once, derived from whatever
+  // distinct categories already exist on DB.rooms — so an existing install
+  // gets a sensible Property Setup starting point with no manual re-entry
+  // and no hard-coded room count. Runs once (guarded), and loadRoomDB() is
+  // already called before virtually every room-related read/write in this
+  // file, so this is the one safe place to guarantee it has run.
+  if(!Array.isArray(DB.roomCategories)){
+    var seen={}, cats=[];
+    (DB.rooms||[]).forEach(function(r){
+      if(!r||!r.category||seen[r.category])return;
+      seen[r.category]=true;
+      cats.push({key:r.category,name:r.type||r.category,rate:r.rate||0,maxPax:r.maxPax||1,desc:r.desc||r.type||r.category});
+    });
+    DB.roomCategories=cats;
+  }
 }
 
 function saveRoomDB(){
@@ -20840,11 +20953,20 @@ X-QYRVIA-Signature: sha256={hmac}
     <!-- SECURITY PATROL -->
     <div id="page-security-patrol" class="page ops-page stitch-dash" style="background:var(--ops-bg);min-height:0;padding:4px 0">
       <div style="padding:0 2px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:8px;flex-wrap:wrap">
           <p class="ops-section-title" style="margin:0">Security Patrol</p>
-          <span style="font-size:12px;color:var(--ops-mut)" id="patrolProgress">0/0 checked</span>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:12px;color:var(--ops-mut)" id="patrolProgress">0/0 checked</span>
+            <!-- QYRVIA-PHASE67A-CLOSURE-AND-PATROL-UI-004: management button lives
+                 HERE, on the page users actually reach via Security -> Patrol
+                 Points / Operations -> Security Patrol. Populated by JS
+                 (spRenderAddButton) so it is authorization-gated at render time,
+                 not just hidden via CSS -- see spCanManagePatrolPoints(). -->
+            <span id="spAddPointBtnHost"></span>
+          </div>
         </div>
         <div class="ops-progress"><div class="ops-progress-fill" id="patrolProgressBar" style="background:var(--ops-acc);width:0%"></div></div>
+        <div id="spNewPointForm" style="display:none"></div>
         <div id="patrolPointsList"></div>
         <div class="ops-card" style="margin-top:10px">
           <p style="margin:0 0 10px;font-size:12.5px;font-weight:700;color:var(--ops-text)">📋 Patrol Log</p>
@@ -23900,6 +24022,8 @@ function notifMarkAllRead(){
     if(!ROLE_PAGES.admin.includes('permissions')) ROLE_PAGES.admin.push('permissions');
     if(!ROLE_PAGES.admin.includes('auditlog')) ROLE_PAGES.admin.push('auditlog');
   }
+  // Add booking-engine to admin before prop_admin inherits (QYRVIA-PUBLIC-PREVIEW-DEFECT-FIX-001)
+  if(ROLE_PAGES.admin && !ROLE_PAGES.admin.includes('booking-engine')) ROLE_PAGES.admin.push('booking-engine');
   // Add extended roles
   ROLE_PAGES['prop_admin'] = [...(ROLE_PAGES['admin']||[])];
   /* prop_admin inherits all admin pages including enterprise+ops */
@@ -23907,6 +24031,9 @@ function notifMarkAllRead(){
   ROLE_PAGES['manager']    = ['dashboard','rooms','invoice','sales','inventory','grn','po','issuing','requisition','payroll','attendance','reports'];
   ROLE_PAGES['hod']        = ['dashboard','inventory','issuing','requisition','waste','attendance'];
   ROLE_PAGES['staff']      = ['dashboard'];
+  // Booking Engine is a hotel-management/revenue function — also allow the
+  // roles that already handle rooms/reservations directly.
+  ['reception','manager','director'].forEach(r=>{ if(ROLE_PAGES[r] && !ROLE_PAGES[r].includes('booking-engine')) ROLE_PAGES[r].push('booking-engine'); });
 })();
 
 // ─────────────────────────────────────────────────────────────────────
@@ -28642,6 +28769,25 @@ let OPS = {
   aiOpen: false,
   currentOpsPage: null,
 };
+// QYRVIA-PHASE67A-CLOSURE-AND-PATROL-UI-004: OPS/getOpsRole were declared
+// with `let`/`function` inside this module's own top-level script scope
+// and were NEVER exposed on `window` -- meaning they are NOT visible as
+// bare identifiers from any OTHER <script> tag (only from more code
+// physically inside this same script block). This is a genuine, real bug:
+// the "V35-1 UI fix 9" patrol-point persistence/edit/delete script (a
+// LATER, separate <script> block) references bare `OPS.patrolPoints`
+// throughout and silently fails on every call (each site wraps the access
+// in try/catch, so `ReferenceError: OPS is not defined` was swallowed
+// silently instead of surfacing) -- confirmed live: calling the exposed
+// window.ppEditPoint(...) throws exactly this ReferenceError. This
+// includes fix 9's own stated purpose (writing patrol points to
+// localStorage), which has never actually worked. Exposing OPS/getOpsRole
+// here is a pure, additive visibility fix -- no behaviour of the
+// Operations Suite module itself changes; every reference to bare OPS/
+// getOpsRole from code physically inside this module continues to resolve
+// exactly as before via normal lexical scoping.
+window.OPS = OPS;
+window.getOpsRole = getOpsRole;
 
 /* ── 4. AI BRAIN ──────────────────────────────────────────────────────────── */
 const AI_TIPS = {
@@ -29055,6 +29201,7 @@ function patrolCheckIn(ptId) {
   }
 }
 window.patrolCheckIn=patrolCheckIn;
+window.renderPatrolOps=renderPatrolOps; // QYRVIA-PHASE67A-CLOSURE-AND-PATROL-UI-004: see the OPS/getOpsRole exposure note above
 
 /* ── 9. INCIDENTS MODULE ──────────────────────────────────────────────────── */
 let INC_FORM_OPEN = false;
@@ -30896,10 +31043,17 @@ const ENT = {
       ${sub?`<p style="margin:0;font-size:10px;color:var(--ops-fnt)">${sub}</p>`:''}
     </div>`,
   tbl: (cols,rows,totRow='') =>
+    // V35-1 UI fix 8: a genuinely empty dataset must never render as a blank
+    // table (indistinguishable from "loading" or a rendering bug) or imply a
+    // confirmed $0.00 balance. This shared helper is used by every Enterprise
+    // Finance submodule (AR, AP, Bank, Fixed Assets, Budgeting, Cost Centers,
+    // Procurement, Enterprise Audit — 26 call sites), so fixing it here covers
+    // all of them uniformly. entDefaultDB() already ships with no fabricated
+    // seed rows; this only adds the missing empty-state message for that case.
     `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
       <thead><tr>${cols.map(c=>`<th style="background:var(--ops-card2);color:var(--ops-mut);padding:8px 10px;text-align:${c.align||'left'};font-size:10.5px;font-weight:700;white-space:nowrap;border-bottom:2px solid var(--ops-border)">${c.l}</th>`).join('')}</tr></thead>
-      <tbody>${rows}</tbody>
-      ${totRow?`<tfoot><tr>${totRow}</tr></tfoot>`:''}
+      <tbody>${rows||`<tr><td colspan="${cols.length}" style="padding:22px 10px;text-align:center;color:var(--ops-mut);font-size:12px">No records configured yet — this is not a confirmed zero balance, it means nothing has been entered here.</td></tr>`}</tbody>
+      ${totRow&&rows?`<tfoot><tr>${totRow}</tr></tfoot>`:''}
     </table></div>`,
   td: (val,align='left',bold=false,color='') =>
     `<td style="padding:8px 10px;border-bottom:1px solid var(--ops-border);text-align:${align};${bold?'font-weight:700;':''};${color?`color:${color};`:''}white-space:nowrap">${val}</td>`,
@@ -49664,4 +49818,1106 @@ document.addEventListener('DOMContentLoaded',function(){
 
 })(window);
 </script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     V35-1 UI fix 9 — Patrol Point Location: add/edit/disable/delete, real
+     geolocation, and genuine browser-local persistence
+     ═══════════════════════════════════════════════════════════════════════
+     GAPS FOUND IN THE EXISTING FEATURE:
+       - OPS.patrolPoints was pure in-memory (reset from the PATROL_POINTS
+         seed on every page load) — never actually written to localStorage,
+         so "adding" a point did not survive a refresh. This is the one
+         genuine persistence gap; everything else in OPS legitimately mirrors
+         live front-desk state and is out of scope here.
+       - the add-point form had no description field and no way to capture
+         GPS from the browser itself — only a comment saying "the mobile app
+         can do this"; there was no Use Current Location button here at all.
+       - adminAddPoint() only required a non-empty name; lat/lng could be
+         saved as null with no range validation.
+       - the point list only offered toggle-active; no edit, no delete.
+     Everything below is additive: it reads the existing OPS.patrolPoints
+     shape and the existing adminTogglePoint()/adminAddPoint() functions
+     unchanged, and only WRAPS them, so nothing already working regresses. -->
+<script>
+(function(){
+  'use strict';
+  const PP_KEY = 'qyrvia_patrol_points_v1';
+
+  function ppLoad(){
+    try{
+      const raw = localStorage.getItem(PP_KEY);
+      if(raw){ const parsed = JSON.parse(raw); if(Array.isArray(parsed)) return parsed; }
+    }catch(e){}
+    return null;
+  }
+  function ppSave(){
+    try{ localStorage.setItem(PP_KEY, JSON.stringify(OPS.patrolPoints||[])); }catch(e){}
+  }
+  // Hydrate once at boot: a saved local list wins over the (empty) seed.
+  (function ppHydrate(){
+    const saved = ppLoad();
+    if(saved) OPS.patrolPoints = saved;
+  })();
+
+  function ppEsc(v){ return String(v==null?'':v).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+  function ppValidLat(n){ return typeof n==='number' && isFinite(n) && n>=-90 && n<=90; }
+  function ppValidLng(n){ return typeof n==='number' && isFinite(n) && n>=-180 && n<=180; }
+
+  // Save every mutation the existing wrapper chain performs, without
+  // touching its own logic — this is what closes the persistence gap.
+  const _origToggle = window.adminTogglePoint;
+  window.adminTogglePoint = function(id){
+    if(_origToggle) _origToggle.apply(this, arguments);
+    ppSave();
+  };
+  const _origAdd = window.adminAddPoint;
+  window.adminAddPoint = function(){
+    const before = (OPS.patrolPoints||[]).length;
+    if(_origAdd) _origAdd.apply(this, arguments);
+    if((OPS.patrolPoints||[]).length !== before) ppSave();
+  };
+
+  window.ppDeletePoint = function(id){
+    if(!confirm('Remove this patrol point? This does not affect any past patrol log entries.')) return;
+    OPS.patrolPoints = (OPS.patrolPoints||[]).filter(function(p){ return p.id!==id; });
+    ppSave();
+    if(typeof renderAdminPanel==='function') renderAdminPanel();
+  };
+
+  let _ppEditingId = null;
+  window.ppEditPoint = function(id){
+    const pt = (OPS.patrolPoints||[]).find(function(p){ return p.id===id; });
+    if(!pt) return;
+    if(document.getElementById('adminNewPointForm').style.display==='none' || !document.getElementById('adminNewPointForm').style.display){
+      adminToggleNewPoint();
+    }
+    _ppEditingId = id;
+    setTimeout(function(){
+      const n=document.getElementById('apName'), z=document.getElementById('apZone'),
+            la=document.getElementById('apLat'), ln=document.getElementById('apLng'),
+            d=document.getElementById('apDesc');
+      if(n) n.value = pt.name||'';
+      if(z) z.value = pt.zone||'Exterior';
+      if(la) la.value = pt.lat==null?'':pt.lat;
+      if(ln) ln.value = pt.lng==null?'':pt.lng;
+      if(d) d.value = pt.desc||'';
+      const btn = document.querySelector('#adminNewPointForm button.ops-btn-acc');
+      if(btn) btn.textContent = '💾 Save Patrol Point';
+    }, 0);
+  };
+
+  // Geolocation is requested ONLY from this explicit button click — never on
+  // page load or form open. No external map provider is contacted; the
+  // browser's own Geolocation API is the sole source of coordinates.
+  window.ppUseCurrentLocation = function(){
+    const statusEl = document.getElementById('apGeoStatus');
+    if(!navigator.geolocation){
+      if(statusEl) statusEl.textContent = '⚠️ Geolocation is not supported by this browser.';
+      return;
+    }
+    if(statusEl) statusEl.textContent = '📍 Requesting location…';
+    navigator.geolocation.getCurrentPosition(
+      function(pos){
+        const la=document.getElementById('apLat'), ln=document.getElementById('apLng');
+        if(la) la.value = pos.coords.latitude.toFixed(6);
+        if(ln) ln.value = pos.coords.longitude.toFixed(6);
+        if(statusEl) statusEl.textContent = '✅ Captured: ' + pos.coords.latitude.toFixed(6) + ', ' + pos.coords.longitude.toFixed(6) + ' (±' + Math.round(pos.coords.accuracy) + 'm) — review before saving.';
+      },
+      function(err){
+        if(!statusEl) return;
+        if(err.code === err.PERMISSION_DENIED) statusEl.textContent = '⚠️ Location permission denied. Enter coordinates manually.';
+        else if(err.code === err.POSITION_UNAVAILABLE) statusEl.textContent = '⚠️ Location unavailable right now. Enter coordinates manually.';
+        else if(err.code === err.TIMEOUT) statusEl.textContent = '⚠️ Location request timed out. Try again or enter manually.';
+        else statusEl.textContent = '⚠️ Could not get location. Enter coordinates manually.';
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  };
+
+  // Enhance the add/edit form: description field + Use Current Location +
+  // status line, then delegate name/zone/lat/lng validation before letting
+  // the original adminAddPoint (now wrapped above for persistence) run.
+  const _origToggleForm = window.adminToggleNewPoint;
+  window.adminToggleNewPoint = function(){
+    _ppEditingId = null;
+    _origToggleForm.apply(this, arguments);
+    const form = document.getElementById('adminNewPointForm');
+    if(!form || form.style.display==='none') return;
+    const descRow = document.createElement('div');
+    descRow.style.marginBottom = '9px';
+    descRow.innerHTML = '<p style="margin:0 0 4px;font-size:11px;color:var(--ops-mut)">Description</p>'+
+      '<input class="ops-input" id="apDesc" placeholder="e.g. Fire exit near the east stairwell"/>';
+    const geoRow = document.createElement('div');
+    geoRow.style.marginBottom = '9px';
+    geoRow.innerHTML = '<button type="button" class="ops-btn" style="width:100%;padding:8px" onclick="ppUseCurrentLocation()">📍 Use Current Location</button>'+
+      '<p id="apGeoStatus" style="margin:6px 0 0;font-size:10.5px;color:var(--ops-mut)"></p>';
+    const submitBtn = form.querySelector('button.ops-btn-acc');
+    if(submitBtn){
+      form.insertBefore(descRow, submitBtn);
+      form.insertBefore(geoRow, submitBtn);
+    }
+  };
+
+  // Wrap the actual save: require name + BOTH valid coordinates, validate
+  // ranges, carry the description through, and support editing in place.
+  const _origAdd2 = window.adminAddPoint;
+  window.adminAddPoint = function(){
+    const name = (document.getElementById('apName')||{}).value;
+    if(!name || !name.trim()){ if(typeof toast==='function') toast('Name required','error'); else alert('Name required'); return; }
+    const lat = parseFloat((document.getElementById('apLat')||{}).value);
+    const lng = parseFloat((document.getElementById('apLng')||{}).value);
+    if(isNaN(lat) || isNaN(lng) || !ppValidLat(lat) || !ppValidLng(lng)){
+      if(typeof toast==='function') toast('Valid latitude (-90 to 90) and longitude (-180 to 180) are required','error');
+      else alert('Valid latitude and longitude are required');
+      return;
+    }
+    const desc = ((document.getElementById('apDesc')||{}).value||'').trim();
+    if(_ppEditingId){
+      const pt = (OPS.patrolPoints||[]).find(function(p){ return p.id===_ppEditingId; });
+      if(pt){
+        pt.name = name.trim();
+        pt.zone = (document.getElementById('apZone')||{}).value || pt.zone;
+        pt.lat = lat; pt.lng = lng; pt.desc = desc;
+        ppSave();
+        document.getElementById('adminNewPointForm').style.display = 'none';
+        _ppEditingId = null;
+        if(typeof renderAdminPanel==='function') renderAdminPanel();
+        if(typeof toast==='function') toast('Patrol point updated','success');
+      }
+      return;
+    }
+    _origAdd2.apply(this, arguments);
+    // The just-added point is always the last one; attach its description
+    // (the original adminAddPoint doesn't know about this field).
+    const list = OPS.patrolPoints||[];
+    if(list.length && desc) list[list.length-1].desc = desc;
+    ppSave();
+  };
+
+  // Re-render the point list with Edit / Disable-Enable / Delete and a
+  // local-vs-synced badge (pt._serverId is stamped by the existing Phase 48
+  // API-sync wrapper when a point round-trips through the backend).
+  const _origRenderAdminPanel = window.renderAdminPanel;
+  window.renderAdminPanel = function(){
+    if(_origRenderAdminPanel) _origRenderAdminPanel.apply(this, arguments);
+    const pl = document.getElementById('adminPatrolList');
+    if(!pl) return;
+    pl.innerHTML = (OPS.patrolPoints||[]).map(function(pt){
+      const synced = pt._serverId
+        ? '<span style="font-size:9.5px;color:var(--ops-grn)">☁️ Synced</span>'
+        : '<span style="font-size:9.5px;color:var(--ops-mut)">💾 Stored locally</span>';
+      return '<div class="ops-row">'+
+        '<div style="width:8px;height:8px;border-radius:4px;background:'+(pt.active?'var(--ops-grn)':'var(--ops-fnt)')+';flex-shrink:0"></div>'+
+        '<div style="flex:1;min-width:0"><p style="margin:0;font-size:12.5px;font-weight:600;color:var(--ops-text)">'+ppEsc(pt.name)+'</p>'+
+        '<p style="margin:0;font-size:11px;color:var(--ops-mut)">'+ppEsc(pt.zone)+' · '+ppEsc(pt.id)+(pt.desc?(' · '+ppEsc(pt.desc)):'')+'</p>'+
+        '<p style="margin:2px 0 0">'+synced+'</p></div>'+
+        '<button class="ops-btn" style="padding:5px 9px;border-radius:6px;border:1px solid var(--ops-border);background:transparent;color:var(--ops-fnt);cursor:pointer;font-size:11px;font-weight:600;font-family:inherit" onclick="ppEditPoint(\''+pt.id+'\')">✏️ Edit</button>'+
+        '<button class="ops-btn" style="padding:5px 10px;border-radius:6px;border:1px solid '+(pt.active?'var(--ops-gbg)':'var(--ops-border)')+';background:transparent;color:'+(pt.active?'var(--ops-grn)':'var(--ops-fnt)')+';cursor:pointer;font-size:11px;font-weight:600;font-family:inherit" onclick="adminTogglePoint(\''+pt.id+'\')">'+(pt.active?'● Active':'○ Inactive')+'</button>'+
+        '<button class="ops-btn" style="padding:5px 9px;border-radius:6px;border:1px solid var(--ops-red);background:transparent;color:var(--ops-red);cursor:pointer;font-size:11px;font-weight:600;font-family:inherit" onclick="ppDeletePoint(\''+pt.id+'\')">🗑️</button>'+
+      '</div>';
+    }).join('') || '<p style="padding:14px;text-align:center;color:var(--ops-mut);font-size:12px">No patrol points configured yet.</p>';
+  };
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     QYRVIA-PHASE67A-CLOSURE-AND-PATROL-UI-004 — Patrol Point management on
+     the ACTUAL Security -> Patrol Points page
+     ═══════════════════════════════════════════════════════════════════════
+     USER-CONFIRMED DEFECT, ROOT-CAUSED: the "V35-1 UI fix 9" add/edit/
+     delete/geolocation implementation above is real, but it is wired
+     ENTIRELY to #adminPatrolList / #adminNewPointForm on page-admin-panel
+     (the AI Admin Panel) — a page nothing in the Security sidebar links
+     to. page-security-patrol (reached via Security -> Patrol Points, or
+     Operations Suite -> Security Patrol) has never had an add button or a
+     management list; it only ever rendered the read-only scan/check-in
+     view (renderPatrolOps). That is exactly "Security Patrol Points
+     cannot be added" / "No visible Add Patrol Point button".
+
+     A SECOND, independent defect was found and fixed while investigating
+     this one: OPS / getOpsRole / renderPatrolOps were never exposed on
+     `window` by the Operations Suite module, so "V35-1 UI fix 9" (a later,
+     separate script block) silently failed every time it referenced bare
+     `OPS.patrolPoints` (ReferenceError, swallowed by its own try/catch) —
+     including its own stated purpose, writing points to localStorage. See
+     the `window.OPS = OPS;` / `window.getOpsRole = getOpsRole;` /
+     `window.renderPatrolOps = renderPatrolOps;` lines added earlier in
+     this file for the full explanation; this block is what actually
+     depends on that fix being in place.
+
+     This block does NOT touch the admin-panel implementation (still
+     there, still works now that OPS is visible, left otherwise alone) —
+     it ADDS an equivalent, PROPERTY-SCOPED management surface directly to
+     page-security-patrol, sharing the SAME OPS.patrolPoints array and the
+     SAME localStorage key ('qyrvia_patrol_points_v1') "V35-1 UI fix 9"
+     already persists to, so points created from EITHER surface are
+     visible in both.
+
+     NEW FIELDS on each patrol point (additive — existing points without
+     them are treated as belonging to the 'default' property, matching
+     window._qyPropId()'s own fallback, so nothing already stored is
+     orphaned):
+       propertyId — window._qyPropId() at creation time
+       code       — required, unique WITHIN a property (not globally)
+       radius     — required positive number, metres
+
+     AUTHORIZATION: reuses the exact role-check pattern already
+     established for backend-sensitive UI in this file (bootV26's
+     _isBackendAdmin — u.role==='admin' || 'prop_admin' || 'super_admin').
+     The add/edit/activate/deactivate FUNCTIONS themselves check this —
+     not just the button's visibility — so calling them from the console
+     as an unauthorized user still no-ops. Security guards / agents /
+     ordinary operational users retain the existing view/scan-only
+     behaviour (patrolCheckIn, gated by getOpsRole() as before) — this
+     block does not change who can check in, only who can manage points. -->
+<script>
+(function(){
+  'use strict';
+  const SP_KEY = 'qyrvia_patrol_points_v1'; // SAME key as V35-1 UI fix 9 — one shared store
+
+  function spCanManagePatrolPoints(){
+    try{
+      const u = (typeof AUTH!=='undefined' && AUTH) ? AUTH.user : null;
+      return !!u && (u.role==='admin' || u.role==='prop_admin' || u.role==='super_admin');
+    }catch(e){ return false; }
+  }
+  function spPropId(){
+    return (typeof window._qyPropId==='function') ? window._qyPropId() : 'default';
+  }
+  function spPointPropId(pt){ return pt.propertyId || 'default'; }
+  function spEsc(v){ return String(v==null?'':v).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+  function spValidLat(n){ return typeof n==='number' && isFinite(n) && n>=-90 && n<=90; }
+  function spValidLng(n){ return typeof n==='number' && isFinite(n) && n>=-180 && n<=180; }
+  function spValidRadius(n){ return typeof n==='number' && isFinite(n) && n>0; }
+  function spSave(){
+    try{ localStorage.setItem(SP_KEY, JSON.stringify(window.OPS.patrolPoints||[])); }catch(e){}
+  }
+  // Hydrate at boot too, independently of V35-1 UI fix 9's own hydrate —
+  // both read the SAME key, so whichever runs last wins with the same data
+  // (script tags execute in document order, so this one, being later,
+  // wins — harmless either way since the content is identical).
+  (function spHydrate(){
+    try{
+      const raw = localStorage.getItem(SP_KEY);
+      if(raw){ const parsed = JSON.parse(raw); if(Array.isArray(parsed)) window.OPS.patrolPoints = parsed; }
+    }catch(e){}
+  })();
+
+  function spPointsForCurrentProperty(){
+    const pid = spPropId();
+    return (window.OPS.patrolPoints||[]).filter(function(p){ return spPointPropId(p)===pid; });
+  }
+
+  // ── "+ Add Patrol Point" button (role-gated at render time) ─────────────
+  function spRenderAddButton(){
+    const host = document.getElementById('spAddPointBtnHost');
+    if(!host) return;
+    host.innerHTML = spCanManagePatrolPoints()
+      ? '<button class="ops-btn ops-btn-acc" style="padding:7px 12px" onclick="spToggleNewPointForm()">+ Add Patrol Point</button>'
+      : '';
+  }
+
+  // ── Add/Edit form (property-scoped, code + radius + description + geolocation) ──
+  let _spEditingId = null;
+  window.spToggleNewPointForm = function(){
+    if(!spCanManagePatrolPoints()) return; // function itself verifies authorization, not just the button
+    const form = document.getElementById('spNewPointForm');
+    if(!form) return;
+    if(form.style.display==='none' || !form.style.display){
+      _spEditingId = null;
+      spRenderForm(form, null);
+      form.style.display = 'block';
+    } else {
+      form.style.display = 'none';
+      _spEditingId = null;
+    }
+  };
+  function spRenderForm(form, pt){
+    const zones = ["Exterior","Interior","Recreation","Car Park","Back of House","Rooftop","Lobby","Basement"];
+    form.innerHTML =
+      '<div style="background:var(--ops-card);border-radius:9px;padding:12px;margin-bottom:12px;border:1px solid var(--ops-border)">'+
+        '<div style="margin-bottom:9px"><p style="margin:0 0 4px;font-size:11px;color:var(--ops-mut)">Patrol Point Name *</p><input class="ops-input" id="spName" placeholder="e.g. East Wing Exit" value="'+spEsc(pt&&pt.name)+'"/></div>'+
+        '<div style="margin-bottom:9px"><p style="margin:0 0 4px;font-size:11px;color:var(--ops-mut)">Patrol Point Code *</p><input class="ops-input" id="spCode" placeholder="e.g. PP-EW-01" value="'+spEsc(pt&&pt.code)+'"/></div>'+
+        '<div style="margin-bottom:9px"><p style="margin:0 0 4px;font-size:11px;color:var(--ops-mut)">Zone</p><select class="ops-input" id="spZone">'+zones.map(function(z){ return '<option'+((pt&&pt.zone===z)?' selected':'')+'>'+z+'</option>'; }).join('')+'</select></div>'+
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:9px">'+
+          '<div><p style="margin:0 0 4px;font-size:11px;color:var(--ops-mut)">Latitude *</p><input class="ops-input" id="spLat" type="number" step="any" placeholder="-90 to 90" value="'+(pt&&pt.lat!=null?pt.lat:'')+'"/></div>'+
+          '<div><p style="margin:0 0 4px;font-size:11px;color:var(--ops-mut)">Longitude *</p><input class="ops-input" id="spLng" type="number" step="any" placeholder="-180 to 180" value="'+(pt&&pt.lng!=null?pt.lng:'')+'"/></div>'+
+        '</div>'+
+        '<div style="margin-bottom:9px"><p style="margin:0 0 4px;font-size:11px;color:var(--ops-mut)">Allowed Scan Radius (metres) *</p><input class="ops-input" id="spRadius" type="number" step="any" min="0" placeholder="e.g. 25" value="'+(pt&&pt.radius!=null?pt.radius:'')+'"/></div>'+
+        '<div style="margin-bottom:9px"><p style="margin:0 0 4px;font-size:11px;color:var(--ops-mut)">Description / Location Note</p><input class="ops-input" id="spDesc" placeholder="Optional" value="'+spEsc(pt&&pt.desc)+'"/></div>'+
+        '<div style="margin-bottom:9px"><label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ops-text)"><input type="checkbox" id="spActive" '+((!pt||pt.active!==false)?'checked':'')+'/> Active</label></div>'+
+        '<button type="button" class="ops-btn" style="width:100%;padding:8px;margin-bottom:9px" onclick="spUseCurrentLocation()">📍 Use Current Location</button>'+
+        '<p id="spGeoStatus" style="margin:0 0 9px;font-size:10.5px;color:var(--ops-mut)"></p>'+
+        '<button type="button" class="ops-btn ops-btn-acc" style="width:100%;padding:9px" onclick="spSavePoint()">'+(pt?'💾 Save Patrol Point':'Add Patrol Point')+'</button>'+
+      '</div>';
+  }
+
+  // Geolocation requested ONLY on explicit click — never on load/open. No
+  // external map provider contacted; the browser's own Geolocation API is
+  // the sole source of coordinates. Matches the brief's safety
+  // requirements exactly (permission-denied/unavailable messaging, no
+  // crash, no fabricated or silently-blank coordinates).
+  window.spUseCurrentLocation = function(){
+    const statusEl = document.getElementById('spGeoStatus');
+    if(!navigator.geolocation){
+      if(statusEl) statusEl.textContent = '⚠️ Geolocation is not supported by this browser.';
+      return;
+    }
+    if(statusEl) statusEl.textContent = '📍 Requesting location…';
+    navigator.geolocation.getCurrentPosition(
+      function(pos){
+        const la=document.getElementById('spLat'), ln=document.getElementById('spLng');
+        if(la) la.value = pos.coords.latitude.toFixed(6);
+        if(ln) ln.value = pos.coords.longitude.toFixed(6);
+        if(statusEl) statusEl.textContent = '✅ Captured: '+pos.coords.latitude.toFixed(6)+', '+pos.coords.longitude.toFixed(6)+' (±'+Math.round(pos.coords.accuracy)+'m) — review before saving.';
+      },
+      function(err){
+        if(!statusEl) return;
+        if(err.code===err.PERMISSION_DENIED) statusEl.textContent='⚠️ Location permission denied. Enter coordinates manually.';
+        else if(err.code===err.POSITION_UNAVAILABLE) statusEl.textContent='⚠️ Location unavailable right now. Enter coordinates manually.';
+        else if(err.code===err.TIMEOUT) statusEl.textContent='⚠️ Location request timed out. Try again or enter manually.';
+        else statusEl.textContent='⚠️ Could not get location. Enter coordinates manually.';
+      },
+      { enableHighAccuracy:true, timeout:8000 }
+    );
+  };
+
+  window.spSavePoint = function(){
+    if(!spCanManagePatrolPoints()) return; // authorization enforced here too, not just at button-render time
+    const name = ((document.getElementById('spName')||{}).value||'').trim();
+    const code = ((document.getElementById('spCode')||{}).value||'').trim();
+    if(!name){ (typeof toast==='function'?toast('Patrol Point Name is required','error'):alert('Patrol Point Name is required')); return; }
+    if(!code){ (typeof toast==='function'?toast('Patrol Point Code is required','error'):alert('Patrol Point Code is required')); return; }
+    const lat = parseFloat((document.getElementById('spLat')||{}).value);
+    const lng = parseFloat((document.getElementById('spLng')||{}).value);
+    if(isNaN(lat)||isNaN(lng)||!spValidLat(lat)||!spValidLng(lng)){
+      (typeof toast==='function'?toast('Valid latitude (-90 to 90) and longitude (-180 to 180) are required','error'):alert('Valid latitude and longitude are required'));
+      return;
+    }
+    const radius = parseFloat((document.getElementById('spRadius')||{}).value);
+    if(isNaN(radius)||!spValidRadius(radius)){
+      (typeof toast==='function'?toast('A positive Allowed Scan Radius (metres) is required','error'):alert('A positive scan radius is required'));
+      return;
+    }
+    const zone = (document.getElementById('spZone')||{}).value || 'Exterior';
+    const desc = ((document.getElementById('spDesc')||{}).value||'').trim();
+    const active = !!(document.getElementById('spActive')||{}).checked;
+    const pid = spPropId();
+
+    // Duplicate code check: unique WITHIN the current property only — the
+    // same code is explicitly allowed in a DIFFERENT property.
+    const dup = (window.OPS.patrolPoints||[]).find(function(p){
+      return spPointPropId(p)===pid && p.code && p.code.toLowerCase()===code.toLowerCase() && p.id!==_spEditingId;
+    });
+    if(dup){
+      (typeof toast==='function'?toast('That Patrol Point Code is already used in this property','error'):alert('That Patrol Point Code is already used in this property'));
+      return;
+    }
+
+    if(_spEditingId){
+      const pt = (window.OPS.patrolPoints||[]).find(function(p){ return p.id===_spEditingId; });
+      if(pt && spPointPropId(pt)===pid){
+        pt.name=name; pt.code=code; pt.zone=zone; pt.lat=lat; pt.lng=lng; pt.radius=radius; pt.desc=desc; pt.active=active;
+        pt.updated_at = new Date().toISOString();
+      }
+    } else {
+      window.OPS.patrolPoints = (window.OPS.patrolPoints||[]).concat([{
+        id: 'PP'+Date.now().toString(36).toUpperCase(),
+        propertyId: pid, name:name, code:code, zone:zone, lat:lat, lng:lng, radius:radius, desc:desc, active:active,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+      }]);
+    }
+    spSave();
+    const form = document.getElementById('spNewPointForm');
+    if(form) form.style.display='none';
+    _spEditingId = null;
+    if(typeof window.renderPatrolOps==='function') window.renderPatrolOps();
+    if(typeof toast==='function') toast('Patrol point saved','success');
+  };
+
+  window.spEditPoint = function(id){
+    if(!spCanManagePatrolPoints()) return;
+    const pt = (window.OPS.patrolPoints||[]).find(function(p){ return p.id===id; });
+    if(!pt) return;
+    const form = document.getElementById('spNewPointForm');
+    if(!form) return;
+    _spEditingId = id;
+    spRenderForm(form, pt);
+    form.style.display = 'block';
+  };
+
+  window.spToggleActive = function(id){
+    if(!spCanManagePatrolPoints()) return;
+    window.OPS.patrolPoints = (window.OPS.patrolPoints||[]).map(function(p){ return p.id===id ? Object.assign({}, p, {active:!p.active, updated_at:new Date().toISOString()}) : p; });
+    spSave();
+    if(typeof window.renderPatrolOps==='function') window.renderPatrolOps();
+  };
+  // Deliberately no hard-delete action in this management list (brief: "do
+  // not hard-delete records that may have scan history") — deactivate is
+  // the supported lifecycle action here; the pre-existing admin panel's
+  // ppDeletePoint remains separately available for genuine corrections.
+
+  // ── Draw the button + property-scoped management columns for authorized
+  // users, on top of the existing read-only scan/check-in view (which
+  // authorized managers also still see and can use). ──────────────────────
+  //
+  // IMPORTANT: this is NOT wired by reassigning window.renderPatrolOps.
+  // OPS_PAGES (the page router's dispatch table, "PAGE ROUTER INTEGRATION"
+  // section above) captures a DIRECT reference to the ORIGINAL
+  // renderPatrolOps function VALUE at the moment that object literal is
+  // evaluated (page load) — `"security-patrol": renderPatrolOps` — so
+  // reassigning window.renderPatrolOps afterward would never be seen by
+  // real navigation; only a DIRECT call to the (still correctly-exposed)
+  // window.renderPatrolOps would run it. This function is instead invoked
+  // by wrapping window.showPage itself (below) — the actual navigation
+  // entry point, and the same established pattern this file already uses
+  // repeatedly elsewhere (see patchShowPage() and the several later
+  // "V26/V59"-style showPage wrappers) for "react when a specific page is
+  // shown".
+  function spRenderManagementUI(){
+    spRenderAddButton();
+    const canManage = spCanManagePatrolPoints();
+    const pid = spPropId();
+    const forProperty = spPointsForCurrentProperty();
+
+    // Temporarily scope OPS.patrolPoints to the current property for the
+    // ORIGINAL renderer's own filtering (progress bar, check-in list) —
+    // this keeps the real check-in logic (patrolCheckIn, OPS.patrolChecks)
+    // working exactly as before, just property-scoped, then restores the
+    // full list so nothing else in the app is affected.
+    const _all = window.OPS.patrolPoints;
+    window.OPS.patrolPoints = forProperty;
+    if(typeof window.renderPatrolOps==='function') window.renderPatrolOps();
+    window.OPS.patrolPoints = _all;
+
+    if(!canManage) return; // guards/agents: view/scan only, exactly as rendered above
+
+    const pl = document.getElementById('patrolPointsList');
+    if(!pl) return;
+    if(!forProperty.length){
+      pl.innerHTML = '<p style="padding:14px;text-align:center;color:var(--ops-mut);font-size:12px">No patrol points configured for this property.</p>';
+      return;
+    }
+    const active = forProperty.filter(function(p){ return p.active; });
+    const canCheck = (function(){ try{ return ["admin","manager","supervisor","security"].includes(window.getOpsRole()); }catch(e){ return false; } })();
+    pl.innerHTML = forProperty.map(function(pt){
+      const checked = active.includes(pt) && !!window.OPS.patrolChecks[pt.id];
+      const scanBtn = (!pt.active) ? '' :
+        (canCheck
+          ? '<button class="ops-btn" style="background:'+(checked?'var(--ops-gbg)':'var(--ops-acc)')+';color:'+(checked?'var(--ops-grn)':'#fff')+';padding:6px 10px;border-radius:8px;border:none;cursor:'+(checked?'default':'pointer')+';font-size:11px;font-weight:600;font-family:inherit" '+(checked?'disabled':'')+' onclick="patrolCheckIn(\''+pt.id+'\')">'+(checked?'✓ Done':'📍 Check In')+'</button>'
+          : '');
+      return '<div style="background:var(--ops-card);border-radius:10px;padding:11px 13px;margin-bottom:8px;border:1px solid var(--ops-border)">'+
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
+          '<div style="width:8px;height:8px;border-radius:4px;background:'+(pt.active?'var(--ops-grn)':'var(--ops-fnt)')+';flex-shrink:0"></div>'+
+          '<div style="flex:1;min-width:160px">'+
+            '<p style="margin:0;font-size:13px;font-weight:600;color:var(--ops-text)">'+spEsc(pt.name)+'</p>'+
+            '<p style="margin:0;font-size:11px;color:var(--ops-mut)">'+spEsc(pt.code||pt.id)+' · '+spEsc(pt.zone)+
+              (pt.lat!=null?' · '+pt.lat+', '+pt.lng:'')+(pt.radius!=null?' · ±'+pt.radius+'m':'')+'</p>'+
+          '</div>'+
+          scanBtn+
+          '<button class="ops-btn" style="padding:5px 9px;border-radius:6px;border:1px solid var(--ops-border);background:transparent;color:var(--ops-fnt);cursor:pointer;font-size:11px;font-weight:600;font-family:inherit" onclick="spEditPoint(\''+pt.id+'\')">✏️ Edit</button>'+
+          '<button class="ops-btn" style="padding:5px 10px;border-radius:6px;border:1px solid '+(pt.active?'var(--ops-gbg)':'var(--ops-border)')+';background:transparent;color:'+(pt.active?'var(--ops-grn)':'var(--ops-fnt)')+';cursor:pointer;font-size:11px;font-weight:600;font-family:inherit" onclick="spToggleActive(\''+pt.id+'\')">'+(pt.active?'● Active':'○ Inactive')+'</button>'+
+        '</div>'+
+      '</div>';
+    }).join('');
+  }
+
+  // Trigger spRenderManagementUI() whenever page-security-patrol becomes
+  // the active page. A window.showPage wrap was tried first but proved
+  // unreliable: this file's showPage is re-wrapped by MANY successive
+  // layers throughout the document (patchShowPage(), several later
+  // "V26/V59"-style patches), and empirically the wrap installed here did
+  // not end up in the effective call chain by the time the page finished
+  // loading (confirmed live: window.showPage's final source did not
+  // contain this block's marker). A MutationObserver watching the page
+  // element's own `class` attribute for the `active` class sidesteps that
+  // fragility entirely — it reacts to the ACTUAL visible-state change
+  // however it was produced, independent of which wrapper (if any) called
+  // showPage, and independent of wrapper-registration order.
+  function spIdentitySignature(){
+    try{
+      const u = (typeof AUTH!=='undefined' && AUTH) ? AUTH.user : null;
+      return (u ? (u.id||'')+'|'+(u.role||'') : '') + '|' + spPropId();
+    }catch(e){ return '|' + spPropId(); }
+  }
+  const _spPageEl = document.getElementById('page-security-patrol');
+  if(_spPageEl){
+    let _spWasActive = _spPageEl.classList.contains('active');
+    let _spLastSig = spIdentitySignature();
+    if(_spWasActive) spRenderManagementUI();
+    new MutationObserver(function(){
+      const isActive = _spPageEl.classList.contains('active');
+      if(isActive && !_spWasActive){ spRenderManagementUI(); _spLastSig = spIdentitySignature(); }
+      _spWasActive = isActive;
+    }).observe(_spPageEl, { attributes:true, attributeFilter:['class'] });
+
+    // The observer above only fires on an INACTIVE -> ACTIVE transition —
+    // it cannot see a property switch OR a role/user change that happens
+    // while the page is ALREADY active (window.AUTH.user is a plain
+    // object; MutationObserver cannot watch object properties, and there
+    // is no dedicated app-wide "identity changed" event to hook in this
+    // codebase). A light periodic check while the page is visible — the
+    // same "poll on a schedule" convention already used elsewhere in this
+    // file for staged/live updates — closes that gap: "reload the list
+    // when the property changes" / "do not retain another property's rows
+    // on screen after switching" (brief requirement), and additionally
+    // re-evaluates authorization (add button visibility) if the signed-in
+    // user or role changes while this page stays open.
+    setInterval(function(){
+      if(!_spPageEl.classList.contains('active')) return;
+      const cur = spIdentitySignature();
+      if(cur !== _spLastSig){ _spLastSig = cur; spRenderManagementUI(); }
+    }, 800);
+  }
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     QYRVIA-PUBLIC-PREVIEW-UPLOAD-001 — Booking Engine visibility/routing fix
+     ═══════════════════════════════════════════════════════════════════════
+     The Booking Engine implementation (qvBookingEngineCheck/Review/Submit) is
+     unmodified — this only gives it a nav item, a dedicated page and correct
+     showPage routing, all of which were previously missing. Same
+     "patch showPage with a newPages map, else delegate" pattern already used
+     for property-setup and ai-provider-settings earlier in this file.
+
+     QYRVIA-BOOKING-ENGINE-HOSPITALITY-MOVE-001: Booking Engine's parent
+     group changed from Revenue to Hospitality. This wrapper bypasses the
+     base showPage() entirely for 'booking-engine' (early return), so it
+     never inherited the base function's NAV_GROUPS.forEach(toggleNavGroup)
+     auto-open behaviour that every other routed page gets from
+     PAGE_GROUP_MAP — added explicitly below so opening Booking Engine
+     correctly opens/highlights Hospitality instead of leaving whatever
+     group was previously open. -->
+<script>
+(function(){
+  'use strict';
+  const _origBE = window.showPage;
+  window.showPage = function(id, navEl){
+    if(id === 'booking-engine'){
+      document.querySelectorAll('.page').forEach(function(p){ p.classList.remove('active'); p.style.display=''; });
+      document.querySelectorAll('.nav-item').forEach(function(n){ n.classList.remove('active'); });
+      const pg = document.getElementById('page-booking-engine');
+      if(pg){ pg.classList.add('active'); pg.style.display = 'block'; }
+      if(navEl && navEl.classList) navEl.classList.add('active');
+      else { const fb = document.getElementById('nav-booking-engine'); if(fb) fb.classList.add('active'); }
+      const t = document.getElementById('topbarTitle');
+      if(t) t.textContent = (typeof PAGE_TITLES!=='undefined' && PAGE_TITLES['booking-engine']) || 'Booking Engine';
+      if(typeof toggleNavGroup === 'function'){
+        const grp = (typeof PAGE_GROUP_MAP!=='undefined' && PAGE_GROUP_MAP['booking-engine']) || 'hospitality';
+        toggleNavGroup(grp, true);
+      }
+      return;
+    }
+    if(typeof _origBE === 'function') return _origBE.apply(this, arguments);
+  };
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     QYRVIA-PRODUCTION-HTML-AND-SAAS-PREUPLOAD-GATE-001 — removed the
+     global Standalone Mode auto-show script (formerly V35-1 UI fix 11.1)
+     from the production source. It unconditionally displayed on every
+     load with no real connectivity check, which is exactly the
+     "permanently disabled" false signal this instruction requires
+     removed from production. The #standaloneNotice element itself was
+     also removed from this file's static HTML — nothing in production
+     targets it anymore. Both remain, standalone-only, in the separate
+     QYRVIA_STANDALONE_DEMO package. -->
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     V35-1 UI fix 11.2 — WhatsApp confirmation before any wa.me URL opens
+     ═══════════════════════════════════════════════════════════════════════
+     There are 8+ separate call sites across this file that build a
+     https://wa.me/... URL and open it — kitchen notifications, guest
+     messages, statements, and others. Patching each individually would mean
+     re-verifying 8 different string/template contexts one at a time (exactly
+     the class of mistake the font-stack edits earlier in this phase made and
+     had to fix). Instead this wraps window.open itself, ONCE: every current
+     and future wa.me open — regardless of which function builds the URL —
+     is intercepted here. Confirming declines cleanly (returns null, exactly
+     like window.open does when a popup is blocked, so no caller needs to
+     change) and does not send anything itself; the user still sends the
+     message from within WhatsApp afterward. -->
+<script>
+(function(){
+  'use strict';
+  const _origWindowOpen = window.open;
+  window.open = function(url, target, features){
+    if(typeof url === 'string' && /^https:\/\/wa\.me\//i.test(url)){
+      const proceed = confirm('WhatsApp is an external service. This will open a new tab there — no message has been sent yet, and you will still need to press Send inside WhatsApp yourself.\n\nContinue?');
+      if(!proceed) return null;
+    }
+    return _origWindowOpen.call(this, url, target, features);
+  };
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     V35-1 UI fix 10 — AI Provider Settings (visible to every role)
+     ═══════════════════════════════════════════════════════════════════════
+     Deliberately NOT a rebuild: it reuses the real, already-working
+     govSelectProvider()/govSaveProvider()/govTestConnection() handlers and
+     the real DB.aiConfig data the full AI Governance console already reads
+     and writes (that console — nav-ai-governance — stays admin-only; its
+     permissions/prompts/audit tabs are intentionally not duplicated here).
+     This page is only: status, provider, model, test-connection, and the
+     server-side-credentials explanation the instruction asks for. -->
+<script>
+(function(){
+  'use strict';
+  const _origAPS = window.showPage;
+  window.showPage = function(id, navEl){
+    if(id === 'ai-provider-settings'){
+      document.querySelectorAll('.page').forEach(function(p){ p.classList.remove('active'); p.style.display=''; });
+      document.querySelectorAll('.nav-item').forEach(function(n){ n.classList.remove('active'); });
+      const pg = document.getElementById('page-ai-provider-settings');
+      if(pg){ pg.classList.add('active'); pg.style.display = 'block'; }
+      if(navEl && navEl.classList) navEl.classList.add('active');
+      else { const fb = document.getElementById('nav-ai-provider-settings'); if(fb) fb.classList.add('active'); }
+      const t = document.getElementById('topbarTitle');
+      if(t) t.textContent = (typeof PAGE_TITLES!=='undefined' && PAGE_TITLES['ai-provider-settings']) || 'AI Provider Settings';
+      renderAIProviderSettings();
+      return;
+    }
+    if(typeof _origAPS === 'function') return _origAPS.apply(this, arguments);
+  };
+
+  function apsEsc(v){ return String(v==null?'':v).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+
+  window.renderAIProviderSettings = function(){
+    const host = document.getElementById('apsBody');
+    if(!host) return;
+    if(typeof DB !== 'undefined' && !DB.aiConfig) DB.aiConfig = {};
+    const cfg      = (typeof DB!=='undefined' && DB.aiConfig) || {};
+    const provider = cfg.provider || 'claude';
+    const model    = cfg.model    || 'claude-sonnet-4-20250514';
+    const lastStatus = cfg.lastStatus || 'unknown';
+    const lastTested  = cfg.lastTested  || 'Never';
+    const provMods = {
+      claude:['claude-sonnet-4-20250514','claude-opus-4-6','claude-haiku-4-5-20251001'],
+      openai:['gpt-4o','gpt-4o-mini','gpt-4-turbo'],
+      gemini:['gemini-1.5-pro','gemini-1.5-flash'],
+      ollama:['llama3','mistral','phi3','custom']
+    };
+    const sLabel = {
+      connected: '✅ Connected',
+      error:     '❌ Error — Provider not connected',
+      unknown:   '🔌 Provider not connected — click Test Connection to check'
+    };
+    const sColor = { connected:'#1b5e20', error:'#b91c1c', unknown:'#6b7280' };
+    const sBg    = { connected:'#e8f5e9', error:'#ffebee', unknown:'#f3f4f6' };
+    const sBdr   = { connected:'#a7f3d0', error:'#fca5a5', unknown:'#e5e7eb' };
+
+    host.innerHTML =
+      '<div class="card" style="background:'+sBg[lastStatus]+';border:1px solid '+sBdr[lastStatus]+';margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">'+
+        '<div><div style="font-size:14px;font-weight:700;color:'+sColor[lastStatus]+'">'+sLabel[lastStatus]+'</div>'+
+        '<div style="font-size:11px;color:var(--grey-500)">Last tested: '+apsEsc(lastTested)+'</div></div>'+
+        '<button id="aiTestBtn" class="btn btn-primary btn-sm" onclick="govTestConnection().then(function(){ if(typeof renderAIProviderSettings===\'function\') renderAIProviderSettings(); })">⚡ Test Connection</button>'+
+      '</div>'+
+      '<div class="card" style="margin-bottom:14px">'+
+        '<div class="card-header"><div class="card-title">Provider</div></div>'+
+        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;margin-bottom:14px">'+
+        [['claude','🟠','Claude'],['openai','🟢','OpenAI'],['gemini','🔵','Gemini'],['ollama','⚫','Ollama']].map(function(p){
+          const sel = provider===p[0];
+          return '<div onclick="govSelectProvider(\''+p[0]+'\');renderAIProviderSettings()" style="border:2px solid '+(sel?'var(--gold)':'var(--grey-300)')+';border-radius:8px;padding:8px 10px;cursor:pointer;text-align:center;background:'+(sel?'rgba(179,139,77,.08)':'var(--white)')+'">'+
+            '<div style="font-size:18px">'+p[1]+'</div><div style="font-size:11px;font-weight:600;color:'+(sel?'var(--primary-dark)':'var(--grey-900)')+'">'+p[2]+'</div></div>';
+        }).join('') +
+        '</div>'+
+        '<div class="form-group" style="margin-bottom:10px"><label class="form-label">Model</label>'+
+        '<select id="govModelSel" class="form-control" onchange="document.getElementById(\'govModelCustom\').value=this.value;">'+
+        (provMods[provider]||['custom']).map(function(m){ return '<option value="'+m+'"'+(m===model?' selected':'')+'>'+m+'</option>'; }).join('') +
+        '</select></div>'+
+        '<div class="form-group" style="margin-bottom:14px"><label class="form-label">Model Override</label>'+
+        '<input type="text" id="govModelCustom" class="form-control" value="'+apsEsc(model)+'"/></div>'+
+        '<button class="btn btn-primary btn-sm" onclick="govSaveProvider();renderAIProviderSettings()">💾 Save</button>'+
+      '</div>'+
+      '<div class="card" style="font-size:11.5px;color:var(--grey-600);line-height:1.6">'+
+        '🔒 API keys and credentials are configured securely on the server (never stored in this browser or in visible page content). This screen only selects which provider and model your requests use.'+
+      '</div>';
+  };
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     V35-1 UI fix 7 — Property Setup (rooms and room categories)
+     ═══════════════════════════════════════════════════════════════════════
+     Follows the exact "patch showPage with a newPages map, else delegate"
+     pattern already used earlier in this file for requisition/permissions/
+     auditlog, so this integrates the same way every other added page does.
+     Persistence is DB.rooms / DB.roomCategories via the existing saveDB()/
+     localStorage layer only — no server call, no invented backend. -->
+<script>
+(function(){
+  'use strict';
+  const _origPS = window.showPage;
+  window.showPage = function(id, navEl){
+    if(id === 'property-setup'){
+      document.querySelectorAll('.page').forEach(function(p){ p.classList.remove('active'); p.style.display=''; });
+      document.querySelectorAll('.nav-item').forEach(function(n){ n.classList.remove('active'); });
+      const pg = document.getElementById('page-property-setup');
+      if(pg){ pg.classList.add('active'); pg.style.display = 'block'; }
+      if(navEl && navEl.classList) navEl.classList.add('active');
+      else { const fb = document.getElementById('nav-property-setup'); if(fb) fb.classList.add('active'); }
+      const t = document.getElementById('topbarTitle');
+      if(t) t.textContent = (typeof PAGE_TITLES!=='undefined' && PAGE_TITLES['property-setup']) || 'Property Setup';
+      renderPropertySetup();
+      return;
+    }
+    if(typeof _origPS === 'function') return _origPS.apply(this, arguments);
+  };
+
+  function pcEsc(v){ return String(v==null?'':v).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+  function pcSlug(name){
+    const base = String(name||'').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
+    return base || ('cat-' + Date.now());
+  }
+  function pcUniqueSlug(name, ignoreKey){
+    let base = pcSlug(name), key = base, n = 2;
+    while((DB.roomCategories||[]).some(function(c){ return c.key===key && c.key!==ignoreKey; })){
+      key = base + '-' + n; n++;
+    }
+    return key;
+  }
+
+  let _pcEditingCatKey = null;
+  let _pcEditingRoomId = null;
+
+  window.pcCancelCategoryEdit = function(){
+    _pcEditingCatKey = null;
+    document.getElementById('pcCatName').value = '';
+    document.getElementById('pcCatRate').value = '';
+    document.getElementById('pcCatMaxPax').value = '';
+    document.getElementById('pcCatDesc').value = '';
+    document.getElementById('pcCatFormTitle').textContent = 'Add Category';
+    document.getElementById('pcCatSubmitBtn').textContent = '＋ Add Category';
+    document.getElementById('pcCatCancelBtn').style.display = 'none';
+  };
+  window.pcEditCategory = function(key){
+    const cat = (DB.roomCategories||[]).find(function(c){ return c.key===key; });
+    if(!cat) return;
+    _pcEditingCatKey = key;
+    document.getElementById('pcCatName').value = cat.name||'';
+    document.getElementById('pcCatRate').value = cat.rate||0;
+    document.getElementById('pcCatMaxPax').value = cat.maxPax||1;
+    document.getElementById('pcCatDesc').value = cat.desc||'';
+    document.getElementById('pcCatFormTitle').textContent = 'Editing: ' + cat.name;
+    document.getElementById('pcCatSubmitBtn').textContent = '💾 Save Category';
+    document.getElementById('pcCatCancelBtn').style.display = '';
+  };
+  window.pcSubmitCategory = function(){
+    loadRoomDB();
+    const name = (document.getElementById('pcCatName').value||'').trim();
+    if(!name){ if(typeof toast==='function') toast('Category name is required','error'); return; }
+    const rate = parseFloat(document.getElementById('pcCatRate').value) || 0;
+    const maxPax = parseInt(document.getElementById('pcCatMaxPax').value,10) || 1;
+    const desc = (document.getElementById('pcCatDesc').value||'').trim() || name;
+    if(!Array.isArray(DB.roomCategories)) DB.roomCategories = [];
+    if(_pcEditingCatKey){
+      const cat = DB.roomCategories.find(function(c){ return c.key===_pcEditingCatKey; });
+      if(cat){ cat.name=name; cat.rate=rate; cat.maxPax=maxPax; cat.desc=desc; }
+    } else {
+      DB.roomCategories.push({ key: pcUniqueSlug(name, null), name: name, rate: rate, maxPax: maxPax, desc: desc });
+    }
+    if(typeof saveDB==='function') saveDB();
+    pcCancelCategoryEdit();
+    renderPropertySetup();
+    if(typeof toast==='function') toast('Category saved');
+  };
+
+  window.pcCancelRoomEdit = function(){
+    _pcEditingRoomId = null;
+    document.getElementById('pcRoomNumber').value = '';
+    document.getElementById('pcRoomFloor').value = '';
+    document.getElementById('pcRoomFormTitle').textContent = 'Add Room';
+    document.getElementById('pcRoomSubmitBtn').textContent = '＋ Add Room';
+    document.getElementById('pcRoomCancelBtn').style.display = 'none';
+  };
+  window.pcEditRoom = function(id){
+    const room = (DB.rooms||[]).find(function(r){ return r.id===id; });
+    if(!room) return;
+    _pcEditingRoomId = id;
+    document.getElementById('pcRoomNumber').value = room.number||'';
+    document.getElementById('pcRoomFloor').value = room.floor==null?'':room.floor;
+    const sel = document.getElementById('pcRoomCategory');
+    if(sel) sel.value = room.category||'';
+    document.getElementById('pcRoomFormTitle').textContent = 'Editing Room: ' + room.number;
+    document.getElementById('pcRoomSubmitBtn').textContent = '💾 Save Room';
+    document.getElementById('pcRoomCancelBtn').style.display = '';
+  };
+  window.pcSubmitRoom = function(){
+    loadRoomDB();
+    const number = (document.getElementById('pcRoomNumber').value||'').trim();
+    const category = document.getElementById('pcRoomCategory').value||'';
+    const floorRaw = document.getElementById('pcRoomFloor').value;
+    const floor = floorRaw===''? null : (parseInt(floorRaw,10)||0);
+    if(!number){ if(typeof toast==='function') toast('Room number/name is required','error'); return; }
+    if(!category){ if(typeof toast==='function') toast('Pick a room category first','error'); return; }
+    // Prevent duplicate room numbers within this property (across ALL rooms,
+    // including disabled ones — a disabled room's number must stay reserved
+    // so a new room can never collide with its historical identity).
+    const dup = (DB.rooms||[]).some(function(r){ return r.number===number && r.id!==_pcEditingRoomId; });
+    if(dup){ if(typeof toast==='function') toast('That room number already exists','error'); return; }
+    const cat = (DB.roomCategories||[]).find(function(c){ return c.key===category; });
+    if(!Array.isArray(DB.rooms)) DB.rooms = [];
+    if(_pcEditingRoomId){
+      const room = DB.rooms.find(function(r){ return r.id===_pcEditingRoomId; });
+      if(room){
+        room.number=number; room.category=category; room.floor=floor;
+        room.type = cat?cat.name:room.type; room.rate = cat?cat.rate:room.rate;
+        room.maxPax = cat?cat.maxPax:room.maxPax; room.desc = cat?cat.desc:room.desc;
+      }
+    } else {
+      const newId = 'R' + Date.now().toString(36).toUpperCase();
+      DB.rooms.push({ id:newId, number:number, category:category, floor:floor,
+        type: cat?cat.name:category, rate: cat?cat.rate:0, maxPax: cat?cat.maxPax:1,
+        desc: cat?cat.desc:category, disabled:false });
+    }
+    if(typeof saveDB==='function') saveDB();
+    pcCancelRoomEdit();
+    renderPropertySetup();
+    if(typeof toast==='function') toast('Room saved');
+  };
+  window.pcToggleRoomDisabled = function(id){
+    const room = (DB.rooms||[]).find(function(r){ return r.id===id; });
+    if(!room) return;
+    // Soft-disable only — the row is NEVER removed from DB.rooms, so every
+    // historical booking/report reference to this room id remains intact.
+    room.disabled = !room.disabled;
+    if(typeof saveDB==='function') saveDB();
+    renderPropertySetup();
+  };
+
+  window.renderPropertySetup = function(){
+    loadRoomDB();
+    const notice = document.getElementById('pcStandaloneNotice');
+    if(notice) notice.style.display = 'block'; // this build has no live backend
+
+    const cats = DB.roomCategories||[];
+    const rooms = DB.rooms||[];
+    const catRoomCount = {};
+    rooms.forEach(function(r){ catRoomCount[r.category] = (catRoomCount[r.category]||0)+1; });
+
+    const catWrap = document.getElementById('pcCatTableWrap');
+    if(catWrap){
+      if(!cats.length){
+        catWrap.innerHTML = '<div style="padding:16px;text-align:center;color:var(--grey-500);font-size:12px">No room categories yet — add the first one below.</div>';
+      } else {
+        catWrap.innerHTML = '<table><thead><tr><th>Category</th><th>Default Rate</th><th>Max Occupancy</th><th>Description</th><th>Rooms Using It</th><th></th></tr></thead><tbody>' +
+          cats.map(function(c){
+            return '<tr><td class="bold">'+pcEsc(c.name)+'</td><td class="right">'+(typeof fmtLKR==='function'?fmtLKR(c.rate||0):(c.rate||0))+'</td>'+
+              '<td class="center">'+(c.maxPax||1)+'</td><td>'+pcEsc(c.desc||'')+'</td>'+
+              '<td class="center">'+(catRoomCount[c.key]||0)+'</td>'+
+              '<td class="right"><button class="btn btn-secondary btn-xs" onclick="pcEditCategory(\''+c.key+'\')">✏️ Edit</button></td></tr>';
+          }).join('') + '</tbody></table>';
+      }
+    }
+
+    const sel = document.getElementById('pcRoomCategory');
+    if(sel){
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">Select category…</option>' +
+        cats.map(function(c){ return '<option value="'+pcEsc(c.key)+'">'+pcEsc(c.name)+'</option>'; }).join('');
+      if(cur) sel.value = cur;
+    }
+
+    const roomWrap = document.getElementById('pcRoomTableWrap');
+    if(roomWrap){
+      if(!rooms.length){
+        roomWrap.innerHTML = '<div style="padding:16px;text-align:center;color:var(--grey-500);font-size:12px">No rooms configured yet — add the first one below.</div>';
+      } else {
+        roomWrap.innerHTML = '<table><thead><tr><th>Room</th><th>Category</th><th>Floor</th><th>Status</th><th></th></tr></thead><tbody>' +
+          rooms.map(function(r){
+            const cat = cats.find(function(c){ return c.key===r.category; });
+            const catLabel = cat ? pcEsc(cat.name) : '<span class="badge" style="background:var(--red-100,#ffebee);color:var(--red-800,#c62828)">⚠️ missing category</span>';
+            const statusBadge = r.disabled
+              ? '<span class="badge" style="background:var(--grey-100);color:var(--grey-700)">Disabled</span>'
+              : '<span class="badge" style="background:rgba(179,139,77,.12);color:var(--primary-dark)">Active</span>';
+            return '<tr'+(r.disabled?' style="opacity:.55"':'')+'><td class="bold">'+pcEsc(r.number)+'</td><td>'+catLabel+'</td>'+
+              '<td class="center">'+(r.floor==null?'—':r.floor)+'</td><td>'+statusBadge+'</td>'+
+              '<td class="right"><button class="btn btn-secondary btn-xs" onclick="pcEditRoom(\''+r.id+'\')">✏️ Edit</button> '+
+              '<button class="btn '+(r.disabled?'btn-primary':'btn-danger')+' btn-xs" onclick="pcToggleRoomDisabled(\''+r.id+'\')">'+(r.disabled?'✔ Enable':'🚫 Disable')+'</button></td></tr>';
+          }).join('') + '</tbody></table>';
+      }
+    }
+  };
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     V35-1 UI fix 5 — Permissions / Audit Log routing bug, FINAL WRAPPER
+     ═══════════════════════════════════════════════════════════════════════
+     ROOT CAUSE: several earlier phase wrappers in the showPage chain switch
+     pages by setting an INLINE style.display on the page div directly (see
+     the "FIX (V29)" comment earlier in this file, which independently
+     discovered and worked around the same defect for its own Ops pages).
+     An inline style always wins over the CSS class rule .page.active{display:
+     block} / .page{display:none}, so once ANY earlier click has left a page
+     with a stale inline display:block, merely removing its .active class (as
+     the plain permissions/auditlog handler does) is not enough to hide it —
+     it stays visible underneath/alongside whatever page is supposed to be
+     showing. That is exactly the reported symptom: whatever page happened to
+     be open before remains visible after clicking Permissions or Audit Log,
+     regardless of which page that was.
+
+     FIX: this script is the LAST one in the document, so this assignment is
+     the final, un-overridable link in the chain — nothing after it can wrap
+     window.showPage again. For 'permissions' and 'auditlog' specifically it:
+       1. clears any stale inline display on every .page element (undoing the
+          exact defect described above, for every page, not just Ops ones);
+       2. removes .active from every .page and every .nav-item;
+       3. activates the correct page via BOTH the CSS class and an explicit
+          inline style.display='block' (belt-and-braces — guarantees
+          visibility regardless of what any earlier link in the chain did);
+       4. marks the clicked nav item (or its data-driven fallback) active;
+       5. updates the topbar title;
+       6. calls the existing renderPermissions()/renderAuditLog() unchanged.
+     Every other page id is untouched — delegated to whatever showPage was
+     immediately before this script ran, so no other route's behavior changes. -->
+<script>
+(function(){
+  'use strict';
+  if(window._v35FinalPermAuditWrapped) return;
+  window._v35FinalPermAuditWrapped = true;
+  var _prevShowPage = window.showPage;
+  var ROUTES = {
+    permissions: { render: function(){ if(typeof renderPermissions==='function') renderPermissions(); }, title: 'Permissions' },
+    auditlog:    { render: function(){ if(typeof renderAuditLog==='function') renderAuditLog(); },    title: 'Audit Log' }
+  };
+  window.showPage = function(id, navEl){
+    var route = ROUTES[id];
+    if(!route){
+      if(typeof _prevShowPage === 'function') return _prevShowPage.apply(this, arguments);
+      return;
+    }
+    // 1) erase every stale inline display left by any earlier handler
+    document.querySelectorAll('.page').forEach(function(p){ p.style.display = ''; });
+    // 2) clear every active flag
+    document.querySelectorAll('.page').forEach(function(p){ p.classList.remove('active'); });
+    document.querySelectorAll('.nav-item').forEach(function(n){ n.classList.remove('active'); });
+    // 3) activate the target page — class AND explicit inline style
+    var target = document.getElementById('page-' + id);
+    if(target){ target.classList.add('active'); target.style.display = 'block'; }
+    // 4) active nav state
+    if(navEl && navEl.classList){ navEl.classList.add('active'); }
+    else {
+      var fallbackNav = document.getElementById('nav-' + id);
+      if(fallbackNav) fallbackNav.classList.add('active');
+    }
+    // 5) topbar title / breadcrumb
+    var titleEl = document.getElementById('topbarTitle') || document.getElementById('pageTitle');
+    if(titleEl) titleEl.textContent = route.title;
+    // 6) render
+    try{ route.render(); }catch(e){}
+  };
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     QYRVIA-PUBLIC-PREVIEW-DEFECT-FIX-001 — Booking Engine visibility, FINAL SAFETY NET
+     ═══════════════════════════════════════════════════════════════════════
+     ROOT CAUSE: the core applyRoleUI() (defined far earlier in this file)
+     iterates every .nav-item with a showPage('X') onclick and sets an INLINE
+     style.display='none' on any item whose page id is not listed in
+     ROLE_PAGES[role]. 'booking-engine' was never added to ROLE_PAGES, so its
+     nav item was hidden on every login even though its markup, page, and
+     routing were all otherwise correct — exactly the same defect class this
+     codebase already hit (and fixed) for RMS/Reputation and every HR/AI
+     page; see the two-prong fix pattern in hrPatchApplyRoleUI() above.
+
+     FIX: (a) ROLE_PAGES now includes 'booking-engine' for admin/prop_admin/
+     reception/manager/director (see extendRolePages() above — the primary,
+     root-cause fix); (b) this script is the LAST one in the document, so it
+     wraps whatever window.applyRoleUI is at that point and force-restores
+     the Booking Engine nav item + its group header after every call,
+     including staged re-checks so any later dynamic sidebar rebuild cannot
+     silently re-hide it again.
+
+     QYRVIA-BOOKING-ENGINE-HOSPITALITY-MOVE-001: Booking Engine's nav item
+     and PAGE_GROUP_MAP entry moved from Revenue to Hospitality; this guard
+     now restores #navg-hospitality (not #navg-revenue) to match. -->
+<script>
+(function(){
+  'use strict';
+  if(window._v35BookingEngineNavGuard) return;
+  window._v35BookingEngineNavGuard = true;
+  function restoreBookingEngineNav(){
+    try{
+      var nav = document.getElementById('nav-booking-engine');
+      if(nav) nav.style.display = '';
+      var hdr = document.getElementById('navg-hospitality');
+      if(hdr) hdr.style.display = '';
+    }catch(e){}
+  }
+  var _origApplyRoleUI = window.applyRoleUI;
+  if(typeof _origApplyRoleUI === 'function'){
+    window.applyRoleUI = function(){
+      var r;
+      try{ r = _origApplyRoleUI.apply(this, arguments); }catch(e){}
+      restoreBookingEngineNav();
+      return r;
+    };
+  }
+  restoreBookingEngineNav();
+  setTimeout(restoreBookingEngineNav, 400);
+  setTimeout(restoreBookingEngineNav, 1500);
+  setTimeout(restoreBookingEngineNav, 3500);
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     QYRVIA-FINAL-UI-POLISH-001 — Global sidebar main-menu icon/label hover
+     ═══════════════════════════════════════════════════════════════════════
+     ROOT CAUSE: `.nav-item:hover .nav-icon{color:var(--brand)}` (defined
+     early in this file) already turns standalone top-level items
+     (Dashboard, Reports, Backend API — all plain .nav-item, not
+     .nav-group-header) gold on hover. But every accordion-style main
+     module (Operations, Revenue, Hospitality, Finance, System, Enterprise
+     Finance, Operations Suite, Security, plus the dynamically injected
+     Human Resources / AI Intelligence groups) is a SEPARATE element,
+     .nav-group-header, which only ever had a hover rule for its
+     background and a `.nav-group-header.open .nav-icon{color:var(--brand)}`
+     rule that only applies AFTER the group is expanded by a click — so
+     those icons never turned gold on hover, only after being opened. That
+     mismatch is the entire "inconsistent across the remaining main
+     modules" defect.
+
+     FIX: one global, class-based, ID-free rule that works for every
+     current and future .nav-group-header (static or dynamically injected
+     — HR/AI groups reuse the exact same class name) and every top-level
+     .nav-item, colouring icon + label gold on hover. It does not touch
+     the existing .active/.open rules, so hover and active/open state
+     compose correctly instead of conflicting, and the colour reverts
+     automatically (pure CSS :hover, no JS) once the pointer leaves unless
+     the module is active/open. -->
+<style>
+.sidebar .nav-group-header:hover .nav-icon,
+.sidebar .nav-item:hover .nav-icon{ color:var(--brand) !important; }
+.sidebar .nav-group-header:hover .nav-label,
+.sidebar .nav-item:hover .nav-label{ color:var(--brand) !important; }
+</style>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     QYRVIA-PRODUCTION-HTML-AND-SAAS-PREUPLOAD-GATE-001 — Data Manager
+     final CSS protection
+     ═══════════════════════════════════════════════════════════════════════
+     Narrowly scoped to only #v25HealthContainer / #v24DataHealthContainer
+     (the two runtime-injected Data Manager panels) — does not touch any
+     unrelated module. Placed as the LAST rule in the document so it wins
+     the cascade regardless of source order against any earlier or later
+     inline style, without relying on !important against the panels'
+     already-solid inline styles; !important is used here only as a
+     guarantee against any future regression that reintroduces a
+     transparent/gradient background on these two containers. -->
+<style>
+#v25HealthContainer > div, #v24DataHealthContainer > div{
+  background-color:#fff !important;
+  background-image:none !important;
+}
+#v25HealthContainer [style*="rgba(179,139,77"],
+#v24DataHealthContainer [style*="rgba(179,139,77"]{
+  background-color:rgb(179,139,77) !important;
+  background-image:none !important;
+}
+</style>
 </html>
