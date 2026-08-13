@@ -566,6 +566,7 @@ select.form-control{cursor:pointer;appearance:auto}
 .sync-badge.pending{background:#FFF8E1;color:#F57F17;border:1px solid #ffe082}
 .sync-badge.offline{background:#FFEBEE;color:#C62828;border:1px solid #ffcdd2}
 .sync-badge.error{background:#FCE4EC;color:#880E4F;border:1px solid #f48fb1}
+.sync-badge.disabled{background:#FFF3E0;color:#E65100;border:1px solid #ffcc80}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spin{animation:spin 1s linear infinite;display:inline-block}
 #pwaInstallBtn{display:none}
@@ -3804,15 +3805,16 @@ th{border-bottom:2px solid #C9A84C !important}
             <div class="form-grid" style="max-width:500px">
               <div class="form-group">
                 <label class="form-label">Current Password</label>
-                <input type="password" id="dmCurrentPwd" class="form-control" placeholder="Enter current password"/>
+                <input type="password" id="dmCurrentPwd" class="form-control" placeholder="Enter current password" autocomplete="current-password"/>
               </div>
               <div class="form-group">
                 <label class="form-label">New Password</label>
-                <input type="password" id="dmNewPwd" class="form-control" placeholder="Enter new password"/>
+                <input type="password" id="dmNewPwd" class="form-control" placeholder="Enter new password" autocomplete="new-password"/>
+                <div style="font-size:10.5px;color:var(--grey-500);margin-top:3px">12+ characters, uppercase, lowercase, number, special character.</div>
               </div>
               <div class="form-group">
                 <label class="form-label">Confirm New Password</label>
-                <input type="password" id="dmConfirmPwd" class="form-control" placeholder="Repeat new password"/>
+                <input type="password" id="dmConfirmPwd" class="form-control" placeholder="Repeat new password" autocomplete="new-password"/>
               </div>
             </div>
             <div style="display:flex;gap:8px;margin-top:6px">
@@ -18286,6 +18288,13 @@ GK.sync = (function(){
   let _lastSync = null;
   let _intervalHandle = null;
   let _offlineSince = null;
+  // Bounded automatic retry: after this many consecutive push failures,
+  // the 60s auto-sync interval stops retrying on its own -- the badge
+  // stays "Sync Error" and only an explicit user-triggered manualSync()
+  // resumes automatic retries. Prevents an unreachable/misconfigured
+  // backend from retrying forever in the background.
+  const MAX_AUTO_RETRIES = 5;
+  let _consecutiveFailures = 0;
 
   const SYNC_TABLES = [
     'inventory','grn','issuing','invoices','waste','bookings','rooms',
@@ -18341,17 +18350,20 @@ GK.sync = (function(){
       }
       if(allOk){
         _pending = false;
+        _consecutiveFailures = 0;
         _lastSync = new Date();
         localStorage.removeItem('gk_sync_pending');
         localStorage.setItem('gk_last_sync', _lastSync.toISOString());
         setBadge('synced');
         // sync done
       } else {
+        _consecutiveFailures++;
         setBadge('error');
         console.warn('[GK.SYNC] Push partial/failed');
       }
       return allOk;
     } catch(e){
+      _consecutiveFailures++;
       setBadge('error');
       console.error('[GK.SYNC] Push error:', e);
       return false;
@@ -18405,6 +18417,7 @@ GK.sync = (function(){
       toast('📵 You are offline. Changes are saved locally and will sync when reconnected.','error');
       return;
     }
+    _consecutiveFailures = 0; // an explicit user retry always resumes automatic retries
     toast('🔄 Syncing to cloud…');
     const ok = await push();
     if(ok) toast('☁️ Synced to cloud successfully!','success');
@@ -18414,6 +18427,7 @@ GK.sync = (function(){
   function startAutoSync(){
     if(_intervalHandle) clearInterval(_intervalHandle);
     _intervalHandle = setInterval(async ()=>{
+      if(_consecutiveFailures >= MAX_AUTO_RETRIES) return; // bounded — wait for an explicit user retry
       if(navigator.onLine && _pending && GK.SUPABASE.isConfigured()) await push();
     }, GK.CONFIG.SYNC_INTERVAL);
   }
@@ -18593,21 +18607,12 @@ GK.PWA = (function(){
   }
 
   // ── Service Worker ────────────────────────────────────────────────
-  // SW requires a real HTTP/HTTPS server — cannot run from file://.
-  // Place sw.js next to the HTML when hosting on a server.
-  function registerSW(){
-    if(!('serviceWorker' in navigator)) return;
-    if(location.protocol === 'file:') return; // silently skip
-    // On a real server, register the external sw.js file
-    navigator.serviceWorker.register('sw.js')
-      .then(reg => {
-        // SW ready
-        navigator.serviceWorker.addEventListener('message', ev => {
-          if(ev.data && ev.data.type === 'GK_SYNC_TRIGGER') GK.sync.push();
-        });
-      })
-      .catch(() => {}); // silently ignore if sw.js not present
-  }
+  // V35-1 UI fix 11.4: sw.js does not exist in this build, so the previous
+  // navigator.serviceWorker.register('sw.js') call generated a real, visible
+  // failed network request (404) on every load over http/https — the exact
+  // defect this fix addresses. Suppressed entirely rather than left to fail
+  // silently. Not adding a service worker in this phase, per instruction.
+  function registerSW(){ /* intentionally a no-op — no sw.js is shipped */ }
 
   function init(){
     injectManifest();
@@ -48462,16 +48467,8 @@ function runDayEnd(){
 
   toast('✅ Day End complete. Logging out in 3 seconds...','success');
   setTimeout(function(){
-    if(typeof doLogout==='function'){
-      AUTH.user=null;
-      sessionStorage.removeItem('gk_session');
-      document.getElementById('loginScreen').style.display='flex';
-      document.getElementById('loginUser').value='';
-      document.getElementById('loginPass').value='';
-      try{document.getElementById('topbarRoleBadge').style.display='none';}catch(_){}
-      try{document.getElementById('topbarUserName').style.display='none';}catch(_){}
-      try{document.getElementById('logoutBtn').style.display='none';}catch(_){}
-    } else { location.reload(); }
+    if(typeof _qyForceReauth==='function'){ _qyForceReauth(); }
+    else { location.reload(); }
   }, 3000);
 }
 
@@ -48549,11 +48546,8 @@ function initDayEndAutoTimer(){
         localStorage.setItem('qy_float_required',(DB.qyDayEnd&&DB.qyDayEnd.requireCashFloat)?'1':'0');
         toast('✅ Auto Day End completed. Please log in again for next shift.','success');
         setTimeout(function(){
-          if(typeof AUTH!=='undefined'&&AUTH.user){
-            AUTH.user=null;sessionStorage.removeItem('gk_session');
-            try{document.getElementById('loginScreen').style.display='flex';}catch(_){}
-            try{document.getElementById('loginUser').value='';}catch(_){}
-            try{document.getElementById('loginPass').value='';}catch(_){}
+          if(typeof AUTH!=='undefined'&&AUTH.user&&typeof _qyForceReauth==='function'){
+            _qyForceReauth();
           }
         },5000);
       },2000);
