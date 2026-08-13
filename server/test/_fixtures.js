@@ -44,6 +44,20 @@ function _makeFakeReposCore(overrides = {}) {
   const _propertiesById = new Map();   // Phase 6 / C2 + C3 fixture state
 
   const identityRepo = Object.assign({
+    // Phase 67A-004: deterministic tenant-scoped transaction fake. The
+    // callback receives a fake client carrying the authoritative tenant
+    // context ({tenantId}) — the same shape every real repo method below
+    // reads back from via `client.tenantId`. No real transaction/rollback
+    // semantics are needed here (this fixture never talks to a real DB);
+    // this only needs to make `repo.withTenant` truthy (which flips
+    // identity.js's attemptLogin onto its RLS-safe dispatch path — see
+    // resolveByEmail/resolveByTenantUsername/resolveByPropertyIdUsername
+    // below, which that path requires) and to hand every downstream call
+    // the tenant it asked to be scoped to.
+    async withTenant(tenantId, cb) {
+      return cb({ tenantId });
+    },
+
     async findUserByTenantUsername(tenantCode, username) {
       for (const u of users.values()) {
         if (u.tenant_code === tenantCode && u.username === username) return u;
@@ -56,7 +70,89 @@ function _makeFakeReposCore(overrides = {}) {
       }
       return null;
     },
-    async findUserById(id) { return users.get(id) || null; },
+
+    // Phase 67A-004: findUserById now matches the production contract —
+    // tenant-scoped (via the withTenant client), soft-delete-aware, and
+    // authoritative on current status. `client` is OPTIONAL for backward
+    // compatibility with the small number of legacy 1-arg call sites
+    // (e.g. identity.js's resolveSession legacy fallback): when no client
+    // is supplied, tenant scoping is skipped entirely (matching the old,
+    // unscoped behaviour those callers already relied on). When a client
+    // IS supplied, a user record that itself carries a real tenant_id
+    // different from the client's tenant is invisible — exactly like
+    // FORCE RLS. A user record with NO tenant_id at all (incomplete seed
+    // data in an unrelated test, not a deliberate cross-tenant scenario)
+    // is not spuriously hidden by this — only a genuine, populated
+    // mismatch is enforced, so accidentally-incomplete seeds elsewhere in
+    // the suite don't regress. Soft-deleted users always return null
+    // regardless of client.
+    async findUserById(id, client) {
+      const u = users.get(id);
+      if (!u) return null;
+      if (u.soft_deleted_at) return null;
+      if (client && client.tenantId && u.tenant_id && u.tenant_id !== client.tenantId) return null;
+      return u;
+    },
+
+    // Phase 67A-004: identity.js's RLS-safe login path checks tenant
+    // status via `if (repo.findTenantStatus) { ... }` (optional — skipped
+    // entirely when absent). This fixture has no separate "tenants"
+    // collection; several existing tests instead seed a `tenant_status`
+    // field directly on the USER row (the same convention the pre-existing
+    // legacy login path already reads via `row.tenant_status`). This
+    // mirrors that same field so both paths agree, and returns null
+    // (meaning "no opinion" — the RLS path's check is then skipped, exactly
+    // like today) for the many tests that never set tenant_status at all.
+    async findTenantStatus(tenantId, _client) {
+      for (const u of users.values()) {
+        if (u.tenant_id === tenantId && u.tenant_status) return u.tenant_status;
+      }
+      return null;
+    },
+
+    // Phase 67A-004: RLS-path login resolvers. identity.js's attemptLogin
+    // dispatches to its T1/T2 RLS-safe path whenever repo.withTenant is
+    // present (see identity.js's own comment: "always taken when repo has
+    // withTenant"), and that path requires at least one of these three.
+    // Each is a thin wrapper returning the {user_id, tenant_id} shape that
+    // path expects, backed by the SAME lookup logic the pre-existing
+    // legacy-path methods below already used — so results are equivalent,
+    // not reinvented.
+    async resolveByEmail(email) {
+      const normalized = String(email).trim().toLowerCase();
+      for (const u of users.values()) {
+        if (!u.soft_deleted_at && u.email && u.email.toLowerCase() === normalized) {
+          return { user_id: u.id, tenant_id: u.tenant_id };
+        }
+      }
+      return null;
+    },
+    async resolveByTenantUsername(tenantCode, username) {
+      for (const u of users.values()) {
+        if (u.tenant_code === tenantCode && u.username === username) {
+          return { user_id: u.id, tenant_id: u.tenant_id };
+        }
+      }
+      return null;
+    },
+    // No existing test exercises property-id-only login (the prior,
+    // withTenant-less fixture never supported it either — identity.js's
+    // legacy path has its own comment: "property_id not supported here").
+    // Implemented for completeness/parity with the production contract:
+    // matches a user whose primary_property_id is the given id, or whose
+    // accessible_property_ids (test-seeded, mirroring
+    // accessible_property_codes) includes it.
+    async resolveByPropertyIdUsername(propertyId, username) {
+      for (const u of users.values()) {
+        if (u.soft_deleted_at || u.username !== username) continue;
+        const ids = u.accessible_property_ids || (u.primary_property_id ? [u.primary_property_id] : []);
+        if (ids.includes(propertyId)) {
+          return { user_id: u.id, tenant_id: u.tenant_id, property_id: propertyId };
+        }
+      }
+      return null;
+    },
+
     // Phase 21 read-only IAM listings
     async listUsers(tenantId) {
       return Array.from(users.values())
@@ -70,13 +166,17 @@ function _makeFakeReposCore(overrides = {}) {
       for (const list of userRoles.values()) for (const r of list) if (!seen.has(r.code)) seen.set(r.code, { id: r.id, code: r.code, scope: r.scope || 'TENANT' });
       return Array.from(seen.values()).sort((a, b) => a.code.localeCompare(b.code));
     },
-    async findRolesForUser(uid) { return userRoles.get(uid) || []; },
-    async findPermissionsForUser(uid) { return userPerms.get(uid) || []; },
-    async updateUserOnSuccessfulLogin() {},
-    async updateUserOnFailedLogin() {},
+    async findRolesForUser(uid, _client) { return userRoles.get(uid) || []; },
+    async findPermissionsForUser(uid, _client) { return userPerms.get(uid) || []; },
+    async updateUserOnSuccessfulLogin(_userId, _client) {},
+    async updateUserOnFailedLogin(_userId, _client) {},
     async insertUser(rec) {
       const id = 'usr_' + (users.size + 1);
-      const row = Object.assign({ id }, rec, { tenant_code: 'TENANT-A' });
+      // Phase 67A-004: default status to ACTIVE when the caller doesn't
+      // specify one, matching production's auth.user.create.js (which
+      // always passes status explicitly) while keeping older/simpler test
+      // callers that omit it working exactly as a real ACTIVE account.
+      const row = Object.assign({ id, status: 'ACTIVE' }, rec, { tenant_code: 'TENANT-A' });
       users.set(id, row);
       return row;
     },
@@ -128,6 +228,23 @@ function _makeFakeReposCore(overrides = {}) {
       return null;
     },
 
+    // Phase 67A-004: identity.js's attemptLogin dispatches to its RLS-safe
+    // path whenever repo.withTenant is present, and that path calls
+    // repo.insertRefreshToken(...) as part of its own atomic transaction —
+    // even when the caller is testing identity.attemptLogin(identityRepo,
+    // ...) directly with an UNMERGED identityRepo (a pattern several
+    // pre-existing service-level tests use). Production always passes a
+    // merged identityRepo+tokensRepo object (see routes/auth.js's authRepo
+    // construction), so this duplication only matters for tests that
+    // bypass that merge; it shares the SAME refreshTokens Map as
+    // tokensRepo's own insertRefreshToken below, so a token inserted via
+    // either object is visible to the other.
+    async insertRefreshToken(rec) {
+      const row = Object.assign({ id: 'rt_' + (refreshTokens.size + 1) }, rec);
+      refreshTokens.set(row.token_hash, row);
+      return row;
+    },
+
     // Phase 6 / C2: in-memory list of accessible properties for a user.
     async listAccessibleProperties(userId) {
       const list = userRoles.get(userId) || [];
@@ -149,8 +266,11 @@ function _makeFakeReposCore(overrides = {}) {
     _seedAccessibleProperty(p) { _propertiesById.set(p.id, p); },
 
     // Test helpers
+    // Phase 67A-004: defaults status to ACTIVE unless the test explicitly
+    // sets one (Continue.txt's explicit requirement #5) — an explicit
+    // `user.status` always wins since it's spread after the default.
     _seedUser(user, roles = [], perms = []) {
-      users.set(user.id, user);
+      users.set(user.id, Object.assign({ status: 'ACTIVE' }, user));
       userRoles.set(user.id, roles);
       userPerms.set(user.id, perms);
     },

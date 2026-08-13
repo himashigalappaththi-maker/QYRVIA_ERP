@@ -228,6 +228,32 @@ function buildRepos(pool) {
       );
     },
 
+    // Phase 67A — administrator DISABLE/TERMINATE. `status` is validated by
+    // the calling command (auth.user.status.change) against the exact
+    // user_status enum values before this is ever called; the ::user_status
+    // cast here is a second, DB-level guard against an arbitrary string.
+    //
+    // Phase 67A-003: `tenantId` is now an EXPLICIT WHERE predicate, not
+    // relied on solely via the withTenant client's FORCE RLS binding. The
+    // calling command already looks up the target through a tenant-scoped
+    // findUserById first (so a cross-tenant id is caught earlier as
+    // target_not_found), but this statement itself must not depend on
+    // "user ID alone" for its safety per the brief's explicit requirement —
+    // this is defense in depth, not a behaviour change: on a correctly
+    // configured connection the WHERE clause and RLS agree; if RLS were
+    // ever misconfigured, this predicate still prevents a cross-tenant
+    // update.
+    async updateUserStatus(userId, status, tenantId, client) {
+      _requireClient(client, 'updateUserStatus');
+      await client.query(
+        `UPDATE users
+            SET status = $2::user_status,
+                updated_at = now()
+          WHERE id = $1 AND tenant_id = $3`,
+        [userId, status, tenantId]
+      );
+    },
+
     // Phase 21: read-only IAM listings. Never returns password_hash.
     async listUsers(tenantId) {
       const r = await pool.query(
@@ -247,8 +273,17 @@ function buildRepos(pool) {
       );
       return r.rows;
     },
-    async insertUser(rec) {
-      const r = await pool.query(
+    // Phase 67A-003: `client` is optional (same convention as
+    // listAccessibleProperties/canAccessProperty above) — when present
+    // (auth.user.create's own withTenant transaction), uses the
+    // tenant-scoped, FORCE-RLS-compliant connection; when absent, falls
+    // back to the bare pool for existing callers (services/invitation.js's
+    // acceptInvitation, services/platformBootstrap.js) that have not yet
+    // been migrated to pass one. Every existing call site keeps calling
+    // this with its original single-object argument and is unaffected.
+    async insertUser(rec, client) {
+      const db = client || pool;
+      const r = await db.query(
         `INSERT INTO users (tenant_id, username, email, password_hash, full_name, primary_property_id, status)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING *`,
@@ -256,8 +291,9 @@ function buildRepos(pool) {
       );
       return r.rows[0];
     },
-    async insertUserRoleByCode({ user_id, role_code, tenant_id, property_id, granted_by }) {
-      await pool.query(
+    async insertUserRoleByCode({ user_id, role_code, tenant_id, property_id, granted_by }, client) {
+      const db = client || pool;
+      await db.query(
         `INSERT INTO user_roles (user_id, role_id, tenant_id, property_id, granted_by)
          SELECT $1, r.id, $2, $3, $4 FROM roles r WHERE r.code = $5
          ON CONFLICT DO NOTHING`,
@@ -306,8 +342,14 @@ function buildRepos(pool) {
       return r.rows[0] || null;
     },
 
-    async findUserByTenantUsernameById(tenantId, username) {
-      const r = await pool.query(
+    // Phase 67A-003: `client` is optional — auth.user.create.js now passes
+    // its own tenant-scoped transaction client so this lookup runs under
+    // FORCE RLS correctly; falls back to the bare pool when omitted
+    // (unaffected legacy behaviour, matching db/repos.js's own comment
+    // above that this method predates RLS-aware calling conventions).
+    async findUserByTenantUsernameById(tenantId, username, client) {
+      const db = client || pool;
+      const r = await db.query(
         `SELECT * FROM users WHERE tenant_id = $1 AND username = $2 AND soft_deleted_at IS NULL LIMIT 1`,
         [tenantId, username]
       );

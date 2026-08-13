@@ -7,13 +7,29 @@ const identity = require('../services/identity');
 const tokens   = require('../services/tokens');
 const logger   = require('../config/logger');
 
-const { authentication } = require('../middleware/authentication');
+const { authentication, setStatusRepo } = require('../middleware/authentication');
+const authUserStatus = require('../commands/auth.user.status');
+
+/**
+ * Maps a command-bus outcome to an HTTP status code, matching the
+ * established convention used elsewhere in this codebase (see
+ * middleware/authorization.js's requirePermission, which returns 403 for
+ * permission_denied). Phase 67A-003 fix: /register and /users/:id/status
+ * previously collapsed every failure — including permission_denied — to a
+ * flat 400, inconsistent with that convention.
+ */
+function _statusForOutcome(outcome) {
+  if (outcome.ok) return 200;
+  if (outcome.error === 'permission_denied') return 403;
+  return 400;
+}
 
 /**
  * Auth router. Routes here are PUBLIC (no authentication required) except:
- *   - GET  /me        - bearer required
- *   - POST /logout    - bearer required
- *   - POST /register  - bearer + permission `auth.user.create` required
+ *   - GET  /me            - bearer required
+ *   - POST /logout        - bearer required
+ *   - POST /register      - bearer + permission `auth.user.create` required
+ *   - POST /users/:id/status - bearer + permission `auth.user.disable` required (Phase 67A)
  *
  * Built with build(deps) so tests can inject in-memory repos.
  *
@@ -32,6 +48,27 @@ function build(deps) {
   const authRepo = identityRepo && identityRepo.withTenant
     ? Object.assign({}, identityRepo, tokensRepo)
     : identityRepo;
+
+  // Phase 67A: wire the real repo into the authentication middleware's
+  // module-singleton (see middleware/authentication.js doc comment) so every
+  // router in the app - not just this one - gets the current-status
+  // re-check, without touching routes/api.js or index.js. Re-running this on
+  // every build() call is intentional and safe: production boots this
+  // router exactly once with the real repo; tests that call build() with
+  // their own mock repo correctly re-point the singleton at their fixture
+  // for the duration of that test file.
+  setStatusRepo(authRepo);
+
+  // Phase 67A: wire and (idempotently) register the disable/terminate
+  // command the same way index.js wires auth.user.create - except this
+  // happens here, inside the router this phase is permitted to modify,
+  // rather than in index.js, which is not.
+  authUserStatus.setRepo(authRepo);
+  const commandBus = require('../core/commandBus');
+  if (!commandBus.list().includes(authUserStatus.name)) {
+    try { commandBus.register(authUserStatus); } catch (_) { /* already registered by a concurrent build() */ }
+  }
+
   const router = express.Router(); // fresh per call - tests build many apps
 
   // Rate limit login: 5 attempts / IP / minute is plenty for a real user.
@@ -443,8 +480,32 @@ function build(deps) {
   // The route is admin-gated via the command bus permission system
   // (commands/auth.user.create.js has permission: 'auth.user.create').
   // Public registration is intentionally NOT supported (brief adjustment #5).
+  //
+  // Phase 67A-003 Workstream D fix: this route used to hard-code
+  // `permissions: []` in ctx, with a comment claiming "the command itself
+  // enforces auth.user.create via its inputSchema check" — but
+  // auth.user.create.js does no such check; the command bus's own
+  // `ctx.permissions.includes(cmd.permission)` gate is the ONLY thing that
+  // enforces the permission, and with permissions always [] that check
+  // ALWAYS failed for every non-super_admin caller (a legitimate
+  // corporate_admin who holds auth.user.create was incorrectly denied on
+  // every call). Real permissions are now loaded from the authoritative
+  // backend identity repository, exactly like the /users/:id/status route
+  // below already does — the command bus, not this route, still makes the
+  // authorization decision; client-supplied tenantId/propertyId/role
+  // grants/permissions are never trusted (ctx is built entirely from
+  // req.user, itself derived only from the verified JWT + a fresh DB
+  // permissions lookup, never from req.body).
   router.post('/register', authentication, async (req, res, next) => {
     try {
+      if (!authRepo || typeof authRepo.withTenant !== 'function'
+          || typeof authRepo.findPermissionsForUser !== 'function') {
+        return res.status(501).json({ error: 'not_implemented', requestId: req.requestId });
+      }
+      let permissions = [];
+      await authRepo.withTenant(req.user.tenant_id, async (client) => {
+        permissions = await authRepo.findPermissionsForUser(req.user.sub, client);
+      });
       const commandBus = require('../core/commandBus');
       // Synthesize req.ctx as identityContext would (this route lives at /api/auth so
       // identityContext is not chained here; pull what we need from req.user).
@@ -456,10 +517,50 @@ function build(deps) {
         actorName:   req.user.full_name || null,
         roleCodes:   req.user.role_codes || [],
         roleIds:     req.user.role_ids   || [],
-        permissions: [] // command itself enforces 'auth.user.create' via its inputSchema check
+        permissions
       });
       const outcome = await commandBus.dispatch('auth.user.create', req.body || {}, ctx);
-      res.status(outcome.ok ? 200 : 400).json(Object.assign({ requestId: req.requestId }, outcome));
+      res.status(_statusForOutcome(outcome)).json(Object.assign({ requestId: req.requestId }, outcome));
+    } catch (err) { next(err); }
+  });
+
+  // -------- POST /users/:id/status (admin-only, Phase 67A) -------------
+  // Disable or terminate a user account. Admin-gated via the command bus
+  // permission system (commands/auth.user.status.js has
+  // permission: 'auth.user.disable'). Unlike /register above, this route
+  // resolves REAL permissions from the database (via authRepo.
+  // findPermissionsForUser, the same lookup identityContext.js uses) rather
+  // than passing an empty array, so that an authorized non-super_admin
+  // administrator (e.g. corporate_admin, which holds auth.user.disable per
+  // the role seed) can actually invoke this command and is not silently
+  // always rejected by the command bus's permission check.
+  router.post('/users/:id/status', authentication, async (req, res, next) => {
+    try {
+      if (!authRepo || typeof authRepo.withTenant !== 'function'
+          || typeof authRepo.findPermissionsForUser !== 'function') {
+        return res.status(501).json({ error: 'not_implemented', requestId: req.requestId });
+      }
+      let permissions = [];
+      await authRepo.withTenant(req.user.tenant_id, async (client) => {
+        permissions = await authRepo.findPermissionsForUser(req.user.sub, client);
+      });
+      const ctx = Object.freeze({
+        requestId:   req.requestId,
+        tenantId:    req.user.tenant_id,
+        propertyId:  req.user.primary_property_id || null,
+        actorId:     req.user.sub,
+        actorName:   req.user.full_name || null,
+        roleCodes:   req.user.role_codes || [],
+        roleIds:     req.user.role_ids   || [],
+        permissions
+      });
+      const input = {
+        target_user_id: req.params.id,
+        status:         req.body && req.body.status,
+        reason:         req.body && req.body.reason
+      };
+      const outcome = await commandBus.dispatch('auth.user.status.change', input, ctx);
+      res.status(_statusForOutcome(outcome)).json(Object.assign({ requestId: req.requestId }, outcome));
     } catch (err) { next(err); }
   });
 

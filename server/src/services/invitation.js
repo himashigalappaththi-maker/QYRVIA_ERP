@@ -44,9 +44,21 @@ function buildInvitationService({ repo, identityNotificationOutbox, withTenantFn
     throw err;
   }
 
-  async function createInvitation({ tenantId, email, roleCodes, propertyIds, invitedBy, actorRoleCodes }) {
+  /**
+   * Core invitation-record + durable-outbox-row creation. Pure DB writes
+   * only (identityNotificationOutbox.enqueueIdentityInvitationNotification
+   * is a durable 'pending' row insert — see identityNotificationOutbox.js —
+   * never a network send). No transaction control of its own: the caller's
+   * `client` is used as-is, and any error (including a 23505 duplicate
+   * pending invitation) propagates to the caller unmodified, so a caller
+   * running this inside its own BEGIN/COMMIT (e.g. tenantProvisioning.js's
+   * Phase 67A atomic flow) rolls back everything together on failure.
+   */
+  async function _createInvitationCore({ tenantId, email, roleCodes, propertyIds, invitedBy, actorRoleCodes, client }) {
     if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(email).trim())) {
-      return { ok: false, error: 'invalid_email' };
+      const err = new Error('invalid_email');
+      err.code = 'INVITATION_INVALID_EMAIL';
+      throw err;
     }
     const normalizedEmail = String(email).trim().toLowerCase();
 
@@ -55,52 +67,86 @@ function buildInvitationService({ repo, identityNotificationOutbox, withTenantFn
     if (!callerIsSuperAdmin) {
       const blocked = codes.filter((c) => SYSTEM_ROLES.has(c));
       if (blocked.length) {
-        return { ok: false, error: 'role_escalation_denied',
-                 detail: `Cannot invite user with system-scoped roles: ${blocked.join(', ')}` };
+        const err = new Error(`Cannot invite user with system-scoped roles: ${blocked.join(', ')}`);
+        err.code = 'INVITATION_ROLE_ESCALATION_DENIED';
+        throw err;
       }
     }
 
     const expiresAt = new Date(Date.now() + INVITATION_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
     const { raw, hash } = generateInvitationToken();
 
-    let row;
+    const row = await repo.insertInvitation({
+      tenant_id:    tenantId,
+      email:        normalizedEmail,
+      token_hash:   hash,
+      invited_by:   invitedBy || null,
+      role_codes:   codes,
+      property_ids: Array.isArray(propertyIds) ? propertyIds : [],
+      expires_at:   expiresAt
+    }, client);
+
+    if (!row || !row.id) {
+      const err = new Error('Invitation record creation failed');
+      err.code = 'INVITATION_RECORD_MISSING';
+      throw err;
+    }
+
+    await identityNotificationOutbox.enqueueIdentityInvitationNotification({
+      tenantId,
+      identityId:         String(row.id),
+      invitationRecordId: String(row.id),
+      email:              normalizedEmail,
+      rawToken:           raw,
+      expiresAt:          row.expires_at || expiresAt,
+      inviterId:          invitedBy || null
+    }, client);
+
+    return { invitationId: row.id, email: normalizedEmail, expiresAt };
+  }
+
+  async function createInvitation({ tenantId, email, roleCodes, propertyIds, invitedBy, actorRoleCodes }) {
+    if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(email).trim())) {
+      return { ok: false, error: 'invalid_email' };
+    }
+
+    let result;
     try {
       await withTenantFn(tenantId, async (client) => {
-        row = await repo.insertInvitation({
-          tenant_id:    tenantId,
-          email:        normalizedEmail,
-          token_hash:   hash,
-          invited_by:   invitedBy || null,
-          role_codes:   codes,
-          property_ids: Array.isArray(propertyIds) ? propertyIds : [],
-          expires_at:   expiresAt
-        }, client);
-
-        if (!row || !row.id) {
-          const err = new Error('Invitation record creation failed');
-          err.code = 'INVITATION_RECORD_MISSING';
-          throw err;
-        }
-
-        await identityNotificationOutbox.enqueueIdentityInvitationNotification({
-          tenantId,
-          identityId:         String(row.id),
-          invitationRecordId: String(row.id),
-          email:              normalizedEmail,
-          rawToken:           raw,
-          expiresAt:          row.expires_at || expiresAt,
-          inviterId:          invitedBy || null
-        }, client);
+        result = await _createInvitationCore({ tenantId, email, roleCodes, propertyIds, invitedBy, actorRoleCodes, client });
       });
     } catch (err) {
       if (err.code === '23505') {
         return { ok: false, error: 'invitation_already_pending',
                  detail: 'An active invitation already exists for this email in this tenant.' };
       }
+      if (err.code === 'INVITATION_ROLE_ESCALATION_DENIED') {
+        return { ok: false, error: 'role_escalation_denied', detail: err.message };
+      }
       throw err;
     }
 
-    return { ok: true, invitationId: row.id, email: normalizedEmail, expiresAt };
+    return { ok: true, invitationId: result.invitationId, email: result.email, expiresAt: result.expiresAt };
+  }
+
+  /**
+   * Phase 67A: participate in a transaction the CALLER already has open
+   * (e.g. tenantProvisioning.js's single tenant+property+invitation
+   * transaction) rather than opening a second, independent one. Throws on
+   * any failure — including a 23505 duplicate-pending-invitation — so the
+   * caller's own catch/ROLLBACK handles it as part of one atomic unit.
+   * Returns { invitationId, email, expiresAt } on success (never null —
+   * unlike createInvitation, there is no "invitation failure is
+   * non-fatal" branch here, because a failure here means the whole
+   * enclosing transaction must not commit).
+   */
+  async function createInvitationInTransaction({ tenantId, email, roleCodes, propertyIds, invitedBy, actorRoleCodes, client }) {
+    if (!client || typeof client.query !== 'function') {
+      const err = new Error('createInvitationInTransaction requires an open transaction client');
+      err.code = 'INVITATION_CLIENT_REQUIRED';
+      throw err;
+    }
+    return _createInvitationCore({ tenantId, email, roleCodes, propertyIds, invitedBy, actorRoleCodes, client });
   }
 
   async function acceptInvitation({ token, fullName, password }) {
@@ -167,7 +213,7 @@ function buildInvitationService({ repo, identityNotificationOutbox, withTenantFn
     return repo.listInvitations(tenantId, status || null);
   }
 
-  return { createInvitation, acceptInvitation, revokeInvitation, listInvitations };
+  return { createInvitation, createInvitationInTransaction, acceptInvitation, revokeInvitation, listInvitations };
 }
 
 module.exports = { buildInvitationService };

@@ -2,13 +2,21 @@
 
 /**
  * Phase 57 — Tenant provisioning service unit tests.
+ * Phase 67A-003 — updated for full transactional atomicity: the owner
+ * invitation is now created INSIDE the same BEGIN/COMMIT as the tenant and
+ * property rows (via invitationService.createInvitationInTransaction),
+ * not in a separate, later transaction. A durable invitation-record
+ * failure now ROLLS BACK the whole provisioning call — it is no longer
+ * "non-fatal". See tenantProvisioning.js's function-level doc comment for
+ * the full rationale.
  *
  * Uses a mock pool (no real Postgres). Validates:
  *   - Input validation
- *   - Transaction sequence (BEGIN/INSERT tenant/INSERT property/COMMIT)
+ *   - Transaction sequence (BEGIN/INSERT tenant/INSERT property/
+ *     invitation-in-transaction/INSERT audit_events/COMMIT)
  *   - Duplicate code handling
- *   - Invitation is created post-commit
- *   - Invitation failure is non-fatal
+ *   - Invitation record creation is atomic with tenant/property creation
+ *   - A durable invitation-record failure rolls back the ENTIRE transaction
  */
 
 process.env.QYRVIA_NOTIFICATION_ENCRYPTION_KEY =
@@ -185,15 +193,52 @@ test('provisionTenant: 23505 from DB returns duplicate_code', async () => {
   assert.equal(r.error, 'duplicate_code');
 });
 
-// ── Invitation failure is non-fatal ───────────────────────────────────────────
+// ── Phase 67A-003: invitation creation is now IN-TRANSACTION, not post-commit ──
+//
+// The old "invitation failure does not fail the whole call" behaviour has
+// been REMOVED: a durable invitation-record failure must roll back the
+// whole transaction (brief 1.1 / Workstream A). Actual email DELIVERY
+// remains fully decoupled (a separate, pre-existing outbox-retry worker,
+// not exercised by provisionTenant at all) and is not re-tested here — see
+// server/test/db/... / the notification-outbox worker's own test suite for
+// delivery-retry coverage.
 
-test('provisionTenant: invitation failure does not fail the whole call', async () => {
+test('provisionTenant: a durable invitation-record failure ROLLS BACK the whole transaction (no longer non-fatal)', async () => {
   const pool = makeMockPool();
-  // An invitation service that always fails
-  const brokenInvSvc = { createInvitation: async () => ({ ok: false, error: 'some_error' }) };
+  const brokenInvSvc = {
+    async createInvitationInTransaction() {
+      const err = new Error('invitation insert failed');
+      throw err;
+    }
+  };
   const svc = makeProvisioningService(pool, brokenInvSvc);
-  const r   = await svc.provisionTenant(VALID_INPUT, CTX);
-  assert.equal(r.ok, true, 'provisioning must succeed even when invite fails');
-  assert.equal(r.invitation, null);
-  assert.ok(r.invitationError, 'invitationError should report the failure');
+  await assert.rejects(() => svc.provisionTenant(VALID_INPUT, CTX), /invitation insert failed/);
+  const tags = pool._queries.map((q) => q.tag);
+  assert.ok(tags.some((t) => /ROLLBACK/i.test(t)), 'ROLLBACK missing when invitation-record creation fails');
+  assert.ok(!tags.some((t) => /^COMMIT/i.test(t)), 'COMMIT must not appear when invitation-record creation fails');
+});
+
+test('provisionTenant: invitation service unavailable (no createInvitationInTransaction) is rejected before opening a transaction', async () => {
+  const pool = makeMockPool();
+  const legacyOnlyInvSvc = { createInvitation: async () => ({ ok: true, invitationId: 'x', email: 'x@x.com', expiresAt: new Date() }) };
+  const svc = makeProvisioningService(pool, legacyOnlyInvSvc);
+  const r = await svc.provisionTenant(VALID_INPUT, CTX);
+  assert.equal(r.ok, false);
+  assert.equal(r.error, 'invitation_service_unavailable');
+  assert.equal(pool._queries.length, 0, 'no query should be issued — the transaction must never open');
+});
+
+test('provisionTenant: the invitation is created with the SAME client used for the tenant/property inserts (true atomicity, not merely "also succeeded")', async () => {
+  const pool = makeMockPool();
+  let capturedClient = null;
+  const spySvc = {
+    async createInvitationInTransaction({ client }) {
+      capturedClient = client;
+      return { invitationId: 'inv_1', email: 'owner@acme.com', expiresAt: new Date() };
+    }
+  };
+  const svc = makeProvisioningService(pool, spySvc);
+  const r = await svc.provisionTenant(VALID_INPUT, CTX);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(capturedClient, pool._client, 'invitation must be written through the exact same transaction client as tenant/property');
 });
