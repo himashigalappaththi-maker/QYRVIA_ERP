@@ -89,6 +89,32 @@ const config = Object.freeze({
   // switch, not just the first.
   ARI_OUTBOX_WORKER_ENABLED:   getOptional('ARI_OUTBOX_WORKER_ENABLED', 'false'),
   ARI_OUTBOX_DISPATCH_ENABLED: getOptional('ARI_OUTBOX_DISPATCH_ENABLED', 'false'),
+  // Phase 68A: provider-specific LIVE gate for the new ARI channel dispatcher
+  // (src/ari/dispatch/ariChannelDispatcher.js). A FOURTH, independent
+  // fail-closed switch — ARI_OUTBOX_WORKER_ENABLED and
+  // ARI_OUTBOX_DISPATCH_ENABLED above must ALSO both be 'true', and
+  // ARI_OUTBOX_HTTP_ENABLED below must ALSO be 'true' for the dispatcher's
+  // own HTTP transport to leave disabled mode, before one HTTP byte can
+  // reach Booking.com. Scoped per-provider (not a blanket
+  // ARI_CHANNEL_DISPATCH_LIVE) because this phase supports Booking.com only
+  // (instruction 032 Section 9); adding a second external provider means
+  // adding its OWN _LIVE gate, never widening this one. Same convention as
+  // every other boolean flag in this file: only the literal string 'true'
+  // enables it; missing/false/anything else fails closed. The dispatcher's
+  // isReady() ANDs this with every other dependency being constructed
+  // successfully — this flag alone never makes it ready.
+  ARI_BOOKING_COM_LIVE: getOptional('ARI_BOOKING_COM_LIVE', 'false'),
+  // Phase 68A: the ARI channel dispatcher's OWN HTTP-transport enable gate —
+  // deliberately its own flag, NOT a read of CHANNEL_HTTP_ENABLED. The
+  // existing ARI outbox boot block has a proven, tested invariant (Phase
+  // 66A-B2N-D) that it reads NO CHANNEL_* gate at all, so the two worker
+  // systems can never share a kill switch (see index.js's own header comment
+  // on the ARI outbox worker block). Reusing CHANNEL_HTTP_ENABLED here would
+  // silently couple Booking.com ARI delivery to the completely unrelated
+  // channel-queue (reservation) HTTP transport's own on/off state — exactly
+  // the class of coupling this file's ARI_* gates exist to avoid elsewhere.
+  // Default OFF; only the literal string 'true' enables it.
+  ARI_OUTBOX_HTTP_ENABLED: getOptional('ARI_OUTBOX_HTTP_ENABLED', 'false'),
   // Phase 24 B8-B1: encryption key for the local SecretProvider (32-byte: 64-hex,
   // base64-32, or passphrase). Empty default => no provider (credential subsystem dormant).
   CHANNEL_CREDENTIAL_KEY: getOptional('CHANNEL_CREDENTIAL_KEY', ''),

@@ -658,42 +658,91 @@ if (require('./config/env').CHANNEL_WORKER_ENABLED === 'true') {
 //
 // Separate from the channel queue worker above in every respect: its own table
 // (ari_outbox_store), its own tenant resolver, its own two gates. None of the
-// CHANNEL_* switches is read here, and none of them is changed.
+// CHANNEL_* switches is read here (Phase 68A's dispatcher below is the one
+// exception, documented at its own construction site).
 //
-// THIS PHASE SHIPS NO TRANSPORT. The dispatcher below is a NOT-READY stub: it
-// reports isReady() === false and its dispatch() throws if it is ever reached.
-// The worker checks both env gates AND dispatcher readiness BEFORE resolving
-// tenants, so even with ARI_OUTBOX_WORKER_ENABLED=true and
-// ARI_OUTBOX_DISPATCH_ENABLED=true this boot performs zero resolver calls, zero
-// claims and zero transitions. That is deliberate: a mock-success dispatcher in
-// production would mark real events COMPLETED without delivering them, which is
-// strictly worse than not draining at all.
+// PHASE 68A UPDATE: the not-ready stub is replaced by
+// src/ari/dispatch/ariChannelDispatcher.js — but its OWN isReady() still
+// requires ARI_BOOKING_COM_LIVE='true' (default false) IN ADDITION TO every
+// dependency it needs being constructed successfully, so with this phase's
+// all-default-false gates the worker STILL performs zero resolver calls, zero
+// claims and zero transitions — identical boot-time behavior to before this
+// phase. That is deliberate and unchanged: a mock-success dispatcher in
+// production would mark real events COMPLETED without delivering them, which
+// is strictly worse than not draining at all, and this dispatcher never marks
+// COMPLETED without a durable per-channel ledger row and (for external
+// channels) a real provider acknowledgement.
 //
 // No polling loop is started in this phase either — tick() exists and is fully
-// tested, but nothing schedules it until a real transport lands.
+// tested, but nothing schedules it until a later phase.
 if (require('./config/env').ARI_OUTBOX_WORKER_ENABLED === 'true') {
   try {
     const { buildAriOutboxWorker } = require('./ari/outbox/ariOutboxWorker');
     const { buildAriOutboxTenantResolver } = require('./ari/outbox/ariOutboxTenantResolver');
     const ariOutboxWrappers = require('./ari/outbox/tenantAriOutbox');
+    const { buildAriChannelDispatcher } = require('./ari/dispatch/ariChannelDispatcher');
+    const { buildEnabledChannelResolver: _buildEnabledChannelResolverForAri } = require('./channel-manager/services/enabledChannelResolver');
+    const { runWithTenantRead: _runWithTenantReadForAri } = require('./db/tenantUnitOfWork');
+    const { buildHttpTransport: _buildHttpTransportForAri } = require('./channel-manager/transport/transport');
+    // Its OWN HttpTransport instance (not channelOutboundSync's, which only
+    // exposes its in-process transport), gated by its OWN dedicated
+    // ARI_OUTBOX_HTTP_ENABLED flag — deliberately NOT the channel-queue's
+    // CHANNEL_HTTP_ENABLED. This boot block reads no CHANNEL_* gate, by the
+    // same design this file already applies to ARI_OUTBOX_WORKER_ENABLED /
+    // ARI_OUTBOX_DISPATCH_ENABLED versus CHANNEL_WORKER_ENABLED /
+    // CHANNEL_QUEUE_DISPATCH_ENABLED above: two independent worker systems
+    // must never share a kill switch. Default false => no network.
+    const ariHttpTransport = _buildHttpTransportForAri({ enabled: require('./config/env').ARI_OUTBOX_HTTP_ENABLED === 'true' });
 
-    // Not-ready by contract. Kept explicit rather than omitted so the readiness
-    // check has something concrete to refuse.
-    const notReadyDispatcher = {
-      isReady: () => false,
-      dispatch: async () => {
-        throw Object.assign(
-          new Error('ari_outbox_dispatch_not_implemented'),
-          { retryable: false }
-        );
-      }
-    };
+    // Phase 68A: resolve which channel_credential_store row authorizes a given
+    // (tenant, property, channel) for the new dispatcher. Reuses the EXISTING
+    // store under src/channel-manager/credentials unchanged — no second
+    // credential store. Property-then-tenant fallback mirrors
+    // enabledChannelResolver.js's own SQL predicate convention.
+    async function resolveAriCredentialsRef({ tenantId, propertyId, channelCode }) {
+      if (!channelCredentials || !channelCredentials.store || typeof channelCredentials.store.list !== 'function') return null;
+      let rows;
+      try { rows = await channelCredentials.store.list({ tenant_id: tenantId }); }
+      catch (_) { return null; }
+      if (!Array.isArray(rows)) return null;
+      const active = rows.filter((r) => r && r.channel === channelCode && r.status !== 'REVOKED');
+      const propertyMatch = active.find((r) => r.property_id === propertyId);
+      const tenantLevel = active.find((r) => !r.property_id);
+      const row = propertyMatch || tenantLevel || null;
+      return row ? row.credentials_ref : null;
+    }
+
+    // Dispatcher construction is best-effort and non-fatal: if any dependency
+    // this boot needs is missing, dependenciesOk (inside the dispatcher) is
+    // false and isReady() is false — a construction FAILURE below instead
+    // falls back to the same explicit not-ready stub Phase 66A-B2N-D shipped,
+    // so a dependency-wiring problem can never widen into "somehow ready".
+    let ariDispatcher;
+    try {
+      ariDispatcher = buildAriChannelDispatcher({
+        pool: db.pool,
+        resolveChannels: _buildEnabledChannelResolverForAri({ pool: obsPool, runWithTenantRead: _runWithTenantReadForAri }),
+        channelRegistry,
+        secretProvider: channelCredentials && channelCredentials.provider,
+        resolveCredentialsRef: resolveAriCredentialsRef,
+        mappingService: channelMapping && channelMapping.service,
+        http: ariHttpTransport,
+        activations: channelOutboundSync && channelOutboundSync.activations,
+        logger
+      });
+    } catch (e) {
+      logger.warn({ err: e }, '[boot] ARI channel dispatcher construction failed — falling back to not-ready stub');
+      ariDispatcher = {
+        isReady: () => false,
+        dispatch: async () => { throw Object.assign(new Error('ari_outbox_dispatch_not_implemented'), { retryable: false }); }
+      };
+    }
 
     const ariOutboxWorker = buildAriOutboxWorker({
       tenantResolver: buildAriOutboxTenantResolver({ pool: db.pool }),
       outbox: ariOutboxWrappers,
       pool: db.pool,
-      dispatcher: notReadyDispatcher,
+      dispatcher: ariDispatcher,
       logger,
       // Stable for this instance, distinct between instances: it becomes the
       // outbox lease_owner, and two workers sharing one owner string would make
@@ -708,8 +757,9 @@ if (require('./config/env').ARI_OUTBOX_WORKER_ENABLED === 'true') {
     logger.info({
       workerId: ariOutboxWorker.workerId,
       dispatchEnabled: require('./config/env').ARI_OUTBOX_DISPATCH_ENABLED === 'true',
-      dispatcherReady: false
-    }, '[boot] ARI outbox worker constructed — no transport in this phase, no tick scheduled');
+      bookingComLiveGate: require('./config/env').ARI_BOOKING_COM_LIVE === 'true',
+      dispatcherReady: ariDispatcher.isReady()
+    }, '[boot] ARI outbox worker constructed — Booking.com dispatch foundation wired, all live gates default false');
   } catch (e) { logger.warn({ err: e }, '[boot] ARI outbox worker init skipped'); }
 } else {
   logger.info('[boot] ARI outbox worker disabled (ARI_OUTBOX_WORKER_ENABLED=false)');

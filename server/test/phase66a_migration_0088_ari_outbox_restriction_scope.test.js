@@ -20,7 +20,18 @@ const MIG_PATH = path.join(MIG_DIR, '0088_ari_outbox_restriction_scope.sql');
 test('migration 0088_ari_outbox_restriction_scope.sql exists with the exact basename', () => {
   assert.ok(fs.existsSync(MIG_PATH));
   const files = fs.readdirSync(MIG_DIR).filter((f) => /^\d{4}_.+\.sql$/.test(f)).sort();
-  assert.equal(files[files.length - 1], '0088_ari_outbox_restriction_scope.sql', 'it is the newest migration');
+  const idx = files.indexOf('0088_ari_outbox_restriction_scope.sql');
+  assert.ok(idx >= 0, '0088 is present in the migrations directory');
+  // PHASE 68A CORRECTION (instruction 032 Section 19): this test originally
+  // asserted 0088 is the newest migration in the whole directory — a
+  // point-in-time snapshot, not an invariant 0088 actually owns. It went
+  // stale the moment 0090 (Phase 67A) was committed, and would go stale
+  // again after every future migration forever. The invariant 0088 DOES own
+  // is its own position in the sequence: it immediately follows 0087, with
+  // no gap and no reordering. That is what is asserted now — it holds
+  // regardless of how many migrations are added after 0088, exactly as later
+  // phases are expected to add them.
+  assert.equal(files[idx - 1], '0087_ari_outbox.sql', '0088 immediately follows 0087 in the migration sequence');
 });
 
 const SOURCE = fs.readFileSync(MIG_PATH, 'utf8');

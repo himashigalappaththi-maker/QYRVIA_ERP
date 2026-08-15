@@ -16,6 +16,23 @@
 
 const { RetryPolicy } = require('../core/sync/RetryPolicy');
 
+/**
+ * Phase 68A — QYRVIA-SIDE outbound correlation metadata (idempotency
+ * propagation, instruction 032 Section 14).
+ *
+ * This is deliberately NOT a claim that any provider treats this header as
+ * an idempotency guarantee — no verified Booking.com (or any other
+ * provider's) protocol documentation exists in this repository confirming
+ * such support, and inventing one would be exactly the "invented provider
+ * idempotency claim" the instruction forbids. This header exists purely so
+ * QYRVIA's own logs/traces can correlate a request with the durable ledger
+ * row that authorized it (src/ari/dispatch/ariChannelDeliveryStore.js); the
+ * ACTUAL duplicate-prevention boundary is that durable ledger, checked
+ * BEFORE this transport is ever called (see ariChannelDispatcher.js) — never
+ * this header.
+ */
+const CORRELATION_REQUEST_HEADER = 'X-Qyrvia-Correlation-Id';
+
 /** Normalized acknowledgement - the single shape every provider decodes into. */
 function normalizeAck(a = {}) {
   return {
@@ -62,10 +79,16 @@ function buildOtaTransport({ provider, http, auth, retryPolicy, rateLimiter, sle
   async function deliver(op, encoded, ctx) {
     let attempts = 0;
     let ack = null;
+    // Bounded, non-secret correlation value only — see CORRELATION_REQUEST_HEADER's
+    // header comment. Absent when the caller supplies none (fully backward
+    // compatible with every pre-Phase-68A caller of pushRateUpdate/pushAvailability/
+    // pushReservationAck that never passed one).
+    const correlationId = ctx && ctx.correlationId != null ? String(ctx.correlationId).slice(0, 200) : null;
     while (true) {
       attempts += 1;
       await limiter.gate();
       const headers = await authHeaders();
+      if (correlationId) headers[CORRELATION_REQUEST_HEADER] = correlationId;
       let raw;
       try {
         raw = await send.send({ channel: provider.channel, op, endpoint: provider.endpointFor ? provider.endpointFor(op, ctx) : null, headers, payload: encoded });
@@ -92,4 +115,4 @@ function buildOtaTransport({ provider, http, auth, retryPolicy, rateLimiter, sle
   };
 }
 
-module.exports = { buildOtaTransport, buildRateLimiter, buildDisabledHttp, normalizeAck };
+module.exports = { buildOtaTransport, buildRateLimiter, buildDisabledHttp, normalizeAck, CORRELATION_REQUEST_HEADER };
