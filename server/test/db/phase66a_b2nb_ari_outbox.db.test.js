@@ -97,6 +97,15 @@ if (!URL) {
   });
 
   // 1. table exists with exact columns
+  // PHASE 68B (instruction 046): this list predated migration 0088
+  // (Phase 66A-B2N-C2), which added the nullable `restriction_rule_id`
+  // column (VARCHAR(80), no FK — outbox history must survive rule deletion;
+  // see 0088's own header). Confirmed via direct reading of 0088's DDL
+  // (`ALTER TABLE ari_outbox_store ADD COLUMN restriction_rule_id
+  // VARCHAR(80);`) and its own static contract test
+  // (phase66a_migration_0088_ari_outbox_restriction_scope.test.js, test "A")
+  // that this column is the CURRENT authoritative, intentional schema — not
+  // a regression. Updated to include it; every other column is unchanged.
   test('1. ari_outbox_store exists with the exact contracted columns', async () => {
     const r = await pool.query(
       `SELECT column_name FROM information_schema.columns
@@ -105,7 +114,7 @@ if (!URL) {
       'attempts', 'completed_at', 'created_at', 'dead_lettered_at', 'dedupe_key',
       'effective_from', 'effective_to', 'event_type', 'id', 'lease_owner',
       'lease_until', 'max_retries', 'next_retry_at', 'payload_json',
-      'property_id', 'rate_plan_id', 'resource_kind', 'retry_count',
+      'property_id', 'rate_plan_id', 'resource_kind', 'restriction_rule_id', 'retry_count',
       'room_type_id', 'source_version', 'status', 'tenant_id', 'updated_at'
     ].sort());
   });
@@ -373,18 +382,29 @@ if (!URL) {
   // ---- B2N-B pre-application corrections ----------------------------------
 
   // C1/C2/C3. composite same-tenant property FK is database-enforced
+  // PHASE 68B (instruction 046): the raw dedupe_key fixtures below used to be
+  // plain strings ('k-fk-cross' / 'k-fk-own'), which migration 0088's
+  // `ari_outbox_store_key_version_compat` CHECK now rejects for any row with
+  // a NULL restriction_rule_id (non-restriction events, this test's case,
+  // require the 'aob:v1:' prefix — confirmed by direct reading of 0088's own
+  // CHECK definition and phase66a_migration_0088_..._test.js test "H"). The
+  // SECOND insert here (expected to SUCCEED) was failing on that constraint
+  // instead of proving what this test actually exists to prove — the
+  // same-tenant composite FK. Prefixed both keys; this changes NOTHING about
+  // which invariant is under test, only makes the fixture format-compliant
+  // with the current, correct, unweakened constraint.
   test('C1/C2/C3. tenant A + tenant B property is rejected by the composite FK; tenant A + own property succeeds', async () => {
     // Raw INSERT deliberately bypasses the application validation layer so
     // the DATABASE constraint itself is what gets proven.
     await assert.rejects(() => H.withTenant(pool, tenantA.tenantId, (c) =>
       c.query(`INSERT INTO ari_outbox_store (tenant_id, property_id, event_type, resource_kind, room_type_id, effective_from, effective_to, source_version, dedupe_key)
-               VALUES ($1,$2,'INVENTORY_CHANGED','INVENTORY','rt-fk','2026-08-01','2026-08-02',1,'k-fk-cross')`,
+               VALUES ($1,$2,'INVENTORY_CHANGED','INVENTORY','rt-fk','2026-08-01','2026-08-02',1,'aob:v1:k-fk-cross')`,
         [tenantA.tenantId, tenantB.propertyId])),
       (e) => H.isPgError(e, '23'), 'cross-tenant property reference must violate the composite FK');
 
     const ok = await H.withTenant(pool, tenantA.tenantId, (c) =>
       c.query(`INSERT INTO ari_outbox_store (tenant_id, property_id, event_type, resource_kind, room_type_id, effective_from, effective_to, source_version, dedupe_key)
-               VALUES ($1,$2,'INVENTORY_CHANGED','INVENTORY','rt-fk','2026-08-01','2026-08-02',1,'k-fk-own')
+               VALUES ($1,$2,'INVENTORY_CHANGED','INVENTORY','rt-fk','2026-08-01','2026-08-02',1,'aob:v1:k-fk-own')
                RETURNING id`,
         [tenantA.tenantId, tenantA.propertyId]));
     assert.equal(ok.rows.length, 1, 'same-tenant property reference succeeds');

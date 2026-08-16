@@ -7,14 +7,33 @@
  * (tenant_id, reservation_id, action) WHERE status='PENDING' — with a key that
  * also includes the channel. Without that change, one PMS event fanning out to
  * eight OTAs produces eight INSERTs that all conflict onto a single row, and
- * seven channels are silently dropped with no error anywhere.
+ * seven channels are silently dropped with no error anywhere. Migration 0086
+ * later widened that key's predicate from PENDING-only to PENDING+PROCESSING
+ * and renamed it uq_csqs_active_channel — see the GUARD test below, which
+ * asserts the CURRENT (post-0086) contract, not the original 0084 name.
  *
  * These tests drive the REAL persistence store, inside the Phase 64 tenant unit
  * of work, under FORCE ROW LEVEL SECURITY.
+ *
+ * PHASE 68B REGRESSION-SAFETY CLOSURE (instruction 046): this file used to
+ * call H.freshSchema(pool) in before() — DROP SCHEMA IF EXISTS public CASCADE
+ * plus a full migration replay — against the shared, already-provisioned
+ * qyrvia_test database every sibling DB test in this directory also runs
+ * against. That is destructive to any state a concurrently-authored
+ * instruction/session has already proven live (e.g. a freshly-applied
+ * migration or a freshly-installed superuser bootstrap object in a DIFFERENT
+ * schema) and violates this repository's standing live-test safety boundary.
+ * This file now follows the SAME safe, non-destructive convention every other
+ * file in this directory uses (see phase66a_b2nb_ari_outbox.db.test.js,
+ * phase68_ari_channel_delivery.db.test.js): connect to the database AS-IS,
+ * seed only two dedicated, randomly-suffixed test tenants, and clean up only
+ * the rows this file itself created. No DDL, no schema reset, no migration
+ * run — migrations 0001-0091 must already be applied before this file runs.
  */
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const H = require('./_dbHarness');
 
 const URL = H.dbConfig();
@@ -43,20 +62,34 @@ if (!URL) {
   }, over);
 
   before(async () => {
-    const ddl = H.newPool(URL);
-    try {
-      await H.freshSchema(ddl);
-      ctxA = await H.seedTenantProperty(ddl, { code: 'Q66A', propCode: 'Q66AP' });
-      ctxB = await H.seedTenantProperty(ddl, { code: 'Q66B', propCode: 'Q66BP' });
-    } finally { await ddl.end(); }
-
     pool = H.newPool(URL);
+    // Dedicated, randomly-suffixed test tenants — never a fixed code, so a
+    // re-run of this file (no schema reset between runs) can never collide
+    // with a previous run's leftover rows even if an earlier cleanup was
+    // interrupted.
+    const suffixA = crypto.randomUUID().slice(0, 8);
+    const suffixB = crypto.randomUUID().slice(0, 8);
+    ctxA = await H.seedTenantProperty(pool, { code: 'Q66A-' + suffixA, propCode: 'Q66AP-' + suffixA });
+    ctxB = await H.seedTenantProperty(pool, { code: 'Q66B-' + suffixB, propCode: 'Q66BP-' + suffixB });
     // The store takes a `db` handle; inside a unit of work we hand it the bound
     // client so every statement runs with app.tenant_id set.
     queue = null;
   });
 
-  after(async () => { if (pool) await pool.end(); });
+  after(async () => {
+    // Cleanup only the rows THIS file created — no TRUNCATE, no DROP, no
+    // broad DELETE. Every table touched is scoped to tenant_id = one of the
+    // two tenants seeded above.
+    for (const ctx of [ctxA, ctxB]) {
+      if (!ctx) continue;
+      await H.withTenant(pool, ctx.tenantId, async (c) => {
+        await c.query('DELETE FROM channel_sync_queue_store WHERE tenant_id=$1', [ctx.tenantId]);
+        await c.query('DELETE FROM properties WHERE tenant_id=$1', [ctx.tenantId]);
+        await c.query('DELETE FROM tenants WHERE id=$1', [ctx.tenantId]);
+      }).catch(() => { /* best-effort cleanup — a failure here must not mask the test's own result */ });
+    }
+    if (pool) await pool.end();
+  });
 
   function storeOn(client) {
     return buildStoresDb.buildSyncQueueStoreDb
@@ -66,15 +99,41 @@ if (!URL) {
 
   // -------------------------------------------------------------------------
 
-  test('GUARD: migration 0084 applied — the old index is gone, the new one exists', async () => {
+  // PHASE 68B (instruction 046): this guard originally asserted the 0084-era
+  // index name `uq_csqs_pending_channel`. Migration 0086 (Phase 66A-B2M)
+  // deliberately DROPPED that index and replaced it with `uq_csqs_active_channel`
+  // — same (tenant_id, reservation_id, action, COALESCE(channel,'')) columns,
+  // widened predicate from PENDING-only to PENDING+PROCESSING (so a live
+  // PROCESSING attempt and a would-be-retry PENDING row for the same logical
+  // job can no longer coexist either) — confirmed by direct reading of
+  // 0086's own DDL and its own postcondition block (which asserts the exact
+  // same shape this test now checks). This is the CURRENT authoritative
+  // contract, not a naming accident. Asserted on semantic properties (columns,
+  // predicate, uniqueness) rather than the index name alone, per this
+  // instruction's own preference, with the name still checked for continuity.
+  test('GUARD: the per-channel active-state dedupe key exists with the current (post-0086) contract', async () => {
     const r = await pool.query(
-      `SELECT indexname FROM pg_indexes
+      `SELECT indexname, indexdef FROM pg_indexes
         WHERE tablename = 'channel_sync_queue_store' AND indexname LIKE 'uq_csqs%'`);
-    const names = r.rows.map((x) => x.indexname);
-    assert.ok(names.includes('uq_csqs_pending_channel'),
-      'the per-channel key must exist, got: ' + names.join(', '));
+    const byName = Object.fromEntries(r.rows.map((x) => [x.indexname, x.indexdef]));
+    const names = Object.keys(byName);
+
     assert.ok(!names.includes('uq_csqs_pending'),
-      'the old three-column key must be gone or it will still collapse the fan-out');
+      'the original three-column key (0045) must be gone or it will still collapse the fan-out');
+    assert.ok(!names.includes('uq_csqs_pending_channel'),
+      'the 0084-era PENDING-only per-channel key must be gone — 0086 widened and renamed it');
+
+    const def = byName.uq_csqs_active_channel;
+    assert.ok(def, 'the current per-channel active-state key uq_csqs_active_channel must exist, got: ' + names.join(', '));
+    assert.match(def, /UNIQUE INDEX/i, 'must be a unique index — non-uniqueness would silently readmit the fan-out bug');
+    assert.match(def, /tenant_id/, 'must include tenant_id — a tenant-agnostic key would leak dedupe across tenants');
+    assert.match(def, /reservation_id/, 'must include reservation_id');
+    assert.match(def, /action/, 'must include action — a different action is a legitimately separate job');
+    assert.match(def, /COALESCE\(channel/i, 'must COALESCE(channel, ...) — otherwise two NULL-channel rows are DISTINCT and dedupe silently vanishes');
+    assert.match(def, /PENDING/, 'the active-state predicate must cover PENDING');
+    assert.match(def, /PROCESSING/, 'the active-state predicate must ALSO cover PROCESSING (0086 widening) — otherwise a live attempt and a pending retry for the same job can coexist');
+    assert.ok(!/COMPLETED|FAILED|DEAD_LETTER/.test(def),
+      'the active-state predicate must NOT include a terminal status — that would wrongly block a legitimate re-enqueue after completion/failure');
   });
 
   test('GUARD: the connection role is NON-superuser and NOBYPASSRLS', async () => {
