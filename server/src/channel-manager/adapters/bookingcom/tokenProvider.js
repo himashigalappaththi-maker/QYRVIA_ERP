@@ -60,17 +60,57 @@ function base64UrlDecode(str) {
   return Buffer.from(padded, 'base64').toString('utf8');
 }
 
-/** Best-effort JWT `exp` (seconds since epoch) -> ms, or null if unreadable. Never throws. */
-function safeParseJwtExpiryMs(jwt) {
+/**
+ * Best-effort JWT claims decode (the payload segment only — this is NOT
+ * signature verification; instruction 049 Section 16 explicitly says not to
+ * implement cryptographic JWT verification absent an official key-validation
+ * contract already in this repo. This is an environment SAFETY cross-check
+ * read off an already-trusted response, never an authentication mechanism).
+ * Returns the parsed claims object, or null if the token is malformed in
+ * any way. NEVER throws.
+ */
+function safeParseJwtClaims(jwt) {
   try {
     const parts = String(jwt).split('.');
     if (parts.length < 2) return null;
     const claims = JSON.parse(base64UrlDecode(parts[1]));
-    if (!claims || typeof claims.exp !== 'number' || !Number.isFinite(claims.exp)) return null;
-    return claims.exp * 1000;
+    return (claims && typeof claims === 'object') ? claims : null;
   } catch (_) {
     return null;
   }
+}
+
+/** Best-effort JWT `exp` (seconds since epoch) -> ms, or null if unreadable. Never throws. */
+function safeParseJwtExpiryMs(jwt) {
+  const claims = safeParseJwtClaims(jwt);
+  if (!claims || typeof claims.exp !== 'number' || !Number.isFinite(claims.exp)) return null;
+  return claims.exp * 1000;
+}
+
+/**
+ * Phase 69A (instruction 049 Section 16) — Booking.com's documented
+ * token-based auth includes a JWT `test` claim describing the token's
+ * environment. This is an ADDITIONAL safety cross-check for the future
+ * TEST-property path (never the ONLY environment control — see
+ * testPropertyGuard.js, which ANDs this with channel_registry.status,
+ * credential environment, and mapping/credential binding).
+ * Normalizes to exactly one of:
+ *   true   -> the claim is present and unambiguously indicates TEST
+ *   false  -> the claim is present and unambiguously indicates NOT-test
+ *   null   -> the claim is absent, or its value is not unambiguous — the
+ *             caller (the TEST guard) is REQUIRED to fail closed on null,
+ *             per instruction 049 Section 16 ("If the JWT lacks the claim:
+ *             fail closed... unless official contract evidence establishes
+ *             another safe interpretation" — no such evidence exists in
+ *             this repository, so null is never treated as "assume TEST").
+ * Never throws.
+ */
+function normalizeTestClaim(claims) {
+  if (!claims || !('test' in claims)) return null;
+  const v = claims.test;
+  if (v === true || v === 'true') return true;
+  if (v === false || v === 'false') return false;
+  return null; // present but ambiguous shape — fail closed, never guess
 }
 
 function buildDisabledHttpStub() {
@@ -127,11 +167,12 @@ function buildBookingComTokenProvider({
     const ruid = raw.body && typeof raw.body.ruid === 'string' ? raw.body.ruid : null;
     const parsedExpiryMs = safeParseJwtExpiryMs(jwt);
     const expiresAt = parsedExpiryMs != null ? parsedExpiryMs : (clock() + maxLifetimeMs);
-    return { token: jwt, expiresAt, ruid };
+    const testClaim = normalizeTestClaim(safeParseJwtClaims(jwt));
+    return { token: jwt, expiresAt, ruid, testClaim };
   }
 
   /**
-   * @returns {Promise<{token:string, expiresAt:number, ruid:string|null, cached:boolean}>}
+   * @returns {Promise<{token:string, expiresAt:number, ruid:string|null, testClaim:boolean|null, cached:boolean}>}
    */
   async function getToken({ credentialsRef, clientId, clientSecret } = {}) {
     if (!credentialsRef) throw classifiedError('BOOKING_COM_TOKEN_CREDENTIALS_REF_REQUIRED', false);
@@ -140,7 +181,7 @@ function buildBookingComTokenProvider({
     const now = clock();
     const cached = cache.get(credentialsRef);
     if (cached && (cached.expiresAt - skewMs) > now) {
-      return { token: cached.token, expiresAt: cached.expiresAt, ruid: cached.ruid, cached: true };
+      return { token: cached.token, expiresAt: cached.expiresAt, ruid: cached.ruid, testClaim: cached.testClaim, cached: true };
     }
 
     // Single-flight: everything up to here and the Map read/write below is
@@ -155,8 +196,8 @@ function buildBookingComTokenProvider({
       .then((result) => {
         cache.set(credentialsRef, result);
         inFlight.delete(credentialsRef);
-        log.info({ credentialsRef, expiresAt: result.expiresAt }, '[bookingcom-token] token acquired');
-        return { token: result.token, expiresAt: result.expiresAt, ruid: result.ruid, cached: false };
+        log.info({ credentialsRef, expiresAt: result.expiresAt, testClaim: result.testClaim }, '[bookingcom-token] token acquired');
+        return { token: result.token, expiresAt: result.expiresAt, ruid: result.ruid, testClaim: result.testClaim, cached: false };
       })
       .catch((err) => {
         // Clear in-flight state on failure so a later call can retry —
@@ -193,6 +234,8 @@ module.exports = {
   buildBookingComTokenProvider,
   classifyTokenExchangeStatus,
   safeParseJwtExpiryMs,
+  safeParseJwtClaims,
+  normalizeTestClaim,
   TOKEN_EXCHANGE_ENDPOINT,
   DEFAULT_MAX_LIFETIME_MS,
   DEFAULT_SKEW_MS

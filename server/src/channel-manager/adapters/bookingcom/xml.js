@@ -55,4 +55,26 @@ function hasXmlTag(xmlText, tagName) {
   return extractXmlTagText(xmlText, tagName) !== null;
 }
 
-module.exports = { escapeXmlText, escapeXmlAttr, extractXmlTagText, hasXmlTag };
+/**
+ * Phase 69A (instruction 049) — Booking.com's DOCUMENTED B.XML Availability
+ * RUID shape is a response COMMENT, not an element:
+ *   <!-- RUID: [VALUE] -->
+ * (instruction 048's `<ruid>`/`<RUID>` ELEMENT-only extraction was
+ * insufficient — corrected here; extractXmlTagText's element-based lookup is
+ * still used as a compatibility fallback by the caller, never as primary.)
+ *
+ * Tolerant of whitespace and an optional surrounding `[...]`. Bounded to
+ * maxLength. NEVER throws — a malformed/absent/unterminated comment simply
+ * returns null, never a fabricated value.
+ */
+function extractRuidComment(xmlText, maxLength = 200) {
+  if (typeof xmlText !== 'string' || !xmlText) return null;
+  const m = xmlText.match(/<!--\s*RUID\s*:\s*([\s\S]*?)\s*-->/i);
+  if (!m) return null;
+  let value = (m[1] || '').trim();
+  if (value.startsWith('[') && value.endsWith(']')) value = value.slice(1, -1).trim();
+  if (!value) return null;
+  return value.slice(0, maxLength);
+}
+
+module.exports = { escapeXmlText, escapeXmlAttr, extractXmlTagText, hasXmlTag, extractRuidComment };

@@ -10,7 +10,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  buildBookingComTokenProvider, classifyTokenExchangeStatus, safeParseJwtExpiryMs, TOKEN_EXCHANGE_ENDPOINT
+  buildBookingComTokenProvider, classifyTokenExchangeStatus, safeParseJwtExpiryMs,
+  safeParseJwtClaims, normalizeTestClaim, TOKEN_EXCHANGE_ENDPOINT
 } = require('../src/channel-manager/adapters/bookingcom/tokenProvider');
 
 function makeJwt(claims) {
@@ -263,4 +264,65 @@ test('a token exchange is NEVER attempted when the injected http transport is le
   const tp = buildBookingComTokenProvider({}); // no http injected -> disabled stub
   await assert.rejects(() => tp.getToken({ credentialsRef: 'r', clientId: 'c', clientSecret: 's' }),
     (e) => e.code === 'BOOKING_COM_TOKEN_TRANSPORT_DISABLED' && e.retryable === true);
+});
+
+// ---- JWT `test` claim (instruction 049 Section 16/19) — an environment
+// SAFETY cross-check, NOT authentication verification (no cryptographic
+// signature verification is implemented — see the module's own header). ----
+
+test('normalizeTestClaim: test=true (boolean or string) is accepted for TEST safety', () => {
+  assert.equal(normalizeTestClaim({ test: true }), true);
+  assert.equal(normalizeTestClaim({ test: 'true' }), true);
+});
+test('normalizeTestClaim: test=false (boolean or string) is surfaced as false, never coerced to true', () => {
+  assert.equal(normalizeTestClaim({ test: false }), false);
+  assert.equal(normalizeTestClaim({ test: 'false' }), false);
+});
+test('normalizeTestClaim: a missing claim is null — REJECTED for TEST-operation authorization, never assumed TEST', () => {
+  assert.equal(normalizeTestClaim({}), null);
+  assert.equal(normalizeTestClaim(null), null);
+  assert.equal(normalizeTestClaim({ other: 1 }), null);
+});
+test('normalizeTestClaim: an ambiguous claim value is null, never guessed', () => {
+  assert.equal(normalizeTestClaim({ test: 'maybe' }), null);
+  assert.equal(normalizeTestClaim({ test: 1 }), null);
+});
+
+test('safeParseJwtClaims reads the full claims object and degrades to null on malformed input, never throws', () => {
+  assert.deepEqual(safeParseJwtClaims(makeJwt({ exp: 123, test: true })), { exp: 123, test: true });
+  assert.equal(safeParseJwtClaims('not-a-jwt'), null);
+  assert.equal(safeParseJwtClaims('onlyonepart'), null);
+});
+
+test('getToken() surfaces testClaim:true end-to-end from a real exchange response', async () => {
+  const jwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600, test: true });
+  const http = fixedHttp([{ ok: true, status: 200, body: { jwt } }]);
+  const tp = buildBookingComTokenProvider({ http });
+  const r = await tp.getToken({ credentialsRef: 'ref-1', clientId: 'c', clientSecret: 's' });
+  assert.equal(r.testClaim, true);
+});
+test('getToken() surfaces testClaim:false end-to-end (a production-environment token used by mistake is still classifiable, never silently treated as TEST)', async () => {
+  const jwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600, test: false });
+  const http = fixedHttp([{ ok: true, status: 200, body: { jwt } }]);
+  const tp = buildBookingComTokenProvider({ http });
+  const r = await tp.getToken({ credentialsRef: 'ref-1', clientId: 'c', clientSecret: 's' });
+  assert.equal(r.testClaim, false);
+});
+test('getToken() surfaces testClaim:null when the JWT carries no test claim at all', async () => {
+  const jwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 }); // no test claim
+  const http = fixedHttp([{ ok: true, status: 200, body: { jwt } }]);
+  const tp = buildBookingComTokenProvider({ http });
+  const r = await tp.getToken({ credentialsRef: 'ref-1', clientId: 'c', clientSecret: 's' });
+  assert.equal(r.testClaim, null);
+});
+test('existing token caching is UNAFFECTED by the testClaim addition — a cached hit still returns the same testClaim without a new exchange', async () => {
+  const jwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600, test: true });
+  const http = fixedHttp([{ ok: true, status: 200, body: { jwt } }]);
+  const tp = buildBookingComTokenProvider({ http });
+  const a = await tp.getToken({ credentialsRef: 'ref-1', clientId: 'c', clientSecret: 's' });
+  const b = await tp.getToken({ credentialsRef: 'ref-1', clientId: 'c', clientSecret: 's' });
+  assert.equal(http.calls.length, 1, 'still exactly one exchange — caching unaffected');
+  assert.equal(a.testClaim, true);
+  assert.equal(b.testClaim, true);
+  assert.equal(b.cached, true);
 });

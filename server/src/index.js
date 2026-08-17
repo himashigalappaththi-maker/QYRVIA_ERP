@@ -712,11 +712,28 @@ if (require('./config/env').ARI_OUTBOX_WORKER_ENABLED === 'true') {
       return row ? row.credentials_ref : null;
     }
 
+    // Instruction 049 Section 17 — actual runtime wiring audit found this
+    // dependency was NEVER constructed here (instruction 048 built it, but
+    // never injected it into the real application boot path) — a material
+    // readiness gap now closed. Reuses EXISTING infrastructure only: the
+    // SAME shared HTTP transport abstraction (buildHttpTransport, via the
+    // ARI outbox's own ariHttpTransport instance — gated by the SAME
+    // ARI_OUTBOX_HTTP_ENABLED flag, default disabled -> zero network by
+    // construction) and the SAME logger/redaction convention every other
+    // boot-time component already uses (tokenProvider.js itself only ever
+    // logs credentialsRef/expiresAt/code/retryable/testClaim — never a
+    // secret or JWT). No HTTP request is made by constructing this object.
+    const { buildBookingComTokenProvider } = require('./channel-manager/adapters/bookingcom/tokenProvider');
+    const bookingComTokenProvider = buildBookingComTokenProvider({ http: ariHttpTransport, logger });
+
     // Dispatcher construction is best-effort and non-fatal: if any dependency
     // this boot needs is missing, dependenciesOk (inside the dispatcher) is
     // false and isReady() is false — a construction FAILURE below instead
     // falls back to the same explicit not-ready stub Phase 66A-B2N-D shipped,
     // so a dependency-wiring problem can never widen into "somehow ready".
+    // bookingComTokenProvider is now ALWAYS supplied — the dispatcher's own
+    // BOOKING_COM branch fails closed (never falls back to legacy Basic) if
+    // it were ever absent, per instruction 049 Section 18.
     let ariDispatcher;
     try {
       ariDispatcher = buildAriChannelDispatcher({
@@ -728,6 +745,7 @@ if (require('./config/env').ARI_OUTBOX_WORKER_ENABLED === 'true') {
         mappingService: channelMapping && channelMapping.service,
         http: ariHttpTransport,
         activations: channelOutboundSync && channelOutboundSync.activations,
+        bookingComTokenProvider,
         logger
       });
     } catch (e) {

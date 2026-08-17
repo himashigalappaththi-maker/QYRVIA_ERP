@@ -20,6 +20,7 @@ function validInput(overrides) {
     mappingCredentialsRef: 'cred-test-1',
     resolvedCredentialsRef: 'cred-test-1',
     operation: 'AVAILABILITY_INVENTORY_PUSH',
+    tokenTestClaim: true,
     liveGates: { ariBookingComLive: false, ariOutboxDispatchEnabled: false, ariOutboxWorkerEnabled: false, ariOutboxHttpEnabled: false, channelHttpEnabled: false }
   }, overrides);
 }
@@ -98,6 +99,33 @@ test('never guesses classification from an ID\'s shape — a numeric-looking map
     mappingCredentialsRef: '123456'
   }));
   assert.equal(r.allowed, false);
+});
+
+// ---- token `test` claim cross-check (instruction 049 Section 16/20) --------
+
+test('tokenTestClaim: true is accepted (with everything else already proven TEST)', () => {
+  const r = assertBookingComTestOperationAllowed(validInput({ tokenTestClaim: true }));
+  assert.equal(r.allowed, true);
+});
+
+test('tokenTestClaim: false is REJECTED — the token itself claims a non-TEST environment', () => {
+  const r = assertBookingComTestOperationAllowed(validInput({ tokenTestClaim: false }));
+  assert.equal(r.allowed, false);
+  assert.equal(r.reason, 'TOKEN_TEST_CLAIM_NOT_TEST');
+});
+
+test('tokenTestClaim: a missing/ambiguous claim (null) is REJECTED for TEST-operation authorization — never assumed TEST', () => {
+  for (const v of [null, undefined]) {
+    const r = assertBookingComTestOperationAllowed(validInput({ tokenTestClaim: v }));
+    assert.equal(r.allowed, false);
+    assert.equal(r.reason, 'TOKEN_TEST_CLAIM_NOT_TEST');
+  }
+});
+
+test('tokenTestClaim is an ADDITIONAL check, never a substitute — an otherwise-invalid configuration is still refused even with tokenTestClaim:true', () => {
+  const r = assertBookingComTestOperationAllowed(validInput({ connectionStatus: 'live', tokenTestClaim: true }));
+  assert.equal(r.allowed, false);
+  assert.equal(r.reason, 'CONNECTION_ENVIRONMENT_NOT_TEST');
 });
 
 test('is a pure function: identical input always yields identical output, no hidden state across calls', () => {

@@ -106,20 +106,40 @@ function makeStrictFakePool() {
   };
 }
 
+/**
+ * Fake bookingComTokenProvider (instruction 049 Section 17/18): the
+ * dispatcher's BOOKING_COM branch now REQUIRES this dependency and resolves
+ * auth EXCLUSIVELY through it — this fixture mirrors the real module's
+ * shape (getToken/toAuthHeaders) without any network.
+ */
+function fakeBookingComTokenProvider(overrides) {
+  return Object.assign({
+    getToken: async () => ({ token: 'FAKE-JWT', expiresAt: Date.now() + 3600000, ruid: null, testClaim: true, cached: false }),
+    toAuthHeaders: async () => ({ Authorization: 'Bearer FAKE-JWT' })
+  }, overrides);
+}
+
 function baseDeps(overrides) {
   return Object.assign({
     pool: makeStrictFakePool(),
     resolveChannels: async () => ['BOOKING_COM'],
     channelRegistry: { get: async () => ({ enabled: true }) },
-    secretProvider: { get: async () => ({ api_key: 'k' }) },
+    // Instruction 049 Section 18: the commercial BOOKING_COM path requires
+    // token auth — the resolved secret is now token-shaped (client_id/
+    // client_secret), never api_key/username-password.
+    secretProvider: { get: async () => ({ client_id: 'cid', client_secret: 'csecret' }) },
     resolveCredentialsRef: async () => 'ref-1',
-    mappingService: { getMapping: async () => ({ ota_property_id: 'H1', ota_room_id: 'R1', ota_rate_plan_id: null }) },
+    // Booking.com room id is now a genuine integer (instruction 049 Section 6).
+    mappingService: { getMapping: async () => ({ ota_property_id: 'H1', ota_room_id: '101', ota_rate_plan_id: null }) },
     // Phase 69A (instruction 048): the dispatcher's real event shapes route
     // to pushAvailability (INVENTORY_CHANGED), which now decodes an XML
     // response (see providers/bookingcom.js's decodeAvailabilityAckXml) —
-    // `bodyText`, not the legacy JSON `body.confirmation_id` shape.
-    http: { kind: 'fake', enabled: true, async send() { return { ok: true, status: 200, bodyText: '<response><ruid>ACK1</ruid></response>' }; }, async health() { return { ok: true }; } },
+    // `bodyText`, not the legacy JSON `body.confirmation_id` shape. The
+    // ack response format is Booking.com's documented <ok/> + a RUID
+    // response COMMENT (instruction 049 Section 14), not a <ruid> element.
+    http: { kind: 'fake', enabled: true, async send() { return { ok: true, status: 200, bodyText: '<ok/>\n<!-- RUID: [ACK1] -->' }; }, async health() { return { ok: true }; } },
     activations: { BOOKING_COM: { endpoint: 'https://fake-booking.test/ari' } },
+    bookingComTokenProvider: fakeBookingComTokenProvider(),
     isLive: () => true
   }, overrides);
 }

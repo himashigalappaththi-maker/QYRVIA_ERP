@@ -116,15 +116,17 @@ function validateEnvelope(envelope) {
  * @param {Function} [deps.clock]
  * @param {object}   [deps.logger]
  * @param {{getToken:Function, toAuthHeaders:Function}} [deps.bookingComTokenProvider]
- *        Phase 69A (instruction 048) — src/channel-manager/adapters/bookingcom/
- *        tokenProvider.js instance. OPTIONAL and purely additive: when absent,
- *        BOOKING_COM auth is resolved exactly as before this phase (the
- *        provider's own legacy, synchronous authToHeaders(secret) — api_key
- *        or Basic). When present, BOOKING_COM auth is resolved EXCLUSIVELY
- *        through this token provider's Bearer-header path — never a silent
- *        fallback to the legacy path if a token exchange fails (instruction
- *        048 Section 11: "Never silently fall back to Basic auth when token
- *        exchange fails").
+ *        src/channel-manager/adapters/bookingcom/tokenProvider.js instance.
+ *        Instruction 049 Section 18 — the CURRENT commercial ARI BOOKING_COM
+ *        dispatch path REQUIRES this dependency: if channelCode is
+ *        BOOKING_COM and it is absent, attemptExternalChannel() fails
+ *        CLOSED (non-retryable, BOOKING_COM_TOKEN_PROVIDER_REQUIRED) BEFORE
+ *        any provider HTTP dispatch — it NEVER silently falls back to the
+ *        provider's legacy, synchronous authToHeaders(secret) path (that
+ *        function remains for OTHER call sites and future non-BOOKING_COM
+ *        providers only). Likewise a token EXCHANGE failure is classified
+ *        and turned into a RETRY/DEAD_LETTER ledger transition — never a
+ *        silent downgrade to Basic (instruction 048 Section 11).
  */
 function buildAriChannelDispatcher({
   pool, resolveChannels, channelRegistry, secretProvider, resolveCredentialsRef,
@@ -235,14 +237,25 @@ function buildAriChannelDispatcher({
       return { ok: false, retryable: false, code: 'UNRESOLVABLE_CREDENTIAL' };
     }
 
-    // Phase 69A (instruction 048) — Booking.com token pre-flight. Mirrors the
-    // credential/mapping fail-closed-BEFORE-claim pattern already used above:
-    // when a bookingComTokenProvider is configured, prove a Bearer token can
-    // actually be obtained BEFORE claiming the ledger row, rather than
-    // discovering an auth failure only after a real (or fake) HTTP attempt.
-    // This also means the token is already cached by the time buildOtaTransport
-    // resolves auth headers a moment later — one exchange per attempt, not two.
-    if (channelCode === BOOKING_COM && bookingComTokenProvider) {
+    // Instruction 049 Section 18 — the CURRENT commercial BOOKING_COM ARI
+    // dispatch path REQUIRES token auth. A missing bookingComTokenProvider
+    // is a construction-time gap, not a runtime excuse to fall back to the
+    // legacy Basic/api_key path — fail closed BEFORE any claim/HTTP dispatch.
+    if (channelCode === BOOKING_COM && !bookingComTokenProvider) {
+      const claimed = await claimForTenant({ pool, tenantId, id: deliveryId });
+      if (claimed) await markDeadLetterForTenant({ pool, tenantId, id: deliveryId, errorCode: 'BOOKING_COM_TOKEN_PROVIDER_REQUIRED', errorClass: ERROR_CLASS.NON_RETRYABLE });
+      return { ok: false, retryable: false, code: 'BOOKING_COM_TOKEN_PROVIDER_REQUIRED' };
+    }
+
+    // Booking.com token pre-flight. Mirrors the credential/mapping
+    // fail-closed-BEFORE-claim pattern already used above: prove a Bearer
+    // token can actually be obtained BEFORE claiming the ledger row, rather
+    // than discovering an auth failure only after a real (or fake) HTTP
+    // attempt. This also means the token is already cached by the time
+    // buildOtaTransport resolves auth headers a moment later — one exchange
+    // per attempt, not two. NEVER falls back to Basic on failure (instruction
+    // 048 Section 11) — a failure here is classified and durably recorded.
+    if (channelCode === BOOKING_COM) {
       try {
         await bookingComTokenProvider.getToken({
           credentialsRef, clientId: secret.client_id, clientSecret: secret.client_secret
@@ -297,15 +310,15 @@ function buildAriChannelDispatcher({
     if (!claimed) return { ok: false, retryable: true, code: 'claim_conflict' };
 
     try {
-      // Phase 69A: BOOKING_COM with a token provider configured resolves
-      // Bearer auth EXCLUSIVELY through it (async toHeaders — CredentialAuthStrategy's
-      // getAuthHeaders() is itself async and correctly awaits a Promise
-      // returned from toHeaders). Every other case (BOOKING_COM without a
-      // token provider, or any other future SUPPORTED_EXTERNAL_CHANNELS
-      // entry) keeps the pre-existing synchronous provider.authToHeaders(s)
-      // path UNCHANGED — there is no fallback FROM token TO legacy within a
-      // single attempt.
-      const toHeaders = (channelCode === BOOKING_COM && bookingComTokenProvider)
+      // BOOKING_COM ALWAYS resolves Bearer auth through the token provider by
+      // this point (the fail-closed check above already returned if it were
+      // absent — async toHeaders; CredentialAuthStrategy's getAuthHeaders()
+      // is itself async and correctly awaits a Promise returned from
+      // toHeaders). Any other future SUPPORTED_EXTERNAL_CHANNELS entry keeps
+      // the pre-existing synchronous provider.authToHeaders(s) path
+      // UNCHANGED. There is no fallback FROM token TO legacy within a
+      // single attempt, for any channel.
+      const toHeaders = channelCode === BOOKING_COM
         ? (s) => bookingComTokenProvider.toAuthHeaders({ credentialsRef, secret: s })
         : (s) => provider.authToHeaders(s);
       const auth = new CredentialAuthStrategy({ credentialsRef, tenantId, secretProvider, toHeaders });

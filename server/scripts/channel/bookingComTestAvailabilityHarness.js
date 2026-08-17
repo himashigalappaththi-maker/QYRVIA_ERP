@@ -108,6 +108,11 @@ function buildCorrelationId({ credentialsRef, tenantId, propertyId, roomTypeId, 
  *        (must match input.credentialsRef — see testPropertyGuard.js).
  * @param {{date:string, physical:number, sold:number, blocked?:number, stopSell?:boolean}} input.inventory
  *        the SAME authoritative shape ariRateMapping.js's mapInventoryChanged already requires — no fabricated defaults.
+ * @param {boolean|null} [input.tokenTestClaim]  operator-supplied, ALREADY-INSPECTED value of the
+ *        obtained token's normalized JWT `test` claim (see tokenProvider.js's normalizeTestClaim()).
+ *        This file never resolves a secret or a token itself (dry-run mode has no reason to touch
+ *        SecretProvider or the token provider), so this is supplied by the caller exactly like
+ *        connectionStatus/credentialEnvironment already are — an operator-verified fact, not fetched here.
  * @param {boolean} [input.networkAuthorized]  if true, this run is UNCONDITIONALLY refused in this phase (see header).
  * @param {object}  [input.liveGates]  test/operator override for the real env-gate
  *        read below — e.g. { ariBookingComLive: true } — never used by the plain
@@ -121,7 +126,7 @@ function buildCorrelationId({ credentialsRef, tenantId, propertyId, roomTypeId, 
 async function runDryRun(input = {}) {
   const {
     tenantId, propertyId, roomTypeId, credentialsRef,
-    connectionStatus, credentialEnvironment, mapping, inventory,
+    connectionStatus, credentialEnvironment, mapping, inventory, tokenTestClaim = null,
     networkAuthorized = false, liveGates: liveGatesOverride
   } = input;
 
@@ -138,6 +143,7 @@ async function runDryRun(input = {}) {
     mappingCredentialsRef: mapping && mapping.credentialsRef,
     resolvedCredentialsRef: credentialsRef,
     operation: OPERATION,
+    tokenTestClaim,
     liveGates: liveGatesOverride || {
       ariBookingComLive: env.ARI_BOOKING_COM_LIVE === 'true',
       ariOutboxDispatchEnabled: env.ARI_OUTBOX_DISPATCH_ENABLED === 'true',
@@ -185,6 +191,8 @@ async function runDryRun(input = {}) {
     );
   }
 
+  const endpointUrl = new URL(endpoint);
+
   return {
     ok: true,
     blocked: false,
@@ -197,6 +205,24 @@ async function runDryRun(input = {}) {
       headers,
       correlationId,
       bodyXmlPreview: xml,
+      // Instruction 049 Section 21 — ONLY non-secret information. Explicitly
+      // NEVER includes client_secret, JWT, Authorization header value, the
+      // encrypted credential payload, or any raw credential — dry-run mode
+      // never resolves a secret/token at all, so there is nothing of that
+      // kind to omit-by-discipline; it structurally does not exist here.
+      summary: {
+        tenantId,
+        qyrviaPropertyId: propertyId,
+        bookingComRoomId: mapping.otaRoomId,
+        date: mapped.input.date,
+        roomsToSell: mapped.input.available,
+        closed: (mapped.input.stop_sell || mapped.input.stopSell) ? 1 : 0,
+        endpointHost: endpointUrl.host,
+        endpointPath: endpointUrl.pathname,
+        correlationId,
+        environment: 'TEST',
+        credentialRef: credentialsRef // a reference/pointer only, never the secret it points to
+      },
       ledgerPlan: {
         table: 'ari_outbox_channel_delivery',
         note: 'a real (future, authorized) run would ensureDeliveryForTenant() -> claimForTenant() -> ' +

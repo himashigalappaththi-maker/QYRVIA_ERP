@@ -16,7 +16,12 @@ const BASE = {
   id: 'ev1', tenantId: 't1', propertyId: 'p1', roomTypeId: 'rt1', ratePlanId: null,
   dedupeKey: 'aob:v1:x', sourceVersion: 3
 };
-const MAPPING = { otaPropertyId: 'HOTEL-1', otaRoomId: 'OTA-ROOM-1', otaRatePlanId: 'OTA-PLAN-1' };
+// otaRoomId is a genuine Booking.com integer room id (instruction 049
+// Section 6 — the availability XML codec now validates/rejects a free-text
+// OTA room code); otaPropertyId stays free-text since it is a QYRVIA-internal
+// association only and is never serialized into the availability XML at all
+// (instruction 049 Section 5).
+const MAPPING = { otaPropertyId: 'HOTEL-1', otaRoomId: '101', otaRatePlanId: 'OTA-PLAN-1' };
 
 test('isSingleDayRange: true for [d, d+1), false for anything wider or undated', () => {
   assert.equal(isSingleDayRange('2026-08-01', '2026-08-02'), true);
@@ -36,20 +41,21 @@ test('N/P. INVENTORY_CHANGED with authoritative physical/sold/blocked derives av
   const mapped = mapAriEnvelope(envelope, MAPPING);
   assert.equal(mapped.operation, 'AVAILABILITY');
   assert.equal(mapped.input.hotelCode, 'HOTEL-1');
-  assert.equal(mapped.input.otaRoomId, 'OTA-ROOM-1');
+  assert.equal(mapped.input.otaRoomId, '101');
   assert.equal(mapped.input.date, '2026-08-01');
   assert.equal(mapped.input.available, 5); // 10 - 3 - 2
   assert.equal(mapped.input.stop_sell, false);
 
   // Feed straight into the real Booking.com codec to prove end-to-end shape
-  // compatibility. Phase 69A (instruction 048): the codec now returns a
-  // B.XML request string (Booking.com's documented availability endpoint is
-  // application/xml, not JSON) — see providers/bookingcom.js's own header
-  // for why. Assert against the XML text instead of JSON object properties.
+  // compatibility. The codec returns a B.XML request string (Booking.com's
+  // documented availability endpoint is application/xml, not JSON) using
+  // the OFFICIAL <roomstosell> tag name and NO hotel/property element
+  // (instruction 049 Section 5/9) — see providers/bookingcom.js's own header.
   const wire = bookingcom.encodeAvailability(mapped.input);
   assert.equal(typeof wire, 'string');
-  assert.match(wire, /<rooms_to_sell>5<\/rooms_to_sell>/);
-  assert.match(wire, /<room id="OTA-ROOM-1">/);
+  assert.match(wire, /<roomstosell>5<\/roomstosell>/);
+  assert.match(wire, /<room id="101">/);
+  assert.ok(!/<hotel_id/i.test(wire), 'the mapped hotel code is never serialized into the availability XML');
 });
 
 test('available is floored at 0, never negative, when sold+blocked exceeds physical', () => {

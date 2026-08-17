@@ -33,6 +33,17 @@
  *        -> exactly one of PERMITTED_TEST_OPERATIONS.
  *   5. provider live/production mode is NOT selected
  *        -> none of the caller-supplied live-gate booleans read true.
+ *   6. (instruction 049 Section 16/20) the obtained token's decoded JWT
+ *      `test` claim ALSO indicates TEST
+ *        -> tokenTestClaim === true (strict). This is an ADDITIONAL
+ *           cross-check, never the ONLY environment control — it is ANDed
+ *           with checks 1-5, never a substitute for any of them. A token
+ *           with test=false, or with the claim absent/ambiguous
+ *           (tokenTestClaim === null — see tokenProvider.js's
+ *           normalizeTestClaim()), FAILS CLOSED: this repository has no
+ *           official-contract evidence establishing a safe interpretation
+ *           for an absent claim, so absence is never treated as "assume
+ *           TEST".
  *
  * Pure function — no DB, no network, no filesystem. Fully unit-testable with
  * plain objects, per instruction 048 Section 17's own requirement.
@@ -47,6 +58,9 @@ const PERMITTED_TEST_OPERATIONS = Object.freeze(['AVAILABILITY_INVENTORY_PUSH'])
  * @param {string|null} [input.mappingCredentialsRef]   channel_mapping_store row's own credentials_ref
  * @param {string} [input.resolvedCredentialsRef]  the credentialsRef actually authorizing this attempt
  * @param {string} [input.operation]               requested one-shot operation
+ * @param {boolean|null} [input.tokenTestClaim]    the obtained token's normalized JWT `test` claim
+ *        (true/false/null — see tokenProvider.js's normalizeTestClaim()). REQUIRED to be
+ *        exactly `true` for this guard to allow — an ADDITIONAL cross-check alongside checks 1-5.
  * @param {object} [input.liveGates]               { [gateName]: boolean } — e.g. { ariBookingComLive, ariOutboxDispatchEnabled }
  * @returns {{allowed:boolean, reason:string|null}}
  */
@@ -56,6 +70,7 @@ function assertBookingComTestOperationAllowed({
   mappingCredentialsRef = null,
   resolvedCredentialsRef = null,
   operation = null,
+  tokenTestClaim = null,
   liveGates = {}
 } = {}) {
   if (connectionStatus !== 'sandbox') {
@@ -76,6 +91,9 @@ function assertBookingComTestOperationAllowed({
   const activeLiveGate = Object.keys(liveGates || {}).find((k) => liveGates[k] === true);
   if (activeLiveGate) {
     return { allowed: false, reason: 'PROVIDER_LIVE_MODE_SELECTED:' + activeLiveGate };
+  }
+  if (tokenTestClaim !== true) {
+    return { allowed: false, reason: 'TOKEN_TEST_CLAIM_NOT_TEST' };
   }
   return { allowed: true, reason: null };
 }

@@ -85,7 +85,8 @@ test('transport resolves auth headers and sends them', async () => {
   const http = fakeHttp([{ ok: true, status: 200, body: {} }]);
   const auth = { getAuthHeaders: async () => ({ 'X-Booking-Api-Key': 'secret-k' }) };
   const t = buildOtaTransport({ provider: bookingcom, http, auth, retryPolicy: fastRetry, sleep: noSleep });
-  await t.pushAvailability({ hotelCode: 'H1', otaRoomId: 'R1', date: '2026-07-01', available: 3, stop_sell: false });
+  // otaRoomId is a genuine Booking.com integer room id (instruction 049 Section 6).
+  await t.pushAvailability({ hotelCode: 'H1', otaRoomId: '101', date: '2026-07-01', available: 3, stop_sell: false });
   assert.equal(http.sent[0].headers['X-Booking-Api-Key'], 'secret-k');
 });
 

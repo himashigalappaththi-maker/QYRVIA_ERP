@@ -15,8 +15,9 @@ const { runDryRun, buildCorrelationId, OPERATION } = require('../scripts/channel
 function validInput(overrides) {
   return Object.assign({
     tenantId: 't1', propertyId: 'p1', roomTypeId: 'rt1', credentialsRef: 'cred-test-1',
-    connectionStatus: 'sandbox', credentialEnvironment: 'TEST',
-    mapping: { otaPropertyId: 'H1', otaRoomId: 'R1', credentialsRef: 'cred-test-1' },
+    connectionStatus: 'sandbox', credentialEnvironment: 'TEST', tokenTestClaim: true,
+    // Booking.com room id is now a genuine integer (instruction 049 Section 6).
+    mapping: { otaPropertyId: 'H1', otaRoomId: '101', credentialsRef: 'cred-test-1' },
     inventory: { date: '2026-08-01', physical: 10, sold: 3, blocked: 0, stopSell: false }
   }, overrides);
 }
@@ -35,10 +36,33 @@ test('a fully-proven TEST configuration produces a dry-run preflight report — 
   assert.equal(r.preflight.endpoint, 'https://supply-xml.booking.com/hotels/xml/availability');
   assert.equal(r.preflight.headers['Content-Type'], 'application/xml');
   assert.equal(r.preflight.headers['Accept-Version'], '1.1');
-  assert.match(r.preflight.bodyXmlPreview, /<hotel_id>H1<\/hotel_id>/);
-  assert.match(r.preflight.bodyXmlPreview, /<room id="R1">/);
-  assert.match(r.preflight.bodyXmlPreview, /<rooms_to_sell>7<\/rooms_to_sell>/); // 10 - 3 - 0
+  // instruction 049: no hotel/property element, official <roomstosell> tag.
+  assert.ok(!/<hotel_id/i.test(r.preflight.bodyXmlPreview), 'no hotel/property element in the body');
+  assert.match(r.preflight.bodyXmlPreview, /<room id="101">/);
+  assert.match(r.preflight.bodyXmlPreview, /<roomstosell>7<\/roomstosell>/); // 10 - 3 - 0
+  assert.match(r.preflight.bodyXmlPreview, /<closed>0<\/closed>/);
   assert.equal(r.preflight.ledgerPlan.ledgerWriteExecutedInThisRun, false);
+});
+
+test('the structured, non-secret summary reflects the corrected wire contract (instruction 049 Section 21)', async () => {
+  const r = await runDryRun(validInput());
+  const s = r.preflight.summary;
+  assert.equal(s.tenantId, 't1');
+  assert.equal(s.qyrviaPropertyId, 'p1');
+  assert.equal(s.bookingComRoomId, '101');
+  assert.equal(s.date, '2026-08-01');
+  assert.equal(s.roomsToSell, 7);
+  assert.equal(s.closed, 0);
+  assert.equal(s.endpointHost, 'supply-xml.booking.com');
+  assert.equal(s.endpointPath, '/hotels/xml/availability');
+  assert.equal(s.correlationId, r.preflight.correlationId);
+  assert.equal(s.environment, 'TEST');
+  assert.equal(s.credentialRef, 'cred-test-1');
+  // Section 21: must NOT show client_secret/JWT/Authorization/encrypted payload/raw credentials.
+  const serialized = JSON.stringify(r.preflight);
+  for (const forbidden of ['client_secret', 'jwt', 'Authorization', 'encrypted_payload']) {
+    assert.ok(!serialized.toLowerCase().includes(forbidden.toLowerCase()), 'must never include: ' + forbidden);
+  }
 });
 
 test('no Authorization header is ever present in the dry-run preflight (no secret/token is ever resolved)', async () => {
@@ -71,9 +95,21 @@ test('refuses a production-classified credential', async () => {
 });
 
 test('refuses when the mapping is not bound to the exact credential being used', async () => {
-  const r = await runDryRun(validInput({ mapping: { otaPropertyId: 'H1', otaRoomId: 'R1', credentialsRef: 'some-other-cred' } }));
+  const r = await runDryRun(validInput({ mapping: { otaPropertyId: 'H1', otaRoomId: '101', credentialsRef: 'some-other-cred' } }));
   assert.equal(r.blocked, true);
   assert.equal(r.reason, 'MAPPING_CREDENTIALS_REF_MISMATCH');
+});
+
+test('refuses when tokenTestClaim is false — the obtained token itself claims a non-TEST environment', async () => {
+  const r = await runDryRun(validInput({ tokenTestClaim: false }));
+  assert.equal(r.blocked, true);
+  assert.equal(r.reason, 'TOKEN_TEST_CLAIM_NOT_TEST');
+});
+
+test('refuses when tokenTestClaim is missing/null — never assumed TEST by omission', async () => {
+  const r = await runDryRun(validInput({ tokenTestClaim: null }));
+  assert.equal(r.blocked, true);
+  assert.equal(r.reason, 'TOKEN_TEST_CLAIM_NOT_TEST');
 });
 
 test('refuses when any live/production gate is active, even with an otherwise fully-proven TEST configuration', async () => {
