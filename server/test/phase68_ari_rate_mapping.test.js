@@ -41,10 +41,15 @@ test('N/P. INVENTORY_CHANGED with authoritative physical/sold/blocked derives av
   assert.equal(mapped.input.available, 5); // 10 - 3 - 2
   assert.equal(mapped.input.stop_sell, false);
 
-  // Feed straight into the real Booking.com codec to prove end-to-end shape compatibility.
+  // Feed straight into the real Booking.com codec to prove end-to-end shape
+  // compatibility. Phase 69A (instruction 048): the codec now returns a
+  // B.XML request string (Booking.com's documented availability endpoint is
+  // application/xml, not JSON) — see providers/bookingcom.js's own header
+  // for why. Assert against the XML text instead of JSON object properties.
   const wire = bookingcom.encodeAvailability(mapped.input);
-  assert.equal(wire.availability[0].rooms_to_sell, 5);
-  assert.equal(wire.availability[0].room_id, 'OTA-ROOM-1');
+  assert.equal(typeof wire, 'string');
+  assert.match(wire, /<rooms_to_sell>5<\/rooms_to_sell>/);
+  assert.match(wire, /<room id="OTA-ROOM-1">/);
 });
 
 test('available is floored at 0, never negative, when sold+blocked exceeds physical', () => {

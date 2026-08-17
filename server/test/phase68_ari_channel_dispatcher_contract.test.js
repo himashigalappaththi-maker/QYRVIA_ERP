@@ -114,7 +114,11 @@ function baseDeps(overrides) {
     secretProvider: { get: async () => ({ api_key: 'k' }) },
     resolveCredentialsRef: async () => 'ref-1',
     mappingService: { getMapping: async () => ({ ota_property_id: 'H1', ota_room_id: 'R1', ota_rate_plan_id: null }) },
-    http: { kind: 'fake', enabled: true, async send() { return { ok: true, status: 200, body: { confirmation_id: 'ACK1' } }; }, async health() { return { ok: true }; } },
+    // Phase 69A (instruction 048): the dispatcher's real event shapes route
+    // to pushAvailability (INVENTORY_CHANGED), which now decodes an XML
+    // response (see providers/bookingcom.js's decodeAvailabilityAckXml) —
+    // `bodyText`, not the legacy JSON `body.confirmation_id` shape.
+    http: { kind: 'fake', enabled: true, async send() { return { ok: true, status: 200, bodyText: '<response><ruid>ACK1</ruid></response>' }; }, async health() { return { ok: true }; } },
     activations: { BOOKING_COM: { endpoint: 'https://fake-booking.test/ari' } },
     isLive: () => true
   }, overrides);

@@ -38,6 +38,20 @@
  * `enabled=false`/no-fetchImpl branches). No automatic retry lives here —
  * ota/transport.js's RetryPolicy already owns retry/backoff; adding a second
  * retry loop here would double the effective attempt count.
+ *
+ * PHASE 69A (instruction 048 Section 23) — two additive, backward-compatible
+ * fixes so this shared transport does not force a JSON-only assumption on
+ * every provider (Booking.com's documented availability endpoint is
+ * application/xml, not JSON):
+ *   1. Request body: a STRING payload (e.g. a pre-serialized XML document)
+ *      is now sent AS-IS; only a non-string payload is still
+ *      JSON.stringify'd exactly as before. Every existing JSON-shaped
+ *      provider passes an object and is completely unaffected.
+ *   2. Response body: readBoundedBody() now returns BOTH `body` (JSON.parse
+ *      result, or null — EXACTLY the pre-existing semantics, unchanged) and
+ *      a new `bodyText` (the same bounded raw text, or null) so an
+ *      XML-returning provider's decodeAck can read the raw text without
+ *      disturbing any JSON-provider's existing `body`/null contract.
  */
 
 const DEFAULT_TIMEOUT_MS = 10000;
@@ -92,7 +106,7 @@ async function readBoundedBody(res, maxBytes) {
     try { declaredLength = Number(res.headers.get('content-length')); } catch (_) { declaredLength = NaN; }
   }
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    return { body: null, oversized: true };
+    return { body: null, bodyText: null, oversized: true };
   }
 
   if (typeof res.text === 'function') {
@@ -100,41 +114,48 @@ async function readBoundedBody(res, maxBytes) {
     try {
       text = await res.text();
     } catch (_) {
-      return { body: null, oversized: false };
+      return { body: null, bodyText: null, oversized: false };
     }
-    if (text == null || text === '') return { body: null, oversized: false };
+    if (text == null || text === '') return { body: null, bodyText: null, oversized: false };
 
     // No trustworthy Content-Length (or none was advertised) — bound the
     // ACTUAL bytes read. An oversized undeclared body is rejected rather
     // than truncated: parsing a truncated JSON document would either throw
     // or, worse, silently yield a half-formed object mistaken for a real ack.
     if (Buffer.byteLength(text, 'utf8') > maxBytes) {
-      return { body: null, oversized: true };
+      return { body: null, bodyText: null, oversized: true };
     }
 
+    // bodyText is the SAME bounded text, always returned when present —
+    // additive only; a non-JSON provider (e.g. Booking.com's XML ack) reads
+    // this instead of `body`, which keeps its own JSON-or-null contract
+    // below completely unchanged for every existing caller.
     try {
-      return { body: JSON.parse(text), oversized: false };
+      return { body: JSON.parse(text), bodyText: text, oversized: false };
     } catch (_) {
-      // Tolerate invalid JSON without crashing — the caller sees body: null,
-      // exactly like an empty body, and every provider decodeAck already
-      // guards with `raw.body && ...` so this degrades to its existing
-      // http_<status> fallback path, never a thrown error.
-      return { body: null, oversized: false };
+      // Tolerate invalid JSON without crashing — `body` stays null, exactly
+      // like an empty body (pre-existing contract, unchanged), and every
+      // JSON-oriented provider decodeAck already guards with
+      // `raw.body && ...` so this degrades to its existing http_<status>
+      // fallback path, never a thrown error. `bodyText` still carries the
+      // raw text for a provider that expects a non-JSON body format.
+      return { body: null, bodyText: text, oversized: false };
     }
   }
 
   // Fallback for response shapes (real or test-fake) that only implement
   // .json() and not .text() — cannot byte-bound before parsing, but the
   // Content-Length pre-check above still applies when the header is present.
+  // No raw text is obtainable from this shape, so bodyText stays null.
   if (typeof res.json === 'function') {
     try {
-      return { body: await res.json(), oversized: false };
+      return { body: await res.json(), bodyText: null, oversized: false };
     } catch (_) {
-      return { body: null, oversized: false };
+      return { body: null, bodyText: null, oversized: false };
     }
   }
 
-  return { body: null, oversized: false };
+  return { body: null, bodyText: null, oversized: false };
 }
 
 function buildHttpTransport({ enabled = false, fetchImpl, timeoutMs = DEFAULT_TIMEOUT_MS, maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES } = {}) {
@@ -163,18 +184,24 @@ function buildHttpTransport({ enabled = false, fetchImpl, timeoutMs = DEFAULT_TI
         : null;
 
       try {
+        // A STRING payload (e.g. a pre-serialized XML document) is sent
+        // AS-IS; every existing JSON-shaped provider still passes an object
+        // here and is JSON.stringify'd exactly as before (Phase 69A,
+        // instruction 048 Section 23).
+        const body = typeof req.payload === 'string' ? req.payload : JSON.stringify(req.payload || {});
         const res = await f(req.endpoint, {
           method: 'POST',
           headers: req.headers || {},
-          body: JSON.stringify(req.payload || {}),
+          body,
           signal: controller ? controller.signal : undefined
         });
-        const { body, oversized } = await readBoundedBody(res, maxResponseBytes);
-        if (oversized) return { ok: false, status: res.status || 0, body: null, error: 'response_too_large' };
+        const { body: parsedBody, bodyText, oversized } = await readBoundedBody(res, maxResponseBytes);
+        if (oversized) return { ok: false, status: res.status || 0, body: null, bodyText: null, error: 'response_too_large' };
         return {
           ok: !!res.ok,
           status: res.status,
-          body,
+          body: parsedBody,
+          bodyText,
           correlationId: readCorrelationId(res.headers)
         };
       } catch (e) {

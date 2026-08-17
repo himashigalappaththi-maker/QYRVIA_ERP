@@ -89,6 +89,15 @@ function buildOtaTransport({ provider, http, auth, retryPolicy, rateLimiter, sle
       await limiter.gate();
       const headers = await authHeaders();
       if (correlationId) headers[CORRELATION_REQUEST_HEADER] = correlationId;
+      // Phase 69A: static, non-auth headers a provider's wire format
+      // requires (e.g. Booking.com's Content-Type/Accept-Version for its
+      // XML availability endpoint). Purely additive — a provider with no
+      // headersFor() (every provider before this phase) is unaffected, and
+      // a throwing headersFor() must never block delivery over a header
+      // builder defect.
+      if (typeof provider.headersFor === 'function') {
+        try { Object.assign(headers, provider.headersFor(op, ctx) || {}); } catch (_) { /* never block delivery */ }
+      }
       let raw;
       try {
         raw = await send.send({ channel: provider.channel, op, endpoint: provider.endpointFor ? provider.endpointFor(op, ctx) : null, headers, payload: encoded });
